@@ -1,0 +1,450 @@
+
+WHATSAPP CHANNEL
+------------------------------------------------
+
+Connection Status
+Connected
+
+Display Phone Number
++91 9876543210
+
+WhatsApp Business Account (WABA)
+Axora Infotech
+
+Phone Number ID
+10928374656123
+
+WhatsApp Business Account ID
+483920182374921
+
+Quality Rating
+High
+
+Messaging Limit
+1,000 conversations / 24 hours
+
+Verified Name
+Axora Support
+
+Channel Created
+18 June 2026
+
+
+Messaging Settings
+------------------------------------------------
+
+Send Test Message
+[ Send Test ]
+
+Sync Message Templates
+[ Sync Templates ]
+
+Conversation Window
+24 Hours Active
+
+Allowed Message Types
+Text
+Images
+Documents
+Templates
+Buttons
+
+
+Template Settings
+------------------------------------------------
+
+Total Templates
+12
+
+Approved Templates
+10
+
+Pending Templates
+2
+
+Last Sync
+18 June 2026
+
+Manage Templates
+[ Open Template Manager ]
+
+
+Webhook Settings
+------------------------------------------------
+
+Webhook Status
+Active
+
+Webhook URL
+https://api.axora.ai/webhooks/whatsapp
+
+Subscribed Events
+messages
+message_status
+template_status
+
+
+Advanced Settings
+------------------------------------------------
+
+Verify Token
+••••••••••
+
+Graph API Version
+v19.0
+
+Meta App Name
+Axora Messaging Platform
+
+System User
+Axora API System
+
+Access Token
+••••••••••••••••••
+
+Token Expiry
+Never (System User Token)
+
+
+Debug & Logs
+------------------------------------------------
+
+Last Incoming Webhook
+18 June 2026 — 14:22
+
+Last Outgoing Message
+18 June 2026 — 14:18
+
+Last Error
+None
+
+
+Danger Zone
+------------------------------------------------
+
+Disconnect Channel
+This will stop receiving and sending WhatsApp messages.
+
+[ Disconnect WhatsApp Channel ]
+
+
+
+
+
+INSTAGRAM CHANNEL
+------------------------------------------------
+
+Connection Status
+Connected
+
+Instagram Account
+@axorainfotech
+
+Instagram User ID
+17841400012345678
+
+Connected Facebook Page
+Axora Infotech
+
+Page ID
+10928374656123
+
+Account Type
+Business
+
+Followers
+55,000
+
+Channel Created
+18 June 2026
+
+
+Messaging Settings
+------------------------------------------------
+
+Send Test Message
+[ Send Test ]
+
+Conversation Window
+24 Hours Active
+
+Allowed Message Types
+Text
+Images
+Videos
+Stories Replies
+Quick Replies
+Reactions
+
+
+Comment & DM Settings
+------------------------------------------------
+
+Receive Direct Messages
+Enabled
+
+Receive Story Replies
+Enabled
+
+Receive Post Comments
+Optional
+
+Auto-create Contact from DM
+Enabled
+
+
+Webhook Settings
+------------------------------------------------
+
+Webhook Status
+Active
+
+Webhook URL
+https://api.axora.ai/webhooks/instagram
+
+Subscribed Events
+messages
+messaging_postbacks
+messaging_seen
+comments
+
+
+Advanced Settings
+------------------------------------------------
+
+Verify Token
+••••••••••
+
+Graph API Version
+v19.0
+
+Meta App Name
+Axora Messaging Platform
+
+Connected Facebook Page Token
+••••••••••••••••••
+
+Instagram Business Account ID
+17841400012345678
+
+
+Debug & Logs
+------------------------------------------------
+
+Last Incoming Webhook
+18 June 2026 — 14:22
+
+Last Outgoing Message
+18 June 2026 — 14:18
+
+Last Error
+None
+
+
+Danger Zone
+------------------------------------------------
+
+Disconnect Channel
+This will stop receiving and sending Instagram messages.
+
+[ Disconnect Instagram Channel ]
+
+
+
+
+
+MESSENGER CHANNEL
+------------------------------------------------
+
+Connection Status
+Connected
+
+Facebook Page Name
+Axora Infotech
+
+Page ID
+10928374656123
+
+Page Username
+@axorainfotech
+
+Followers / Likes
+12,450
+
+Channel Created
+18 June 2026
+
+
+Messaging Settings
+------------------------------------------------
+
+Send Test Message
+[ Send Test ]
+
+Allowed Message Types
+Text
+Images
+Videos
+Files
+Quick Replies
+Buttons
+
+Conversation Window
+24 Hours Active
+
+
+Webhook Settings
+------------------------------------------------
+
+Webhook Status
+Active
+
+Webhook URL
+https://api.axora.ai/webhooks/messenger
+
+Subscribed Events
+messages
+messaging_postbacks
+messaging_reads
+message_deliveries
+
+
+Advanced Settings
+------------------------------------------------
+
+Verify Token
+••••••••••
+
+Graph API Version
+v19.0
+
+Meta App Name
+Axora Messaging Platform
+
+Page Access Token
+••••••••••••••••••
+
+
+Debug & Logs
+------------------------------------------------
+
+Last Incoming Webhook
+18 June 2026 — 14:22
+
+Last Outgoing Message
+18 June 2026 — 14:18
+
+Last Error
+None
+
+
+Danger Zone
+------------------------------------------------
+
+Disconnect Channel
+This will stop receiving and sending Messenger messages.
+
+[ Disconnect Messenger Channel ]
+
+
+
+
+
+EMAIL CHANNEL
+------------------------------------------------
+
+Connection Status
+Connected
+
+Email Address
+support@axora.ai
+
+Display Name
+Axora Support
+
+Provider
+Gmail
+
+IMAP Server
+imap.gmail.com
+
+SMTP Server
+smtp.gmail.com
+
+Channel Created
+18 June 2026
+
+
+Messaging Settings
+------------------------------------------------
+
+Send Test Email
+[ Send Test ]
+
+Allowed Message Types
+Text
+HTML
+Attachments
+
+Auto Sync Emails
+Enabled
+
+Sync Frequency
+Every 1 minute
+
+
+Mailbox Settings
+------------------------------------------------
+
+Inbox Folder
+INBOX
+
+Sent Folder
+Sent
+
+Archive Folder
+Archive
+
+Spam Filtering
+Enabled
+
+
+Advanced Settings
+------------------------------------------------
+
+IMAP Port
+993
+
+SMTP Port
+587
+
+Encryption
+TLS / SSL
+
+Authentication
+OAuth2 / App Password
+
+Connection Timeout
+30 seconds
+
+
+Debug & Logs
+------------------------------------------------
+
+Last Incoming Email
+18 June 2026 — 14:22
+
+Last Outgoing Email
+18 June 2026 — 14:18
+
+Last Error
+None
+
+
+Danger Zone
+------------------------------------------------
+
+Disconnect Channel
+This will stop sending and receiving emails.
+
+[ Disconnect Email Channel ]

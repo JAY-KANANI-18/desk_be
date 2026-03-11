@@ -1,0 +1,561 @@
+// schema.prisma — COMPLETE OMNICHANNEL SCHEMA
+// Covers: WhatsApp, Instagram, Messenger, Email (Mailgun)
+// Features: messages (all types), attachments, templates, media assets,
+//           outbound queue, channel credentials, contact profiles
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================================
+// USERS & ORGS
+// ============================================================
+
+model User {
+  id        String   @id @default(uuid()) @db.Uuid
+  email     String   @unique
+  firstName String?
+  lastName  String?
+  avatarUrl String?
+  createdAt DateTime @default(now())
+  language  String?
+  status    String?
+
+  organizationMemberships OrganizationMember[]
+  workspaceMemberships    WorkspaceMember[]
+  assignedContacts        Contact[]            @relation("ContactToUser")
+  messages                Message[]
+  teamMembers             TeamMember[]
+  notifications           Notification[]
+  userActivity            UserActivity?
+}
+
+model UserActivity {
+  userId         String    @id @db.Uuid
+  activityStatus String
+  lastSeenAt     DateTime?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model Organization {
+  id        String   @id @default(uuid()) @db.Uuid
+  name      String
+  logoUrl   String?
+  plan      String   @default("free")
+  createdAt DateTime @default(now())
+
+  members    OrganizationMember[]
+  workspaces Workspace[]
+}
+
+model OrganizationMember {
+  id             String    @id @default(uuid()) @db.Uuid
+  organizationId String    @db.Uuid
+  userId         String    @db.Uuid
+  role           String
+  status         String    @default("active")
+  joinedAt       DateTime?
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, userId])
+}
+
+model Workspace {
+  id             String   @id @default(uuid()) @db.Uuid
+  organizationId String   @db.Uuid
+  name           String
+  timeZone       String   @default("UTC")
+  language       String   @default("en")
+  dateFormat     String   @default("MM/DD/YYYY")
+  timeFormat     String   @default("hh:mm A")
+  createdAt      DateTime @default(now())
+
+  organization      Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  members           WorkspaceMember[]
+  contacts          Contact[]
+  conversations     Conversation[]
+  messages          Message[]
+  channels          Channel[]
+  teams             Team[]
+  workflows         Workflow[]
+  whatsAppTemplates WhatsAppTemplate[]
+  contactChannels   ContactChannel[]
+  mediaAssets       MediaAsset[]
+  outboundQueue     OutboundQueue[]
+  messageTemplates   MessageTemplate[]
+}
+
+model WorkspaceMember {
+  id           String    @id @default(uuid()) @db.Uuid
+  workspaceId  String    @db.Uuid
+  userId       String    @db.Uuid
+  role         String
+  status       String    @default("active")
+  joinedAt     DateTime?
+  availability String    @default("online")
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  contacts  Contact[]
+
+  @@unique([workspaceId, userId])
+}
+
+
+// ============================================================
+// CONTACTS
+// ============================================================
+
+model Contact {
+  id          String   @id @default(uuid()) @db.Uuid
+  workspaceId String   @db.Uuid
+  firstName   String
+  lastName    String?
+  email       String?
+  phone       String?
+  company     String?
+  avatarUrl   String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  status      String?
+
+  assigneeId        String?          @db.Uuid
+  assignee          User?            @relation("ContactToUser", fields: [assigneeId], references: [id])
+  teamId            String?          @db.Uuid
+  team              Team?            @relation(fields: [teamId], references: [id])
+  workspaceMemberId String?          @db.Uuid
+  workspaceMember   WorkspaceMember? @relation(fields: [workspaceMemberId], references: [id])
+
+  workspace       Workspace        @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  conversations   Conversation[]
+  contactChannels ContactChannel[]
+
+  @@index([workspaceId])
+}
+
+
+// ============================================================
+// CONVERSATIONS
+// ============================================================
+
+model Conversation {
+  id          String  @id @default(uuid()) @db.Uuid
+  workspaceId String  @db.Uuid
+  contactId   String  @db.Uuid
+  channelId   String? @db.Uuid
+  channelType String?
+
+  subject String? // email subject / thread subject
+
+  status String @default("open") // open | pending | resolved | closed
+
+  lastMessageId  String?   @unique @db.Uuid
+  lastMessageAt  DateTime?
+  lastIncomingAt DateTime?
+
+  unreadCount Int @default(0)
+
+  slaDueAt    DateTime?
+  slaBreached Boolean   @default(false)
+  priority    String    @default("normal") // low | normal | high | urgent
+
+  firstResponseAt DateTime?
+  resolvedAt      DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  workspace   Workspace  @relation(fields: [workspaceId], references: [id])
+  contact     Contact    @relation(fields: [contactId], references: [id])
+  channel     Channel?   @relation(fields: [channelId], references: [id])
+  messages    Message[]  @relation("ConversationMessages")
+  lastMessage Message?   @relation("LastMessage", fields: [lastMessageId], references: [id])
+
+  @@index([workspaceId])
+  @@index([contactId])
+  @@index([channelId])
+  @@index([status])
+}
+
+// ============================================================
+// MESSAGES
+// ============================================================
+
+model Message {
+  id             String  @id @default(uuid()) @db.Uuid
+  workspaceId    String  @db.Uuid
+  conversationId String  @db.Uuid
+  channelId      String? @db.Uuid
+  channelType    String?
+
+  // Message classification
+  type      String @default("text")
+  // text | image | video | audio | voice | document | sticker | location |
+  // contact | reaction | template | interactive | order | note | activity | email
+
+  direction String @default("incoming")
+  // incoming | outgoing
+
+  // Text content (plain or email body)
+  text    String?
+  subject String? // email subject line
+
+  // The provider-assigned message ID (for dedup & delivery tracking)
+  channelMsgId String?
+
+  // Author for outgoing agent messages
+  authorId String? @db.Uuid
+
+  // Delivery status
+  status String @default("pending")
+  // pending | sent | delivered | read | failed
+
+  // For reactions: the message being reacted to
+  replyToChannelMsgId String?
+
+  // Raw provider payload (kept for debugging)
+  rawPayload Json?
+
+  // Extra structured data per message type:
+  // location   → { lat, lng, name }
+  // reaction   → { emoji, targetMsgId }
+  // order      → { catalogId, items[] }
+  // interactive → { type, title, payload }
+  // email      → { htmlBody, headers, inReplyTo, references }
+  metadata Json?
+
+  createdAt DateTime @default(now())
+  sentAt    DateTime?
+
+  conversation       Conversation        @relation("ConversationMessages", fields: [conversationId], references: [id])
+  workspace          Workspace           @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  author             User?               @relation(fields: [authorId], references: [id])
+  channel            Channel?            @relation(fields: [channelId], references: [id])
+  messageAttachments MessageAttachment[]
+  lastMessageOf      Conversation[]      @relation("LastMessage")
+  outboundQueue      OutboundQueue?
+
+  @@index([workspaceId])
+  @@index([conversationId])
+  @@index([authorId])
+  @@index([channelId])
+  @@index([channelMsgId])
+  @@index([status])
+}
+
+
+// ============================================================
+// CHANNELS
+// ============================================================
+
+model Channel {
+  id          String   @id @default(uuid()) @db.Uuid
+  workspaceId String   @db.Uuid
+  type        String   // whatsapp | instagram | messenger | email
+  name        String
+  identifier  String?  // phone_number_id | page_id | email prefix | IG account id
+  status      String   @default("connected") // connected | disconnected | error
+  createdAt   DateTime @default(now())
+
+  // Encrypted credentials stored as JSON:
+  // WhatsApp:  { accessToken, wabaId, phoneNumberId, appSecret, verifyToken }
+  // Instagram: { accessToken, pageId, appSecret, verifyToken, igAccountId }
+  // Messenger: { accessToken, pageId, appSecret, verifyToken }
+  // Email:     { apiKey, domain, fromAddress, signingKey }
+  credentials Json?
+
+  // Channel-specific config (webhooks, auto-reply, etc.)
+  config Json?
+
+  workspace       Workspace        @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  conversations   Conversation[]
+  messages        Message[]
+  contactChannels ContactChannel[]
+  outboundQueue   OutboundQueue[]
+
+  @@index([workspaceId])
+  @@index([type, identifier])
+}
+
+// ============================================================
+// MEDIA ASSETS (dedup store)
+// ============================================================
+
+// One row per unique file in storage.
+// Multiple MessageAttachments can point to the same MediaAsset
+// (e.g. same image forwarded in multiple conversations).
+
+model MediaAsset {
+  id          String @id @default(uuid()) @db.Uuid
+  workspaceId String @db.Uuid
+
+  // Our stable internal storage URL
+  url String
+key String? // storage key (for R2 lookup)
+  mimeType  String
+  mediaType String  // image | video | audio | voice | document | sticker | gif
+  filename  String?
+  size      Int?    // bytes
+
+  // Provider-side ID used for dedup lookups
+  externalMediaId String?
+
+  // Which channel type this came from (helps with provider-specific re-upload logic)
+  sourceChannelType String?
+
+  createdAt DateTime @default(now())
+
+  workspace          Workspace           @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  messageAttachments MessageAttachment[]
+
+  @@index([workspaceId, externalMediaId])
+  @@index([workspaceId, url])
+}
+
+
+// Maps a Contact to a specific channel identity
+// (e.g. same person has WhatsApp +1234 AND Instagram ID 9876)
+model ContactChannel {
+  id          String   @id @default(uuid()) @db.Uuid
+  workspaceId String   @db.Uuid
+  contactId   String   @db.Uuid
+  channelId   String   @db.Uuid
+  channelType String   // whatsapp | instagram | messenger | email
+  identifier  String   // phone number, PSID, IG scoped ID, email address
+
+  // Cached profile from provider (refreshed on inbound)
+  displayName String?
+  avatarUrl   String?
+  profileRaw  Json?    // full raw profile payload from provider
+
+  createdAt DateTime @default(now())
+  // updatedAt DateTime @updatedAt
+
+  contact   Contact   @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  channel   Channel   @relation(fields: [channelId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, channelId, identifier])
+  @@index([workspaceId, identifier])
+}
+
+// ============================================================
+// OUTBOUND QUEUE
+// ============================================================
+
+// Every outbound message goes through the queue for reliability,
+// retry logic, and rate-limit compliance.
+
+model OutboundQueue {
+  id          String   @id @default(uuid()) @db.Uuid
+  workspaceId String   @db.Uuid
+  channelId   String   @db.Uuid
+  messageId   String   @unique @db.Uuid // linked Message record
+
+  // Who to send to
+  to String // phone, PSID, IG scoped ID, email
+
+  // Payload to send (channel-specific JSON blob)
+  // WhatsApp: { messaging_product, type, text/image/template/... }
+  // Messenger/Instagram: { recipient, message }
+  // Email: { from, to, subject, text, html }
+  payload Json
+
+  status    String   @default("pending")
+  // pending | sending | sent | failed | cancelled
+
+  attempts  Int      @default(0)
+  maxRetries Int     @default(3)
+  lastError String?
+
+  scheduledAt DateTime  @default(now()) // when to send (allows scheduling)
+  sentAt      DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  channel   Channel   @relation(fields: [channelId], references: [id])
+  message   Message   @relation(fields: [messageId], references: [id])
+
+  @@index([status, scheduledAt])
+  @@index([workspaceId, channelId])
+}
+
+// ============================================================
+// TEAMS, WORKFLOWS, NOTIFICATIONS (stubs — already in your app)
+// ============================================================
+
+model Team {
+  id          String   @id @default(uuid()) @db.Uuid
+  workspaceId String   @db.Uuid
+  name        String
+  createdAt   DateTime @default(now())
+
+  workspace   Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  members     TeamMember[]
+  contacts    Contact[]
+}
+
+model TeamMember {
+  id     String @id @default(uuid()) @db.Uuid
+  teamId String @db.Uuid
+  userId String @db.Uuid
+
+  team Team @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([teamId, userId])
+}
+
+model Workflow {
+  id          String   @id @default(uuid()) @db.Uuid
+  workspaceId String   @db.Uuid
+  name        String
+  trigger     String
+  config      Json?
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+}
+
+
+// ============================================================
+// TEMPLATES
+// ============================================================
+
+// WhatsApp approved templates (synced from Meta)
+model WhatsAppTemplate {
+  id          String   @id @default(uuid()) @db.Uuid
+  workspaceId String   @db.Uuid
+  channelId   String   @db.Uuid
+  name        String
+  language    String
+  category    String   // MARKETING | UTILITY | AUTHENTICATION
+  status      String   // APPROVED | PENDING | REJECTED
+  components  Json     // header, body, footer, buttons — raw Meta structure
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id])
+
+  @@unique([workspaceId, channelId, name, language])
+  @@index([workspaceId, channelId])
+}
+
+// Generic template store for email, Instagram, Messenger quick-replies, etc.
+model MessageTemplate {
+  id          String   @id @default(uuid()) @db.Uuid
+  workspaceId String   @db.Uuid
+  channelType String   // email | messenger | instagram | all
+  name        String
+  subject     String?  // for email templates
+  body        String   // plain text or HTML
+  variables   Json?    // list of variable names: ["customer_name", "order_id"]
+  category    String?  // promotional | transactional | support
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId, channelType])
+}
+// ============================================================
+// ATTACHMENTS
+// ============================================================
+
+model MessageAttachment {
+  id        String @id @default(uuid()) @db.Uuid
+  messageId String @db.Uuid
+
+  // Media type
+  type String
+  // image | video | audio | voice | document | sticker | gif |
+  // location | contact | reaction | story_mention | unsupported
+
+  // File metadata
+  name     String?
+  mimeType String?
+  size     Int?     // bytes
+  duration Int?     // seconds (audio/video)
+  width    Int?
+  height   Int?
+
+  // Our internal storage URL (always set after processing)
+  url String?
+
+  // Original provider URL (pre-download, may expire)
+  providerUrl String?
+
+  // Provider-side media ID (WhatsApp/Instagram use this for download auth)
+  externalMediaId String?
+
+  // Reference to the deduplicated MediaAsset record
+  assetId String? @db.Uuid
+
+  // Structured extras
+  // image/video/audio: { caption }
+  // location: { lat, lng, name, address }
+  // contact:  { vcard }
+  // reaction: { emoji, targetMsgId }
+  // document: { filename, pageCount }
+  metadata Json?
+
+  createdAt DateTime @default(now())
+
+  message Message     @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  asset   MediaAsset? @relation(fields: [assetId], references: [id])
+
+  @@index([messageId])
+  @@index([externalMediaId])
+}
+
+
+model Notification {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String   @db.Uuid
+  type      String
+  title     String
+  body      String?
+  isRead    Boolean  @default(false)
+  metadata  Json?
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, isRead])
+}
+
+enum NotificationType {
+  NEW_MESSAGE
+  NEW_CONVERSATION
+  MENTION
+  ASSIGNED
+  UNASSIGNED
+  IMPORT_STATUS
+  EXPORT_STATUS
+  WORKFLOW_UPDATE
+  BROADCAST_STATUS
+}
+
+model NotificationPreference {
+
+  userId String @id
+
+  emailNewMessage Boolean @default(true)
+  emailMention Boolean @default(true)
+  emailAssignment Boolean @default(true)
+  emailWorkflow Boolean @default(true)
+
+  inappNewMessage Boolean @default(true)
+
+}
