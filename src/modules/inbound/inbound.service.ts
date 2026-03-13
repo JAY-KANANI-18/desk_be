@@ -49,6 +49,7 @@ export class InboundService {
   private readonly logger = new Logger(InboundService.name);
 
   constructor(
+    
     private readonly prisma: PrismaService,
     private readonly media: MediaService,
     private readonly events: EventEmitter2,

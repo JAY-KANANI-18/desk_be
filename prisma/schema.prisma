@@ -32,6 +32,8 @@ model User {
   messages                Message[]
   teamMembers             TeamMember[]
   notifications           Notification[]
+    actorActivities    ConversationActivity[] @relation("ActivityActor")
+  subjectActivities  ConversationActivity[] @relation("ActivitySubject")
   userActivity            UserActivity?
 }
 
@@ -90,7 +92,8 @@ model Workspace {
   contactChannels   ContactChannel[]
   mediaAssets       MediaAsset[]
   outboundQueue     OutboundQueue[]
-  messageTemplates   MessageTemplate[]
+  messageTemplates  MessageTemplate[]
+  metaPageTemplates MetaPageTemplate[]
 }
 
 model WorkspaceMember {
@@ -108,7 +111,6 @@ model WorkspaceMember {
 
   @@unique([workspaceId, userId])
 }
-
 
 // ============================================================
 // CONTACTS
@@ -141,7 +143,6 @@ model Contact {
   @@index([workspaceId])
 }
 
-
 // ============================================================
 // CONVERSATIONS
 // ============================================================
@@ -173,11 +174,13 @@ model Conversation {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  workspace   Workspace  @relation(fields: [workspaceId], references: [id])
-  contact     Contact    @relation(fields: [contactId], references: [id])
-  channel     Channel?   @relation(fields: [channelId], references: [id])
-  messages    Message[]  @relation("ConversationMessages")
-  lastMessage Message?   @relation("LastMessage", fields: [lastMessageId], references: [id])
+  workspace   Workspace @relation(fields: [workspaceId], references: [id])
+  contact     Contact   @relation(fields: [contactId], references: [id])
+  channel     Channel?  @relation(fields: [channelId], references: [id])
+  messages    Message[] @relation("ConversationMessages")
+  lastMessage Message?  @relation("LastMessage", fields: [lastMessageId], references: [id])
+    activities ConversationActivity[]
+
 
   @@index([workspaceId])
   @@index([contactId])
@@ -197,7 +200,7 @@ model Message {
   channelType    String?
 
   // Message classification
-  type      String @default("text")
+  type String @default("text")
   // text | image | video | audio | voice | document | sticker | location |
   // contact | reaction | template | interactive | order | note | activity | email
 
@@ -232,7 +235,7 @@ model Message {
   // email      → { htmlBody, headers, inReplyTo, references }
   metadata Json?
 
-  createdAt DateTime @default(now())
+  createdAt DateTime  @default(now())
   sentAt    DateTime?
 
   conversation       Conversation        @relation("ConversationMessages", fields: [conversationId], references: [id])
@@ -251,7 +254,6 @@ model Message {
   @@index([status])
 }
 
-
 // ============================================================
 // CHANNELS
 // ============================================================
@@ -259,9 +261,9 @@ model Message {
 model Channel {
   id          String   @id @default(uuid()) @db.Uuid
   workspaceId String   @db.Uuid
-  type        String   // whatsapp | instagram | messenger | email
+  type        String // whatsapp | instagram | messenger | email
   name        String
-  identifier  String?  // phone_number_id | page_id | email prefix | IG account id
+  identifier  String? // phone_number_id | page_id | email prefix | IG account id
   status      String   @default("connected") // connected | disconnected | error
   createdAt   DateTime @default(now())
 
@@ -298,12 +300,12 @@ model MediaAsset {
   workspaceId String @db.Uuid
 
   // Our stable internal storage URL
-  url String
-key String? // storage key (for R2 lookup)
+  url       String
+  key       String? // storage key (for R2 lookup)
   mimeType  String
-  mediaType String  // image | video | audio | voice | document | sticker | gif
+  mediaType String // image | video | audio | voice | document | sticker | gif
   filename  String?
-  size      Int?    // bytes
+  size      Int? // bytes
 
   // Provider-side ID used for dedup lookups
   externalMediaId String?
@@ -320,21 +322,20 @@ key String? // storage key (for R2 lookup)
   @@index([workspaceId, url])
 }
 
-
 // Maps a Contact to a specific channel identity
 // (e.g. same person has WhatsApp +1234 AND Instagram ID 9876)
 model ContactChannel {
-  id          String   @id @default(uuid()) @db.Uuid
-  workspaceId String   @db.Uuid
-  contactId   String   @db.Uuid
-  channelId   String   @db.Uuid
-  channelType String   // whatsapp | instagram | messenger | email
-  identifier  String   // phone number, PSID, IG scoped ID, email address
+  id          String @id @default(uuid()) @db.Uuid
+  workspaceId String @db.Uuid
+  contactId   String @db.Uuid
+  channelId   String @db.Uuid
+  channelType String // whatsapp | instagram | messenger | email
+  identifier  String // phone number, PSID, IG scoped ID, email address
 
   // Cached profile from provider (refreshed on inbound)
   displayName String?
   avatarUrl   String?
-  profileRaw  Json?    // full raw profile payload from provider
+  profileRaw  Json? // full raw profile payload from provider
 
   createdAt DateTime @default(now())
   // updatedAt DateTime @updatedAt
@@ -355,10 +356,10 @@ model ContactChannel {
 // retry logic, and rate-limit compliance.
 
 model OutboundQueue {
-  id          String   @id @default(uuid()) @db.Uuid
-  workspaceId String   @db.Uuid
-  channelId   String   @db.Uuid
-  messageId   String   @unique @db.Uuid // linked Message record
+  id          String @id @default(uuid()) @db.Uuid
+  workspaceId String @db.Uuid
+  channelId   String @db.Uuid
+  messageId   String @unique @db.Uuid // linked Message record
 
   // Who to send to
   to String // phone, PSID, IG scoped ID, email
@@ -369,12 +370,12 @@ model OutboundQueue {
   // Email: { from, to, subject, text, html }
   payload Json
 
-  status    String   @default("pending")
+  status String @default("pending")
   // pending | sending | sent | failed | cancelled
 
-  attempts  Int      @default(0)
+  attempts   Int     @default(0)
   maxRetries Int     @default(3)
-  lastError String?
+  lastError  String?
 
   scheduledAt DateTime  @default(now()) // when to send (allows scheduling)
   sentAt      DateTime?
@@ -399,9 +400,11 @@ model Team {
   name        String
   createdAt   DateTime @default(now())
 
-  workspace   Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  members     TeamMember[]
-  contacts    Contact[]
+  workspace Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  members   TeamMember[]
+  contacts  Contact[]
+    activities ConversationActivity[]
+
 }
 
 model TeamMember {
@@ -427,23 +430,26 @@ model Workflow {
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 }
 
-
 // ============================================================
 // TEMPLATES
 // ============================================================
 
 // WhatsApp approved templates (synced from Meta)
 model WhatsAppTemplate {
-  id          String   @id @default(uuid()) @db.Uuid
-  workspaceId String   @db.Uuid
-  channelId   String   @db.Uuid
-  name        String
-  language    String
-  category    String   // MARKETING | UTILITY | AUTHENTICATION
-  status      String   // APPROVED | PENDING | REJECTED
-  components  Json     // header, body, footer, buttons — raw Meta structure
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id             String    @id @default(uuid()) @db.Uuid
+  workspaceId    String    @db.Uuid
+  channelId      String    @db.Uuid
+  name           String
+  language       String
+  category       String // MARKETING | UTILITY | AUTHENTICATION
+  status         String // APPROVED | PENDING | REJECTED
+  variables      Json // list of variable names: ["customer_name", "order_id"]
+  rejectedReason String? // if rejected, the reason from Meta
+  syncedAt       DateTime? // when we last synced with Meta
+  metaId         String // the template ID assigned by Meta (for API calls)
+  components     Json // header, body, footer, buttons — raw Meta structure
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
 
   workspace Workspace @relation(fields: [workspaceId], references: [id])
 
@@ -451,16 +457,37 @@ model WhatsAppTemplate {
   @@index([workspaceId, channelId])
 }
 
+model MetaPageTemplate {
+  id          String    @id @default(uuid()) @db.Uuid
+  workspaceId String    @db.Uuid
+  channelId   String    @db.Uuid
+  channelType String // messenger | instagram
+  type        String // persistent_menu | get_started
+  payload     Json // raw payload to send to Meta for this template
+  name        String
+  syncedAt    DateTime? // when we last synced with Meta
+
+  metaId     String? // the template ID assigned by Meta (for API calls)
+ 
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id])
+
+  @@unique([workspaceId, channelId, metaId])
+  @@index([workspaceId, channelId])
+}
+
 // Generic template store for email, Instagram, Messenger quick-replies, etc.
 model MessageTemplate {
   id          String   @id @default(uuid()) @db.Uuid
   workspaceId String   @db.Uuid
-  channelType String   // email | messenger | instagram | all
+  channelType String // email | messenger | instagram | all
   name        String
-  subject     String?  // for email templates
-  body        String   // plain text or HTML
-  variables   Json?    // list of variable names: ["customer_name", "order_id"]
-  category    String?  // promotional | transactional | support
+  subject     String? // for email templates
+  body        String // plain text or HTML
+  variables   Json? // list of variable names: ["customer_name", "order_id"]
+  category    String? // promotional | transactional | support
   isActive    Boolean  @default(true)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
@@ -469,6 +496,7 @@ model MessageTemplate {
 
   @@index([workspaceId, channelType])
 }
+
 // ============================================================
 // ATTACHMENTS
 // ============================================================
@@ -485,8 +513,8 @@ model MessageAttachment {
   // File metadata
   name     String?
   mimeType String?
-  size     Int?     // bytes
-  duration Int?     // seconds (audio/video)
+  size     Int? // bytes
+  duration Int? // seconds (audio/video)
   width    Int?
   height   Int?
 
@@ -519,7 +547,6 @@ model MessageAttachment {
   @@index([externalMediaId])
 }
 
-
 model Notification {
   id        String   @id @default(uuid()) @db.Uuid
   userId    String   @db.Uuid
@@ -548,14 +575,119 @@ enum NotificationType {
 }
 
 model NotificationPreference {
-
   userId String @id
 
   emailNewMessage Boolean @default(true)
-  emailMention Boolean @default(true)
+  emailMention    Boolean @default(true)
   emailAssignment Boolean @default(true)
-  emailWorkflow Boolean @default(true)
+  emailWorkflow   Boolean @default(true)
 
   inappNewMessage Boolean @default(true)
-
 }
+
+
+// ============================================================
+// CONVERSATION ACTIVITY (add to existing schema.prisma)
+// ============================================================
+//
+// One ConversationActivity row is written every time a
+// system-level event happens on a conversation:
+//   - open / close / reopen
+//   - assign user / team
+//   - unassign
+//   - contact merged
+//   - channel added to contact
+//   - note / internal comment
+//   - label added / removed
+//   - priority changed
+//   - SLA breached
+//
+// These are rendered inline in the chat timeline between
+// real messages, exactly like Respond.io / Intercom do it.
+//
+// ─── Relations to add on existing models ───────────────────
+//
+// On Conversation model — add:
+//   activities ConversationActivity[]
+//
+// On User model — add:
+//   actorActivities    ConversationActivity[] @relation("ActivityActor")
+//   subjectActivities  ConversationActivity[] @relation("ActivitySubject")
+//
+// On Team model — add:
+//   activities ConversationActivity[]
+// ============================================================
+
+model ConversationActivity {
+  id             String   @id @default(uuid()) @db.Uuid
+  workspaceId    String   @db.Uuid
+  conversationId String   @db.Uuid
+
+  // What happened
+  // open | close | reopen | pending
+  // assign_user | unassign_user | assign_team | unassign_team
+  // merge_contact
+  // channel_added
+  // note
+  // label_added | label_removed
+  // priority_changed
+  // sla_breached
+  eventType String
+
+  // Who did it (null = system / automation)
+  actorId   String? @db.Uuid   // User who triggered this
+  actorType String  @default("user") // user | system | automation | bot
+
+  // Who was affected (for assign/unassign events)
+  subjectUserId String? @db.Uuid  // the agent being assigned
+  subjectTeamId String? @db.Uuid  // the team being assigned
+
+  // Arbitrary context stored per event type:
+  //
+  // open / close / reopen:
+  //   { previousStatus: 'closed' }
+  //
+  // assign_user:
+  //   { previousUserId: 'uuid|null', newUserId: 'uuid', userName: 'Jane' }
+  //
+  // assign_team:
+  //   { previousTeamId: 'uuid|null', newTeamId: 'uuid', teamName: 'Sales' }
+  //
+  // unassign_user:
+  //   { previousUserId: 'uuid', userName: 'Jane' }
+  //
+  // merge_contact:
+  //   { mergedContactId: 'uuid', mergedContactName: 'John', survivorContactId: 'uuid' }
+  //
+  // channel_added:
+  //   { channelType: 'whatsapp', identifier: '+1234567890', channelName: 'WA Main' }
+  //
+  // note:
+  //   { text: 'Internal note text', mentionedUserIds: ['uuid'] }
+  //
+  // label_added / label_removed:
+  //   { labelName: 'VIP', color: '#ff0000' }
+  //
+  // priority_changed:
+  //   { previousPriority: 'normal', newPriority: 'high' }
+  //
+  // sla_breached:
+  //   { slaPolicy: 'First Reply', dueAt: '2024-01-01T00:00:00Z' }
+  metadata Json?
+
+  createdAt DateTime @default(now())
+
+  workspace    Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  actor        User?        @relation("ActivityActor",   fields: [actorId],        references: [id])
+  subjectUser  User?        @relation("ActivitySubject", fields: [subjectUserId],  references: [id])
+  subjectTeam  Team?        @relation(fields: [subjectTeamId], references: [id])
+
+  @@index([conversationId, createdAt])
+  @@index([workspaceId])
+  @@index([eventType])
+}
+
+// ─── Also add Workspace relation ───────────────────────────
+// On Workspace model add:
+//   conversationActivities ConversationActivity[]

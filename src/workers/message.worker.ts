@@ -1,12 +1,12 @@
 import { Worker } from 'bullmq';
-import { PrismaClient } from '@prisma/client';
-import { ChannelService } from '../modules/channels/channel.service';
-import { ChannelRegistry } from '../modules/channels/channel-registry.service';
+// import { PrismaClient } from '@prisma/client';
+// import { ChannelService } from '../modules/channels/channel.service';
+// import { ChannelRegistry } from '../modules/channels/channel-registry.service';
 import { PrismaService } from 'prisma/prisma.service';
 
 const prisma = new PrismaService();
-const registry = new ChannelRegistry(prisma);
-const channelService = new ChannelService(prisma, registry);
+// const registry = new ChannelRegistry();
+// const channelService = new ChannelService(prisma, registry);
 
 const worker = new Worker(
     'messages',

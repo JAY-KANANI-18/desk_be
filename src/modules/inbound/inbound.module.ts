@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { forwardRef, Module } from '@nestjs/common';
 import { PrismaModule } from 'prisma/prisma.module';
 import { ConversationsModule } from '../conversations/conversations.module';
 import { MessagesModule } from '../messages/messages.module';
@@ -17,12 +17,15 @@ import { ChannelsModule } from '../channels/channels.module';
     imports: [
         PrismaModule,
         ConversationsModule,
-        MessagesModule,
+        // MessagesModule,
+    forwardRef(() => MessagesModule),   // ✅ fix
         RealtimeModule,
         WorkflowsModule,
-        ChannelsModule,
+        // ChannelsModule,
+        forwardRef(() => ChannelsModule), // ✅ fix
+
     ],
-    providers: [PrismaService, RealtimeService, InboundService, ConversationsService, MessagesService,MediaService,ChannelRegistry,MediaService],
+    providers: [PrismaService, RealtimeService, InboundService, ConversationsService, MessagesService],
     exports: [InboundService], // 👈 important
 })
 export class InboundModule { }

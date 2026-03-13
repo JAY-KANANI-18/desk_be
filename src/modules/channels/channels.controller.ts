@@ -65,6 +65,8 @@ export class ChannelsController {
     @Put('whatsapp/:channelId')
     async UpdateWhatsAppChannel(@Param('channelId') channelId: string, @Body() dto: {
         accessToken: string;
+        phoneNumberId: string;
+        wabaId: string;
     }) {
 
         return this.prisma.channel.update({
@@ -75,9 +77,9 @@ export class ChannelsController {
                 config: {
 
                     accessToken: dto.accessToken,
-                    phoneNumber: '',
+                    phoneNumber: dto.phoneNumberId,
                     "waba_account_name": '',
-                    wabaId: '',
+                    wabaId: dto.wabaId,
                     qaulityRating: '',
 
 

@@ -12,7 +12,7 @@ import { TeamsModule } from '../src/modules/teams/teams.module';
 import { WorkflowsModule } from '../src/modules/workflows/workflows.module';
 import { InboundModule } from '../src/modules/inbound/inbound.module';
 import { ChannelsModule } from '../src/modules/channels/channels.module';
-import { WebhooksModule } from '../src/modules/webhooks/webhooks.module';
+// import { WebhooksModule } from '../src/modules/webhooks/webhooks.module';
 import { UsersModule } from '../src/modules/users/users.module';
 import { WorkspaceModule } from '../src/modules/workspace/workspace.module';
 import { NotificationsModule } from './modules/notifications/notifications.module';
@@ -27,7 +27,7 @@ import { FilesModule } from './modules/files/files.module';
     UsersModule,
     WorkspaceModule,
     ChannelsModule,
-    WebhooksModule,
+    // WebhooksModule,
     TeamsModule, WorkflowsModule, InboundModule,
     EventEmitterModule.forRoot(),
     NotificationsModule,

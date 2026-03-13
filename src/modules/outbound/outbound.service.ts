@@ -1,126 +1,71 @@
 // src/outbound/outbound.service.ts
-//
-// Send messages on any channel. Handles:
-//   text, image, video, audio, document, sticker, location,
-//   WhatsApp templates, email HTML, Messenger quick_replies
+// Wired with SendValidator (pre-send) + ProviderErrorNormaliser (post-error)
 
 import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { PrismaService } from 'prisma/prisma.service';
 import { ChannelRegistry } from '../channels/channel-registry.service';
 import { validateTemplateVariables, buildTemplateComponents } from '../channels/utils/template-validator';
-
-// ─── DTO ─────────────────────────────────────────────────────────────────────
-
-export interface OutboundAttachment {
-    url: string;          // always our storage URL
-    mimeType: string;
-    filename?: string;
-}
-
-export interface OutboundDto {
-    workspaceId: string;
-    channelId: string;
-    conversationId: string;
-
-    to: string;           // phone / PSID / email
-    text?: string;
-    subject?: string;     // email
-    htmlBody?: string;    // email HTML
-    replyToMessageId?: string;
-    attachments?: OutboundAttachment[];
-        buttons?: Array<{ id?: string; title: string }>; // WhatsApp interactive buttons
-
-    // WhatsApp approved template
-    template?: {
-        name: string;
-        language: string;
-        components?: any[];
-    };
-
-    // Messenger / Instagram quick replies
-    quickReplies?: Array<{ title: string; payload: string }>;
-
-    // Internal author (agent user ID)
-    authorId?: string;
-}
-
-
-
-// ─── DTOs ─────────────────────────────────────────────────────────────────────
+import { SendValidator, ProviderErrorNormaliser } from './send-validator';
 
 export interface SendAttachmentDto {
-    type: string;       // image | video | audio | document | sticker
-    url: string;        // our internal storage URL
-    mimeType: string;
-    filename?: string;
+  type: string;
+  url: string;
+  mimeType: string;
+  filename?: string;
 }
 
 export interface SendMessageDto {
-    workspaceId?: string;   // optional — derived from conversation if omitted
-    conversationId: string;
-    channelId: string;
-    authorId?: string;
-
-    text?: string;
-    subject?: string;       // email
-
-    attachments?: SendAttachmentDto[];
-    replyToMessageId?: string;
-    metadata?: {
-        // WhatsApp template
-        template?: {
-            name: string;
-            language: string;
-            variables?: Record<string, string>;  // { "1": "John", "2": "Order #123" }
-        };
-        // Email HTML body
-        htmlBody?: string;
-        // Messenger quick replies
-        quickReplies?: Array<{ title: string; payload: string }>;
-        [key: string]: any;
-    };
+  workspaceId?: string;
+  conversationId: string;
+  channelId: string;
+  authorId?: string;
+  text?: string;
+  subject?: string;
+  attachments?: SendAttachmentDto[];
+  replyToMessageId?: string;
+  metadata?: {
+    template?: { name: string; language: string; variables?: Record<string, string> };
+    htmlBody?: string;
+    quickReplies?: Array<{ title: string; payload: string }>;
+    [key: string]: any;
+  };
 }
-// ─── Service ─────────────────────────────────────────────────────────────────
 
 @Injectable()
 export class OutboundService {
-    private readonly logger = new Logger(OutboundService.name);
+  private readonly logger = new Logger(OutboundService.name);
 
-    constructor(
-        private readonly prisma: PrismaService,
-        private readonly registry: ChannelRegistry,
-        private readonly events: EventEmitter2,
-    ) { }
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly registry: ChannelRegistry,
+    private readonly events: EventEmitter2,
+  ) {}
 
+  async sendMessage(params: SendMessageDto) {
 
+    /* ── 1. Load conversation + contact ──────────────────────────────────── */
 
-    async sendMessage(params: SendMessageDto) {
-        /* ── 1. Load conversation + contact ─────────────────────────────────── */
+    const conversation = await this.prisma.conversation.findUnique({
+      where: { id: params.conversationId },
+      include: { contact: true },
+    });
+    if (!conversation) throw new NotFoundException('Conversation not found');
 
-        const conversation = await this.prisma.conversation.findUnique({
-            where: { id: params.conversationId },
-            include: { contact: true },
-        });
+    const contact = conversation.contact;
+    const workspaceId = params.workspaceId ?? conversation.workspaceId;
 
-        if (!conversation) throw new NotFoundException('Conversation not found');
+    /* ── 2. Load channel ─────────────────────────────────────────────────── */
 
-        const contact = conversation.contact;
-        const workspaceId = params.workspaceId ?? conversation.workspaceId;
+    const channel = await this.prisma.channel.findUnique({
+      where: { id: params.channelId },
+    });
+    if (!channel) throw new NotFoundException('Channel not found');
 
-        /* ── 2. Load channel ────────────────────────────────────────────────── */
-
-        const channel = await this.prisma.channel.findUnique({
-            where: { id: params.channelId },
-        });
-
-        if (!channel) throw new NotFoundException('Channel not found');
-
-        const provider = this.registry.getProviderByType(channel.type);
-
-        if (!provider.sendMessage) {
-            throw new BadRequestException(`Provider ${channel.type} does not support sending`);
-        }
+    const provider = this.registry.getProviderByType(channel.type);
+    if (!provider.sendMessage) {
+      throw new BadRequestException(`Provider ${channel.type} does not support sending`);
+    }
 
         /* ── 3. Resolve the correct `to` address from ContactChannel ────────────
          *
@@ -134,501 +79,349 @@ export class OutboundService {
          * For Email:     ContactChannel.identifier = email address
         ──────────────────────────────────────────────────────────────────────── */
 
-        const contactChannel = await this.prisma.contactChannel.findFirst({
-            where: {
-                contactId: contact.id,
-                channelId: channel.id,
-            },
-        });
+    const contactChannel = await this.prisma.contactChannel.findFirst({
+      where: { contactId: contact.id, channelId: channel.id },
+    });
 
-        // Fallback chain — contactChannel is most reliable
-        const to =
-            contactChannel?.identifier ??
-            contact.phone ??
-            contact.email;
+    /* ── 4. PRE-SEND VALIDATION ──────────────────────────────────────────────
+     *
+     * Validates BEFORE creating any DB record so no orphan pending messages
+     * are created when validation fails.
+    ──────────────────────────────────────────────────────────────────────── */
 
-        if (!to) {
-            throw new BadRequestException(
-                `No reachable identifier found for contact ${contact.id} on channel ${channel.id}`,
-            );
-        }
+    SendValidator.validateContact({
+      channelType:   channel.type,
+      channelStatus: channel.status,
+      credentials:   channel.config as any,
+      contactChannel,
+      contactPhone:  contact.phone,
+      contactEmail:  contact.email,
+    });
 
-        /* ── 4. Create Message record (pending) ─────────────────────────────── */
+    // Safe to resolve `to` now — validation guarantees one of these exists
+    const to = contactChannel?.identifier ?? contact.phone ?? contact.email!;
 
-        const message = await this.prisma.message.create({
-            data: {
-                workspaceId,
-                conversationId: conversation.id,
-                channelId: channel.id,
-                channelType: channel.type,
-                type: params.metadata?.template ? 'template' : (params.attachments?.length ? params.attachments[0].type : 'text'),
-                text: params.text,
-                subject: params.subject,
-                direction: 'outgoing',
-                status: 'pending',
-                authorId: params.authorId ?? null,
-                metadata: params.metadata ?? null,
-            },
-        });
+    /* ── 5. Email threading metadata ─────────────────────────────────────── */
 
-        try {
-            /* ── 5a. WhatsApp Template ─────────────────────────────────────────── */
-
-            if (params.metadata?.template) {
-                const result = await this.sendTemplate({
-                    channel,
-                    provider,
-                    conversation,
-                    contact,
-                    to,
-                    templateMeta: params.metadata.template,
-                    workspaceId,
-                });
-
-                await this.prisma.message.update({
-                    where: { id: message.id },
-                    data: { status: 'sent', channelMsgId: result?.id },
-                });
-
-                await this.updateConversationLastMessage(conversation.id, message.id);
-                this.emitSent(workspaceId, channel.id, conversation.id, message.id, result?.id);
-                return message;
-            }
-
-            /* ── 5b. Resolve attachments (upload media if provider requires it) ─── */
-
-            const resolvedAttachments = await this.resolveAttachments(
-                channel,
-                provider,
-                params.attachments ?? [],
-            );
-
-            /* ── 5c. Send regular message ─────────────────────────────────────── */
-
-            const payload: OutboundDto =
-            {
-                channelId: channel.id,
-                workspaceId,
-                conversationId: conversation.id,
-                to,
-                text: params.text,
-                subject: params.subject,
-                htmlBody: params.metadata?.htmlBody,
-                quickReplies: params.metadata?.quickReplies,
-                attachments: resolvedAttachments,
-            }
-            const providerPayload = await this.buildPayload(channel.type, payload);
-
-
-            //   const sendFn =  provider.sendMessage;
-            this.logger.debug(`Sending message convId=${conversation.id} to ${to} via provider ${channel.type} with payload: ${JSON.stringify(params)}`);
-            const result: any = await provider.sendMessage(channel, providerPayload);
-
-            /* ── 6. Persist MessageAttachment rows ───────────────────────────── */
-
-            if (resolvedAttachments.length > 0) {
-                await this.prisma.messageAttachment.createMany({
-                    data: resolvedAttachments.map((att) => ({
-                        messageId: message.id,
-                        type: att.type,
-                        name: att.filename ?? null,
-                        mimeType: att.mimeType,
-                        url: att.url,
-                    })),
-                });
-            }
-
-            /* ── 7. Update message status ────────────────────────────────────── */
-
-            await this.prisma.message.update({
-                where: { id: message.id },
-                data: { status: 'sent', channelMsgId: result?.id ?? null },
-            });
-
-            /* ── 8. Update conversation lastMessage ──────────────────────────── */
-
-            await this.updateConversationLastMessage(conversation.id, message.id);
-
-            this.emitSent(workspaceId, channel.id, conversation.id, message.id, result?.id);
-
-            return message;
-
-        } catch (err) {
-            // Mark message as failed so the UI can show the error
-            await this.prisma.message.update({
-                where: { id: message.id },
-                data: { status: 'failed', metadata: { ...(params.metadata ?? {}), error: err.message } },
-            }).catch(() => { }); // swallow secondary error
-
-            this.logger.error(`sendMessage failed convId=${conversation.id}: ${err.message}`, err.stack);
-            throw err;
-        }
+    let emailThreadMeta: Record<string, any> | null = null;
+    if (channel.type === 'email') {
+      emailThreadMeta = await this.buildEmailThreadMeta(
+        params.replyToMessageId,
+        conversation,
+        channel,
+      );
     }
 
-    // ─── Template send ────────────────────────────────────────────────────────
+    /* ── 6. Create Message record (pending) ─────────────────────────────── */
 
-    private async sendTemplate(opts: {
-        channel: any;
-        provider: any;
-        conversation: any;
-        contact: any;
-        to: string;
-        templateMeta: { name: string; language: string; variables?: Record<string, string> };
-        workspaceId: string;
-    }) {
-        const { channel, provider, conversation, to, templateMeta, workspaceId } = opts;
+    const messageType = params.metadata?.template
+      ? 'template'
+      : params.attachments?.length ? params.attachments[0].type : 'text';
 
-        const template = await this.prisma.whatsAppTemplate.findFirst({
-            where: {
-                workspaceId,
-                channelId: channel.id,
-                name: templateMeta.name,
-                language: templateMeta.language,
-                status: 'APPROVED',
-            },
-        });
-
-        if (!template) {
-            throw new BadRequestException(
-                `Template "${templateMeta.name}" (${templateMeta.language}) not found or not approved`,
-            );
-        }
-
-        // Validate all required variables are supplied
-        validateTemplateVariables(template.components as any[], templateMeta.variables);
-
-        // Build the components array with variables substituted
-        const components = buildTemplateComponents(
-            template.components as any[],
-            templateMeta.variables,
-        );
-
-        const sendFn = provider.send ?? provider.sendMessage;
-        return sendFn.call(provider, {
-            channelId: channel.id,
-            conversationId: conversation.id,
-            to,
-            template: {
-                name: template.name,
-                language: { code: template.language },
-                components,
-            },
-        });
-    }
-
-    // ─── Attachment resolution ────────────────────────────────────────────────
-    //
-    // Some providers (WhatsApp) require you to upload media first and send
-    // a media_id instead of a URL. Others (Messenger, email) accept URLs directly.
-
-    private async resolveAttachments(
-        channel: any,
-        provider: any,
-        attachments: SendAttachmentDto[],
-    ): Promise<SendAttachmentDto[]> {
-        if (!attachments.length) return [];
-
-        const resolved: SendAttachmentDto[] = [];
-
-        for (const att of attachments) {
-            let url = att.url;
-
-            // Provider signals it needs server-side upload (e.g. WhatsApp media upload API)
-            if (provider.uploadMedia) {
-                url = await provider.uploadMedia(channel, {
-                    url: att.url,
-                    mimeType: att.mimeType,
-                    type: att.type,
-                });
-            }
-
-            resolved.push({ ...att, url });
-        }
-
-        return resolved;
-    }
-
-    // ─── Helpers ──────────────────────────────────────────────────────────────
-
-    private async updateConversationLastMessage(conversationId: string, messageId: string) {
-        await this.prisma.conversation.update({
-            where: { id: conversationId },
-            data: {
-                lastMessageId: messageId,
-                lastMessageAt: new Date(),
-            },
-        });
-    }
-
-    private emitSent(
-        workspaceId: string,
-        channelId: string,
-        conversationId: string,
-        messageId: string,
-        externalId?: string,
-    ) {
-        this.events.emit('message.outbound', {
-            workspaceId,
-            channelId,
-            conversationId,
-            messageId,
-            externalId,
-        });
-    }
-
-    // ─── Payload builders ────────────────────────────────────────────────────
-
-    private buildPayload(channelType: string, dto: OutboundDto): any {
-        switch (channelType) {
-            case 'whatsapp': return this.buildWhatsApp(dto);
-            case 'instagram': return this.buildMetaMessaging(dto);
-            case 'messenger': return this.buildMetaMessaging(dto);
-            case 'email': return this.buildEmailPayload(dto);
-            default: throw new Error(`No payload builder for ${channelType}`);
-        }
-    }
-
-    // ── WhatsApp ──────────────────────────────────────────────────────────────
-
-   private buildWhatsApp(dto: OutboundDto): any {
-    const base = {
-        messaging_product: 'whatsapp',
-        to: dto.to,
-    };
-
-    // Template message
-    if (dto.template) {
-        return {
-            ...base,
-            type: 'template',
-            template: {
-                name: dto.template.name,
-                language: { code: dto.template.language },
-                components: dto.template.components ?? [],
-            },
-        };
-    }
-
-    // Media message
-    if (dto.attachments?.length) {
-        const att = dto.attachments[0];
-        const mediaType = this.waMediaType(att.mimeType);
-
-        const payload: any = {
-            ...base,
-            type: mediaType,
-            [mediaType]: {
-                link: att.url,
-            },
-        };
-
-        if (mediaType === 'document' && att.filename) {
-            payload[mediaType].filename = att.filename;
-        }
-
-        if (dto.text && ['image', 'video', 'document'].includes(mediaType)) {
-            payload[mediaType].caption = dto.text;
-        }
-
-        if (dto.replyToMessageId) {
-            payload.context = {
-                message_id: dto.replyToMessageId,
-            };
-        }
-
-        return payload;
-    }
-
-    // Interactive buttons
-    if (dto.buttons?.length) {
-        return {
-            ...base,
-            type: 'interactive',
-            interactive: {
-                type: 'button',
-                body: { text: dto.text ?? '' },
-                action: {
-                    buttons: dto.buttons.map((b, i) => ({
-                        type: 'reply',
-                        reply: {
-                            id: b.id ?? `btn_${i}`,
-                            title: b.title,
-                        },
-                    })),
-                },
-            },
-        };
-    }
-
-    // Simple text message
-    const payload: any = {
-        ...base,
-        type: 'text',
-        text: {
-            body: dto.text ?? '',
-            preview_url: false,
+    const message = await this.prisma.message.create({
+      data: {
+        workspaceId,
+        conversationId: conversation.id,
+        channelId:      channel.id,
+        channelType:    channel.type,
+        type:           messageType,
+        text:           params.text,
+        subject:        emailThreadMeta?.subject ?? params.subject,
+        direction:      'outgoing',
+        status:         'pending',
+        authorId:       params.authorId ?? null,
+        metadata: {
+          ...(params.metadata ?? {}),
+          ...(emailThreadMeta ?? {}),
         },
-    };
+      },
+    });
 
-    if (dto.replyToMessageId) {
-        payload.context = {
-            message_id: dto.replyToMessageId,
-        };
+    try {
+
+      /* ── 7a. WhatsApp template ───────────────────────────────────────────── */
+
+      if (params.metadata?.template) {
+        const result = await this.sendTemplate({
+          channel, provider, conversation, to,
+          templateMeta: params.metadata.template,
+          workspaceId,
+        });
+        await this.finalise(message.id, result?.id, conversation.id, workspaceId, channel.id);
+        return message;
+      }
+
+      /* ── 7b. Resolve attachments ─────────────────────────────────────────── */
+
+      const resolvedAttachments = await this.resolveAttachments(
+        channel, provider, params.attachments ?? [],
+      );
+
+      /* ── 7c. Build provider payload ─────────────────────────────────────── */
+
+      const providerPayload = await this.buildPayload(channel.type, {
+        channelId:     channel.id,
+        workspaceId,
+        conversationId: conversation.id,
+        to,
+        text:           params.text,
+        subject:        emailThreadMeta?.subject ?? params.subject,
+        htmlBody:       params.metadata?.htmlBody,
+        quickReplies:   params.metadata?.quickReplies,
+        attachments:    resolvedAttachments,
+        replyToMessageId: params.replyToMessageId,
+        emailHeaders:   emailThreadMeta?.headers ?? null,
+      });
+
+      /* ── 7d. Send ────────────────────────────────────────────────────────── */
+
+      const result: any = await provider.sendMessage(channel, providerPayload);
+
+      /* ── 8. Update metadata with real provider message ID ────────────────── */
+
+      const updatedMeta = {
+        ...(message.metadata as any ?? {}),
+        ...(channel.type === 'email' && result?.id ? { messageId: result.id } : {}),
+      };
+
+      /* ── 9. Persist attachments ──────────────────────────────────────────── */
+
+      if (resolvedAttachments.length > 0) {
+        await this.prisma.messageAttachment.createMany({
+          data: resolvedAttachments.map((att) => ({
+            messageId: message.id,
+            type:      att.type ?? this.mimeToType(att.mimeType),
+            name:      att.filename ?? null,
+            mimeType:  att.mimeType,
+            url:       att.url,
+          })),
+        });
+      }
+
+      /* ── 10. Mark sent ───────────────────────────────────────────────────── */
+
+      await this.prisma.message.update({
+        where: { id: message.id },
+        data:  { status: 'sent', channelMsgId: result?.id ?? null, metadata: updatedMeta },
+      });
+
+      await this.prisma.conversation.update({
+        where: { id: conversation.id },
+        data:  { lastMessageId: message.id, lastMessageAt: new Date() },
+      });
+
+      this.events.emit('message.outbound', {
+        workspaceId, channelId: channel.id,
+        conversationId: conversation.id,
+        messageId: message.id, externalId: result?.id,
+      });
+
+      return message;
+
+    } catch (err) {
+      // Mark the pending message as failed
+      await this.prisma.message.update({
+        where: { id: message.id },
+        data:  { status: 'failed', metadata: { ...(params.metadata ?? {}), error: err.message } },
+      }).catch(() => {});
+
+      // Normalise provider errors → structured SendError → BadRequestException
+      ProviderErrorNormaliser.normalise(err, channel.type);
     }
+  }
 
-    return payload;
+  // ─── Template ──────────────────────────────────────────────────────────────
+
+private async sendTemplate(opts: {
+  channel: any;
+  provider: any;
+  conversation: any;
+  to: string;
+  templateMeta: any;
+  workspaceId: string;
+}) {
+
+  const { channel, provider, conversation, to, templateMeta, workspaceId } = opts;
+
+  const template = await this.prisma.whatsAppTemplate.findFirst({
+    where: {
+      workspaceId,
+      channelId: channel.id,
+      name: templateMeta.name,
+      language: templateMeta.language,
+      status: "APPROVED",
+    },
+  });
+
+  if (!template) {
+    throw new BadRequestException(
+      `Template "${templateMeta.name}" (${templateMeta.language}) not found or not approved`
+    );
+  }
+
+  const variables = templateMeta.variables || [];
+
+  validateTemplateVariables(template.components as any[], variables);
+
+  let components: any[] | undefined;
+
+  if (variables.length > 0) {
+    components = [
+      {
+        type: "body",
+        parameters: variables.map((v: string) => ({
+          type: "text",
+          text: v,
+        })),
+      },
+    ];
+  }
+
+  const payload: any = {
+    messaging_product: "whatsapp",
+    to,
+    type: "template",
+    template: {
+      name: template.name,
+      language: { code: template.language },
+    },
+  };
+
+  if (components) {
+    payload.template.components = components;
+  }
+
+  return provider.sendMessage(channel, payload);
 }
 
-    private waMediaType(mimeType: string): string {
-        if (mimeType === 'image/webp') return 'sticker';
-        if (mimeType.startsWith('image/')) return 'image';
-        if (mimeType.startsWith('video/')) return 'video';
-        if (mimeType.startsWith('audio/')) return 'audio';
-        return 'document';
+  // ─── Attachment resolution ─────────────────────────────────────────────────
+
+  private async resolveAttachments(channel: any, provider: any, attachments: SendAttachmentDto[]): Promise<SendAttachmentDto[]> {
+    if (!attachments.length) return [];
+    const resolved: SendAttachmentDto[] = [];
+    for (const att of attachments) {
+      let url = att.url;
+      if (provider.uploadMedia) url = await provider.uploadMedia(channel, { url: att.url, mimeType: att.mimeType, type: att.type });
+      resolved.push({ ...att, url });
     }
+    return resolved;
+  }
+  // ─── Email threading ───────────────────────────────────────────────────────
 
-    // ── Instagram / Messenger ─────────────────────────────────────────────────
-
-    private buildMetaMessaging(dto: OutboundDto): any {
-        const recipient = { id: dto.to };
-
-        const message: any = {};
-
-
-        // Text
-        if (dto.text) {
-            message.text = dto.text;
-        }
-
-
-        if (dto.attachments?.length) {
-            const att = dto.attachments[0];
-
-            const type =
-                att.mimeType?.startsWith('image/') ? 'image' :
-                    att.mimeType?.startsWith('video/') ? 'video' :
-                        att.mimeType?.startsWith('audio/') ? 'audio' :
-                            'file';
-
-            message.attachment = {
-                type,
-                payload: {
-                    url: att.url,
-                    is_reusable: true,
-                },
-            };
-        }
-        if (dto.quickReplies?.length) {
-            message.quick_replies = dto.quickReplies.map(qr => ({
-                content_type: 'text',
-                title: qr.title,
-                payload: qr.payload,
-            }));
-        }
-
-        // Reply to a specific message (thread reply)
-        if (dto.replyToMessageId) {
-            message.reply_to = {
-                mid: dto.replyToMessageId,
-            };
-        }
-
-        return { recipient, message };
-    }
-
-    // ── Email ─────────────────────────────────────────────────────────────────
-
-
-    private async buildEmailPayload(
-        dto: OutboundDto,
-    ): Promise<any> {
-
-        // If this is NOT a reply → send normal email
-        if (!dto.replyToMessageId) {
-            return {
-                to: dto.to,
-                subject: dto.subject ?? '(no subject)',
-                text: dto.text,
-                html: dto.htmlBody,
-                attachments: dto.attachments ?? [],
-            };
-        }
-
-        // Otherwise build reply payload
-        const lastInbound: any = await this.prisma.message.findUnique({
-            where: {
-                id: dto.replyToMessageId,
-            },
-            include: {
-                conversation: true,
-                channel: true,
-            },
+  private async buildEmailThreadMeta(
+    replyToMessageId: string | undefined,
+    conversation: any,
+    channel: any,
+  ): Promise<Record<string, any>> {
+    const targetMessage = replyToMessageId
+      ? await this.prisma.message.findUnique({ where: { id: replyToMessageId } })
+      : await this.prisma.message.findFirst({
+          where: { conversationId: conversation.id, direction: 'incoming', channelType: 'email' },
+          orderBy: { createdAt: 'desc' },
         });
 
-        if (!lastInbound) {
-            throw new Error('Reply message not found');
-        }
-
-        const meta = lastInbound.metadata as any;
-
-        const existingRefs: string = meta?.references ?? '';
-        const replyingToId: string = meta?.messageId ?? '';
-
-        const references = [existingRefs, replyingToId]
-            .filter(Boolean)
-            .join(' ')
-            .trim();
-
-        const subject = lastInbound.subject?.startsWith('Re:')
-            ? lastInbound.subject
-            : `Re: ${lastInbound.subject ?? '(no subject)'}`;
-
-        return {
-            from: lastInbound.channel.config?.emailAddress,
-            to: dto.to,
-            subject,
-            text: dto.text,
-            html: dto.htmlBody,
-            attachments: dto.attachments ?? [],
-
-            headers: {
-                'In-Reply-To': replyingToId,
-                'References': references,
-            },
-        };
-    }
-    // ─── DB ──────────────────────────────────────────────────────────────────
-
-    private async persistMessage(dto: OutboundDto, channel: any, externalId: string) {
-        const type = dto.template ? 'template'
-            : dto.attachments?.length ? this.mimeToType(dto.attachments[0].mimeType)
-                : 'text';
-
-        return this.prisma.message.create({
-            data: {
-                workspaceId: dto.workspaceId,
-                conversationId: dto.conversationId,
-                channelId: dto.channelId,
-                channelType: channel.type,
-                type,
-                direction: 'outgoing',
-                text: dto.text,
-                subject: dto.subject,
-                channelMsgId: externalId,
-                authorId: dto.authorId,
-                status: 'sent',
-                sentAt: new Date(),
-                metadata: dto.template ? { template: dto.template } : undefined,
-            },
-        });
+    if (!targetMessage) {
+      return { subject: conversation.subject ?? '(no subject)', headers: null, messageId: null };
     }
 
-    private mimeToType(mimeType: string): string {
-        if (!mimeType) return 'document';
-        if (mimeType === 'image/webp') return 'sticker';
-        if (mimeType.startsWith('image/')) return 'image';
-        if (mimeType.startsWith('video/')) return 'video';
-        if (mimeType.startsWith('audio/')) return 'audio';
-        return 'document';
+    if (targetMessage.conversationId !== conversation.id) {
+      throw new BadRequestException('replyToMessageId does not belong to this conversation');
     }
+
+    const meta = targetMessage.metadata as any ?? {};
+    const inReplyTo: string = meta.messageId ?? '';
+    const existingRefs: string = meta.references ?? '';
+    const references = [existingRefs, inReplyTo].filter(Boolean).join(' ').trim();
+    const rawSubject = targetMessage.subject ?? conversation.subject ?? '(no subject)';
+    const subject = rawSubject.startsWith('Re:') ? rawSubject : `Re: ${rawSubject}`;
+
+    return {
+      subject,
+      headers: { 'In-Reply-To': inReplyTo, 'References': references },
+      messageId: null,
+      inReplyTo,
+      references,
+    };
+  }
+
+  // ─── Payload builders ──────────────────────────────────────────────────────
+
+  private async buildPayload(channelType: string, dto: any): Promise<any> {
+    switch (channelType) {
+      case 'whatsapp':  return this.buildWhatsApp(dto);
+      case 'instagram': return this.buildMetaMessaging(dto);
+      case 'messenger': return this.buildMetaMessaging(dto);
+      case 'email':     return this.buildEmailPayload(dto);
+      default: throw new Error(`No payload builder for ${channelType}`);
+    }
+  }
+
+  private buildWhatsApp(dto: any): any {
+    const base = { messaging_product: 'whatsapp', to: dto.to };
+
+    if (dto.template) {
+      return { ...base, type: 'template', template: { name: dto.template.name, language: { code: dto.template.language }, components: dto.template.components ?? [] } };
+    }
+    if (dto.attachments?.length) {
+      const att = dto.attachments[0];
+      const mediaType = this.waMediaType(att.mimeType);
+      const payload: any = { ...base, type: mediaType, [mediaType]: { link: att.url } };
+      if (mediaType === 'document' && att.filename) payload[mediaType].filename = att.filename;
+      if (dto.text && ['image', 'video', 'document'].includes(mediaType)) payload[mediaType].caption = dto.text;
+      if (dto.replyToMessageId) payload.context = { message_id: dto.replyToMessageId };
+      return payload;
+    }
+    if (dto.buttons?.length) {
+      return { ...base, type: 'interactive', interactive: { type: 'button', body: { text: dto.text ?? '' }, action: { buttons: dto.buttons.map((b: any, i: number) => ({ type: 'reply', reply: { id: b.id ?? `btn_${i}`, title: b.title } })) } } };
+    }
+    const payload: any = { ...base, type: 'text', text: { body: dto.text ?? '', preview_url: false } };
+    if (dto.replyToMessageId) payload.context = { message_id: dto.replyToMessageId };
+    return payload;
+  }
+
+  private buildMetaMessaging(dto: any): any {
+    const recipient = { id: dto.to };
+    const message: any = {};
+    if (dto.text) message.text = dto.text;
+    if (dto.attachments?.length) {
+      const att = dto.attachments[0];
+      const type = att.mimeType?.startsWith('image/') ? 'image' : att.mimeType?.startsWith('video/') ? 'video' : att.mimeType?.startsWith('audio/') ? 'audio' : 'file';
+      message.attachment = { type, payload: { url: att.url, is_reusable: true } };
+    }
+    if (dto.quickReplies?.length) {
+      message.quick_replies = dto.quickReplies.map((qr: any) => ({ content_type: 'text', title: qr.title, payload: qr.payload }));
+    }
+    if (dto.replyToMessageId) message.reply_to = { mid: dto.replyToMessageId };
+    return { recipient, message };
+  }
+
+  private buildEmailPayload(dto: any): any {
+    return { to: dto.to, subject: dto.subject ?? '(no subject)', text: dto.text, html: dto.htmlBody, attachments: dto.attachments ?? [], headers: dto.emailHeaders ?? {} };
+  }
+
+
+  // ─── Helpers ───────────────────────────────────────────────────────────────
+
+  private async finalise(messageId: string, externalId: string | undefined, conversationId: string, workspaceId: string, channelId: string) {
+    await this.prisma.message.update({ where: { id: messageId }, data: { status: 'sent', channelMsgId: externalId ?? null } });
+    await this.prisma.conversation.update({ where: { id: conversationId }, data: { lastMessageId: messageId, lastMessageAt: new Date() } });
+    this.events.emit('message.outbound', { workspaceId, channelId, conversationId, messageId, externalId });
+  }
+
+  private waMediaType(mimeType: string): string {
+    if (mimeType === 'image/webp') return 'sticker';
+    if (mimeType.startsWith('image/')) return 'image';
+    if (mimeType.startsWith('video/')) return 'video';
+    if (mimeType.startsWith('audio/')) return 'audio';
+    return 'document';
+  }
+
+  private mimeToType(mimeType: string): string {
+    if (!mimeType) return 'document';
+    if (mimeType === 'image/webp') return 'sticker';
+    if (mimeType.startsWith('image/')) return 'image';
+    if (mimeType.startsWith('video/')) return 'video';
+    if (mimeType.startsWith('audio/')) return 'audio';
+    return 'document';
+  }
 }

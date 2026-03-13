@@ -1,46 +1,54 @@
-import { Injectable } from '@nestjs/common';
-import { PrismaService } from 'prisma/prisma.service';
-import { WhatsAppProvider } from './providers/whatsapp.provider';
-import { ChannelProvider } from './channel-provider.interface';
+// modules/channels/channel-registry.service.ts
 
-import { EmailMailgunProvider } from './providers/mailgun.provider';
-import { MetaMessagingProvider } from './providers/meta.providers';
+import { Injectable, OnModuleInit, Logger } from '@nestjs/common';
+import { ChannelProvider } from './channel-provider.interface';
+import { WhatsAppProvider } from './providers/whatsapp/whatsapp.provider';
+import { MetaProvider } from './providers/meta/meta.providers';
+import { MailgunProvider } from './providers/email/mailgun.provider';
+
 
 @Injectable()
-export class ChannelRegistry {
-    private providers = new Map<string, ChannelProvider>();
+export class ChannelRegistry implements OnModuleInit {
+  private readonly logger = new Logger(ChannelRegistry.name);
+  private readonly map = new Map<string, ChannelProvider>();
 
-    constructor(private prisma: PrismaService) {
+  constructor(
+    private readonly whatsapp: WhatsAppProvider,
+    private readonly meta: MetaProvider,
+    private readonly mailgun: MailgunProvider,
+  ) {}
 
-        // ALERT: uncomment this line in future
-        this.providers.set(
-            'whatsapp',
-            new WhatsAppProvider(),
-        );
+  onModuleInit() {
+    this.register(this.whatsapp);
+    // MetaProvider handles both — registered under two keys
+    this.registerAs('instagram', this.meta);
+    this.registerAs('messenger', this.meta);
+    this.register(this.mailgun);
 
-        this.providers.set(
-            'instagram',
-            new MetaMessagingProvider('instagram'),
-        );
-      
-        this.providers.set(
-            'messenger',
-            new MetaMessagingProvider('messenger'),
-        );
-        this.providers.set(
-            'email',
-            new EmailMailgunProvider(),
-        );
+    this.logger.log(
+      `Channel registry ready: [${Array.from(this.map.keys()).join(', ')}]`,
+    );
+  }
 
-    }
+  private register(provider: ChannelProvider) {
+    this.map.set(provider.type, provider);
+  }
 
-    getProviderByType(type: string): ChannelProvider {
-        const provider = this.providers.get(type);
+  private registerAs(type: string, provider: ChannelProvider) {
+    this.map.set(type, provider);
+  }
 
-        if (!provider) {
-            throw new Error(`Provider not found for type: ${type}`);
-        }
+  getProviderByType(type: string): ChannelProvider {
+    const p = this.map.get(type);
+    if (!p) throw new Error(`No provider registered for channel type: "${type}"`);
+    return p;
+  }
 
-        return provider;
-    }
+  hasProvider(type: string): boolean {
+    return this.map.has(type);
+  }
+
+  getAllTypes(): string[] {
+    return Array.from(this.map.keys());
+  }
 }

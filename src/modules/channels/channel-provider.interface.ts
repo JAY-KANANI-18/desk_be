@@ -1,75 +1,43 @@
-// src/channels/channel-provider.interface.ts
-export interface ChannelProvider {
-    readonly type: string;
-    /** Send a message; returns provider message ID */
-    sendMessage?(channel: any, payload: any): Promise<{ externalId: string }>;
+// ─── Core provider interface ──────────────────────────────────────────────────
 
-    /** Fetch contact profile (name, avatar) */
-    getContactProfile?(identifier: string, channelId: string): Promise<ContactProfile>;
-  /** Parse raw webhook → normalized array (most channels send 1, but be safe) */
+export interface ChannelProvider {
+  readonly type: string;
+
   parseWebhook(body: any, headers?: Record<string, string>): Promise<ParsedInbound[]>;
 
-  /** Download media that requires provider auth */
   downloadMedia?(channel: any, mediaId: string): Promise<DownloadResult>;
 
+  getContactProfile?(identifier: string, channel: any): Promise<ContactProfile>;
 
+  sendMessage?(channel: any, payload: any): Promise<{ externalId: string }>;
 
-  /** Mark a message read (WhatsApp, Messenger) */
+  uploadMedia?(channel: any, opts: { url: string; mimeType: string; type?: string }): Promise<string>;
+
   markRead?(channel: any, externalId: string): Promise<void>;
+
+  /** Pre-send validation — throws BadRequestException with SendError body */
+  validateOutbound?(opts: ValidateOutboundOpts): void;
+
+  /** Map raw provider error → structured BadRequestException */
+  normaliseError?(err: any): never;
+
+  /** Template features — undefined if provider has no template system */
+  templates?: ProviderTemplateCapability;
 }
 
-export interface OutboundPayload {
-    channelId: string;
-    conversationId: string;
+// ─── Inbound ──────────────────────────────────────────────────────────────────
 
-    to: string;
-    text?: string;
-    metadata?: any;
-    attachments?: OutboundAttachment[];
 
-    template?: any;
-}
-export interface ParsedAttachment {
-    type: MediaType;
-    externalMediaId?: string;   // for WhatsApp / IG
-    name?: string;
-    url?: string;               // for channels that give direct URL
-    mimeType?: string;
-}
-
-export interface OutboundAttachment {
-    name?: string;
-    // type: 'image' | 'video' | 'audio' | 'document';
-    url: string;          // always our storage URL
-    mimeType: string;
-}
-
-// The normalized output every provider.parseWebhook() must return
 export interface ParsedInbound {
-  // The provider message ID
   externalId: string;
-
-  // Contact identifier on this channel
-  // WA: phone number  |  IG/Messenger: PSID or scoped ID  |  email: address
   contactIdentifier: string;
-
   direction: 'incoming';
-
-  // The primary message type (matches Message.type in DB)
   messageType: string;
-
   text?: string;
-  subject?: string;       // email
-
+  subject?: string;
   attachments: ParsedAttachment[];
-
-  // For replies
   replyToChannelMsgId?: string;
-
-  // Provider-specific extras (reaction, order, interactive, etc.)
   metadata?: Record<string, any>;
-
-  // Full raw provider payload (stored in Message.rawPayload)
   raw?: any;
 }
 
@@ -85,34 +53,54 @@ export interface DownloadResult {
   filename?: string;
 }
 
+
+// modules/channels/channel-provider.interface.ts
+
 export type MediaType =
   | 'image' | 'video' | 'audio' | 'voice' | 'document'
   | 'sticker' | 'gif' | 'location' | 'contact' | 'reaction'
   | 'story_mention' | 'unsupported';
 
+// ─── Outbound validation ──────────────────────────────────────────────────────
+
+export interface ValidateOutboundOpts {
+  channel: any;
+  contactChannel: { identifier: string } | null;
+  contact: { phone?: string | null; email?: string | null };
+  payload: { text?: string; attachments?: any[]; template?: any };
+}
+
 export interface ParsedAttachment {
   type: MediaType;
   mimeType?: string;
-  url?: string;              // direct download URL (may expire — always re-fetch)
-  externalMediaId?: string;  // provider media ID (WA/IG require auth download)
+  url?: string;
+  externalMediaId?: string;
   filename?: string;
   caption?: string;
   size?: number;
   duration?: number;
   width?: number;
   height?: number;
-  // location
   latitude?: number;
   longitude?: number;
   locationName?: string;
   locationAddress?: string;
-  // contact
   contactVcard?: string;
-  // reaction
   reactionEmoji?: string;
   reactionTargetMsgId?: string;
-  // sticker
   stickerId?: string;
-  // story
   thumbnailUrl?: string;
 }
+
+
+// ─── Template capability ──────────────────────────────────────────────────────
+// Attached as provider.templates — undefined means provider has no templates.
+
+export interface ProviderTemplateCapability {
+  sync(channel: any): Promise<{ synced: number; errors: number }>;
+  list(channelId: string, workspaceId: string, filters?: Record<string, any>): Promise<any[]>;
+  getVariables?(templateId: string): Promise<string[]>;
+  preview?(templateId: string, variables: Record<string, string>): Promise<any>;
+  build?(templateId: string, variables: Record<string, string>): Promise<any>;
+}
+

@@ -28,7 +28,7 @@ export class RealtimeGateway
     async handleConnection(client: Socket) {
         try {
             const token = client.handshake.auth?.token;
-            console.log("SOCKET TRY TO CONNECT", { token });
+            // console.log("SOCKET TRY TO CONNECT", { token });
 
             if (!token) {
                 client.disconnect();
@@ -42,7 +42,7 @@ export class RealtimeGateway
 
                 throw new UnauthorizedException('Invalid token');
             }
-            console.log({ socketpayload: payload });
+            // console.log({ socketpayload: payload });
 
             const userId = payload.sub;
             const email = payload.email;
@@ -55,7 +55,7 @@ export class RealtimeGateway
                 where: { email: email },
             });
 
-            console.log({ user });
+            // console.log({ user });
 
             if (!user) {
                 client.disconnect();
@@ -90,7 +90,7 @@ export class RealtimeGateway
                 }
             }
 
-            console.log('Socket authenticated:', user.email);
+            // console.log('Socket authenticated:', user.email);
         } catch (err) {
             console.log("socket error", err);
 
@@ -108,7 +108,7 @@ export class RealtimeGateway
         @ConnectedSocket() client: Socket,
     ) {
         const user = client.data.user;
-        console.log("TEST SOCKET MESSAGE", { data, user });
+        // console.log("TEST SOCKET MESSAGE", { data, user });
 
 
         if (!user) {
