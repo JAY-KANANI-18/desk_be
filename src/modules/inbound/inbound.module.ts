@@ -12,6 +12,7 @@ import { WorkflowsModule } from '../workflows/workflows.module';
 import { MediaService } from '../channels/media.service';
 import { ChannelRegistry } from '../channels/channel-registry.service';
 import { ChannelsModule } from '../channels/channels.module';
+import { ActivityService } from '../activity/activity.service';
 
 @Module({
     imports: [
@@ -23,9 +24,10 @@ import { ChannelsModule } from '../channels/channels.module';
         WorkflowsModule,
         // ChannelsModule,
         forwardRef(() => ChannelsModule), // ✅ fix
+        
 
     ],
-    providers: [PrismaService, RealtimeService, InboundService, ConversationsService, MessagesService],
+    providers: [PrismaService, RealtimeService, InboundService, ConversationsService, MessagesService,ActivityService],
     exports: [InboundService], // 👈 important
 })
 export class InboundModule { }

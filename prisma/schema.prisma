@@ -94,6 +94,7 @@ model Workspace {
   outboundQueue     OutboundQueue[]
   messageTemplates  MessageTemplate[]
   metaPageTemplates MetaPageTemplate[]
+  conversationActivities ConversationActivity[]
 }
 
 model WorkspaceMember {

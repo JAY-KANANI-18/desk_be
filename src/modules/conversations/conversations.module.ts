@@ -6,12 +6,14 @@ import { RealtimeModule } from '../../realtime/realtime.module'; // 👈 ADD THI
 import { RedisService } from 'src/redis/redis.service';
 import { RedisModule } from 'src/redis/redis.module';
 import { PrismaService } from 'prisma/prisma.service';
+import { ActivityModule } from '../activity/activity.module';
 
 @Module({
     imports: [
         PrismaModule,
         RedisModule,
         RealtimeModule, // 👈 VERY IMPORTANT
+        ActivityModule, // 👈 FOR EMITTING ACTIVITIES
     ],
     controllers: [ConversationsController],
     providers: [ConversationsService, RealtimeModule,RedisService,PrismaService], // 👈 ADD THIS
