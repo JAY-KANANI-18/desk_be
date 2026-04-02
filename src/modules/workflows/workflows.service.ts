@@ -9,15 +9,16 @@ import { PrismaService } from 'prisma/prisma.service';
 export class WorkflowsService {
     constructor(private prisma: PrismaService) { }
 
-    async create(workspaceId: string, dto: any) {
+    async create(workspaceId: string, dto: any, userId: string) {
         this.validateWorkflow(dto);
 
         return this.prisma.workflow.create({
             data: {
                 workspaceId,
+                createBy: userId,
                 name: dto.name,
-                trigger: dto.trigger,
                 config: dto.config,
+                status: "draft"
             },
         });
     }
@@ -31,19 +32,29 @@ export class WorkflowsService {
             throw new NotFoundException('Workflow not found');
         }
 
-        this.validateWorkflow(dto);
+        // this.validateWorkflow(dto);
 
         return this.prisma.workflow.update({
             where: { id },
             data: {
-                name: dto.name,
-                trigger: dto.trigger,
                 config: dto.config,
             },
         });
     }
+    async rename(workspaceId: string, id: string, dto: any) {
+        const workflow = await this.prisma.workflow.findFirst({
+            where: { id, workspaceId },
+        });
+        if (!workflow) {
+            throw new NotFoundException('Workflow not found');
+        }
+        return await this.prisma.workflow.update({
+            where: { id },
+            data: { name: dto.name },
+        });
+    }
 
-    async activate(workspaceId: string, id: string) {
+    async publish(workspaceId: string, id: string) {
         const workflow = await this.prisma.workflow.findFirst({
             where: { id, workspaceId },
         });
@@ -54,14 +65,33 @@ export class WorkflowsService {
 
         return this.prisma.workflow.update({
             where: { id },
-            data: { isActive: true },
+            data: { status: "published" },
         });
     }
 
-    async deactivate(workspaceId: string, id: string) {
+    async stop(workspaceId: string, id: string) {
         return this.prisma.workflow.update({
             where: { id },
-            data: { isActive: false },
+            data: { status: "stopped" },
+        });
+    }
+    async clone(workspaceId: string, dto: any, userId: string) {
+        const workflow = await this.prisma.workflow.findFirst({
+            where: { id: dto.id, workspaceId },
+        });
+        
+        if (!workflow) {
+            throw new NotFoundException('Workflow not found');
+        }
+
+        return await this.prisma.workflow.create({
+            data: {
+                workspaceId,    
+                createBy: userId,
+                name: dto.name || workflow.name + ' (Clone)',
+                config: workflow.config,        
+                status: "draft"
+            },
         });
     }
 
@@ -85,6 +115,15 @@ export class WorkflowsService {
             orderBy: { createdAt: 'desc' },
         });
     }
+    async get(workspaceId: string, id: string) {
+        const workflow = await this.prisma.workflow.findFirst({
+            where: { id, workspaceId },
+        });
+        if (!workflow) {
+            throw new NotFoundException('Workflow not found');
+        }
+        return workflow;
+    }
 
     /**
      * Basic structure validation
@@ -94,34 +133,34 @@ export class WorkflowsService {
             throw new BadRequestException('Workflow name is required');
         }
 
-        if (!dto.trigger || !dto.trigger.type) {
-            throw new BadRequestException('Trigger is required');
-        }
+        // if (!dto.trigger || !dto.trigger.type) {
+        //     throw new BadRequestException('Trigger is required');
+        // }
 
-        if (!Array.isArray(dto.config)) {
-            throw new BadRequestException('config must be an array');
-        }
+        // if (!Array.isArray(dto.config)) {
+        //     throw new BadRequestException('config must be an array');
+        // }
 
-        for (const node of dto.config) {
-            if (!node.type) {
-                throw new BadRequestException('Node type is required');
-            }
+        // for (const node of dto.config) {
+        //     if (!node.type) {
+        //         throw new BadRequestException('Node type is required');
+        //     }
 
-            if (node.type === 'condition') {
-                if (!node.field || !node.operator) {
-                    throw new BadRequestException(
-                        'Condition node requires field and operator',
-                    );
-                }
-            }
+        //     if (node.type === 'condition') {
+        //         if (!node.field || !node.operator) {
+        //             throw new BadRequestException(
+        //                 'Condition node requires field and operator',
+        //             );
+        //         }
+        //     }
 
-            if (node.type === 'action') {
-                if (!node.actionType) {
-                    throw new BadRequestException(
-                        'Action node requires actionType',
-                    );
-                }
-            }
-        }
+        //     if (node.type === 'action') {
+        //         if (!node.actionType) {
+        //             throw new BadRequestException(
+        //                 'Action node requires actionType',
+        //             );
+        //         }
+        //     }
+        // }
     }
 }

@@ -4,14 +4,14 @@ import { Controller, Post, Req, UseInterceptors, UploadedFiles } from '@nestjs/c
 import { AnyFilesInterceptor } from '@nestjs/platform-express';
 import * as crypto from 'crypto';
 import { PrismaService } from 'prisma/prisma.service';
-import { ChannelRegistry } from '../../channel-registry.service';
 import { InboundService } from '../../../inbound/inbound.service';
+import { ChannelAdaptersRegistry } from 'src/modules/channel-adapters/channel-adapters.registry';
 
 @Controller('webhooks/mailgun')
 export class MailgunController {
   constructor(
     private readonly prisma: PrismaService,
-    private readonly registry: ChannelRegistry,
+    private readonly registry: ChannelAdaptersRegistry,
     private readonly inbound: InboundService,
   ) {}
 

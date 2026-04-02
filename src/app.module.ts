@@ -19,6 +19,12 @@ import { NotificationsModule } from './modules/notifications/notifications.modul
 import { EventEmitterModule } from '@nestjs/event-emitter';
 import { NotificationQueue } from './queues/notification.queue';
 import { FilesModule } from './modules/files/files.module';
+import { LifecycleModule } from './modules/lifecycle/lifecycle.module';
+import { TagsModule } from './modules/tags/tags.module';
+import { ChannelAdaptersModule } from './modules/channel-adapters/channel-adapters.module';
+import { MediaModule } from './modules/media/media.module';
+import { AnalyticsModule } from './modules/analytics/analytics.module';
+import { BillingModule } from './modules/billing/billing.module';
 @Module({
   imports: [PrismaModule,
     RedisModule,
@@ -31,7 +37,13 @@ import { FilesModule } from './modules/files/files.module';
     TeamsModule, WorkflowsModule, InboundModule,
     EventEmitterModule.forRoot(),
     NotificationsModule,
-    FilesModule
+    FilesModule,
+    LifecycleModule,
+    TagsModule,
+    ChannelAdaptersModule,
+    MediaModule,
+    AnalyticsModule,
+    BillingModule
 
 
   ],

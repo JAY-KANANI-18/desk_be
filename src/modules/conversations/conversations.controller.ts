@@ -1,269 +1,402 @@
+// src/conversations/conversations.controller.ts
+//
+// Complete controller.  All routes the FE inboxApi.ts calls:
+//
+//   GET    /api/conversations                    list + filter + search
+//   GET    /api/conversations/search             full-text message search
+//   GET    /api/conversations/:id                single conversation
+//   GET    /api/conversations/:id/timeline       merged msg + activity (paginated)
+//   GET    /api/conversations/:id/messages       messages only (paginated)
+//   POST   /api/conversations                    create new conversation
+//   POST   /api/conversations/:id/messages       send message
+//   POST   /api/conversations/:id/notes          add internal note
+//   POST   /api/conversations/:id/read           mark read
+//   POST   /api/conversations/:id/close
+//   POST   /api/conversations/:id/open
+//   POST   /api/conversations/:id/pending
+//   POST   /api/conversations/:id/assign/user
+//   DELETE /api/conversations/:id/assign/user
+//   POST   /api/conversations/:id/assign/team
+//   DELETE /api/conversations/:id/assign/team
+//   POST   /api/conversations/:id/merge-contact
+//   PATCH  /api/conversations/:id/priority
+//   PATCH  /api/conversations/:id/status         (generic — also used by FE)
+//   GET    /api/conversations/:id/activities     activities only
+
 import {
-    Controller,
-    Get,
-    Post,
-    Patch,
-    Param,
-    Body,
-    Req,
-    UseGuards,
-    Delete,
-    HttpCode,
-    HttpStatus,
-    ParseUUIDPipe,
+  Controller,
+  Get,
+  Post,
+  Patch,
+  Delete,
+  Param,
+  Body,
+  Query,
+  Req,
+  UseGuards,
+  HttpCode,
+  HttpStatus,
+  ParseUUIDPipe,
+  ParseIntPipe,
+  DefaultValuePipe,
+  Optional,
 } from '@nestjs/common';
-import { ConversationsService, UpdateStatusDto } from './conversations.service';
-import { JwtGuard } from '../../common/guards/jwt.guard';
-import { WorkspaceGuard } from '../../common/guards/workspace.guard';
-import { PermissionGuard } from '../../common/guards/permission.guard';
-import { RequirePermission } from '../../common/decorators/require-permission.decorator';
-import { CreateConversationDto } from './dto/create-conversation.dto';
-import { ActivityService } from '../activity/activity.service';
-import { IsString, IsOptional, IsArray, IsIn } from 'class-validator';
+import { IsString, IsOptional, IsArray, IsIn, IsBoolean } from 'class-validator';
+import { Transform } from 'class-transformer';
 
+import { ConversationsService }   from './conversations.service';
+import { ActivityService }         from '../activity/activity.service';
+import { JwtGuard }               from '../../common/guards/jwt.guard';
+import { WorkspaceGuard }         from '../../common/guards/workspace.guard';
+import { PermissionGuard }        from '../../common/guards/permission.guard';
+import { RequirePermission }      from '../../common/decorators/require-permission.decorator';
+import { CreateConversationDto }   from './dto/create-conversation.dto';
+import { SendMessageDto as SendMessageBody } from './dto/send-message.dto';
 
-
-// ─── Request body DTOs ────────────────────────────────────────────────────────
-
+// ─── Body DTOs ────────────────────────────────────────────────────────────────
 
 export class AssignUserBody {
-    @IsString()
-    userId: string;
-
-    @IsOptional()
-    @IsString()
-    teamId?: string;
+  @IsString() userId: string;
+  @IsOptional() @IsString() teamId?: string;
 }
 
 export class AssignTeamBody {
-    @IsString()
-    teamId: string;
+  @IsString() teamId: string;
 }
 
 export class AddNoteBody {
-    @IsString()
-    text: string;
-
-    @IsOptional()
-    @IsArray()
-    @IsString({ each: true })
-    mentionedUserIds?: string[];
+  @IsString() text: string;
+  @IsOptional() @IsArray() @IsString({ each: true }) mentionedUserIds?: string[];
 }
 
 export class MergeContactBody {
-    /** The contact ID that will be deleted (merged into this conversation's contact) */
-    @IsString()
-    mergedContactId: string;
+  @IsString() mergedContactId: string;
 }
 
 export class ChangePriorityBody {
-    @IsIn(['low', 'normal', 'high', 'urgent'])
-    priority: 'low' | 'normal' | 'high' | 'urgent';
+  @IsIn(['low', 'normal', 'high', 'urgent'])
+  priority: 'low' | 'normal' | 'high' | 'urgent';
 }
+
+export class UpdateStatusBody {
+  @IsIn(['open', 'pending', 'resolved', 'closed'])
+  status: 'open' | 'pending' | 'resolved' | 'closed';
+}
+
+// ─── Query DTOs ────────────────────────────────────────────────────────────────
+
+export class ListConversationsQuery {
+  @IsOptional() @IsString()
+  status?: string;
+
+  @IsOptional() @IsString()
+  priority?: string;
+
+  @IsOptional() @IsIn(['incoming', 'outgoing', 'all'])
+  direction?: 'incoming' | 'outgoing' | 'all';
+
+  @IsOptional() @IsString()
+  channelType?: string;
+
+  @IsOptional() @IsString()
+  assigneeId?: string;
+
+  @IsOptional() @IsString()
+  teamId?: string;
+
+  @IsOptional()
+  @Transform(({ value }) => value === 'true' || value === true)
+  @IsBoolean()
+  unreplied?: boolean;
+
+  @IsOptional() @IsString()
+  search?: string;
+
+  @IsOptional() @IsString()
+  cursor?: string;
+
+  @IsOptional()
+  @Transform(({ value }) => parseInt(value, 10))
+  limit?: number;
+
+    @IsOptional() @IsString()
+  lifecycleId?: string;
+}
+
+// ─── Controller ───────────────────────────────────────────────────────────────
+
 @Controller('api/conversations')
 @UseGuards(JwtGuard, WorkspaceGuard)
-
 export class ConversationsController {
-    constructor(private conversationService: ConversationsService,
-        private activityService: ActivityService
+  constructor(
+    private readonly conversationsService: ConversationsService,
+    private readonly activityService:       ActivityService,
+  ) {}
 
-    ) { }
+  // ══════════════════════════════════════════════════════════════
+  // LIST + SEARCH
+  // ══════════════════════════════════════════════════════════════
 
-    @UseGuards( PermissionGuard)
-    @RequirePermission('message.send')
-    @Post()
-    create(@Req() req: any, @Body() dto: CreateConversationDto) {
-        return this.conversationService.create(req.workspaceId, dto.contactId);
-    }
+  /**
+   * GET /api/conversations
+   * Query: status, priority, direction, channelType, assigneeId,
+   *        teamId, unreplied, search, cursor, limit
+   */
+  @Get()
+  findAll(@Req() req: any, @Query() query: ListConversationsQuery) {
+    const workspaceId = req.workspaceId as string;
+    const actorUserId = req.user?.id as string;
 
-    @Get()
-    findAll(@Req() req: any) {
-        return this.conversationService.findAll(req.workspaceId);
-    }
-    // ── GET timeline (messages + activities merged) ───────────────────────────
-    // Replace your existing GET /conversations/:id/messages with this.
-    // The FE decides how to render each item based on item.type.
+    return this.conversationsService.findAll(workspaceId, {
+      ...query,
+      actorUserId,
+    });
+  }
 
-    @Get(':id/timeline')
-    async getTimeline(
-        @Param('id', ParseUUIDPipe) id: string,
-        @Req() req: any,
-    ) {
-        const workspaceId = req.user?.workspaceId ?? req.workspaceId;
-        return this.conversationService.getTimeline(id, workspaceId);
-    }
+  /**
+   * GET /api/conversations/search?q=hello&limit=20
+   * Full-text search across message content.
+   * MUST be defined before /:id to avoid route collision.
+   */
+  @Get('search')
+  searchMessages(
+    @Req() req: any,
+    @Query('q') q: string,
+    @Query('limit', new DefaultValuePipe(20), ParseIntPipe) limit: number,
+  ) {
+    const workspaceId = req.workspaceId as string;
+    return this.conversationsService.searchMessages(workspaceId, q ?? '', limit);
+  }
 
-    // ── GET activities only ───────────────────────────────────────────────────
+  // ══════════════════════════════════════════════════════════════
+  // SINGLE CONVERSATION
+  // ══════════════════════════════════════════════════════════════
 
-    @Get(':id/activities')
-    async getActivities(
-        @Param('id', ParseUUIDPipe) id: string,
-    ) {
-        return this.activityService.findByConversation(id);
-    }
+  @Get(':id')
+  findOne(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Req() req: any,
+  ) {
+    return this.conversationsService.findOne(id, req.workspaceId);
+  }
 
-    // ── PATCH status: open / close / pending ──────────────────────────────────
+  // ══════════════════════════════════════════════════════════════
+  // CREATE
+  // ══════════════════════════════════════════════════════════════
 
-    @Patch(':id/status')
-    async updateStatus(
-        @Param('id') id: string,
-        @Body() body: UpdateStatusDto,
-        @Req() req: any,
-    ) {
-        console.log("INTO");
+  @UseGuards(PermissionGuard)
+  @RequirePermission('message.send')
+  @Post()
+  create(@Req() req: any, @Body() dto: CreateConversationDto) {
+    return this.conversationsService.create(
+      req.workspaceId,
+      dto.contactId,
+      dto.channelId,
+    );
+  }
 
-        const actorId = req.user?.id;
-        return this.conversationService.updateStatus(id, {
-            status: body.status,
-            actorId,
-        });
-    }
+  // ══════════════════════════════════════════════════════════════
+  // MESSAGES
+  // ══════════════════════════════════════════════════════════════
 
-    // ── POST close (convenience shortcut) ────────────────────────────────────
+  /**
+   * GET /api/conversations/:id/messages?cursor=...&limit=30
+   * Returns messages only (newest-first from BE; FE reverses for display).
+   */
+  @Get(':id/messages')
+  getMessages(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Req() req: any,
+    @Query('cursor') cursor?: string,
+    @Query('limit', new DefaultValuePipe(30), ParseIntPipe) limit?: number,
+  ) {
+    return this.conversationsService.getMessages(id, req.workspaceId, cursor, limit);
+  }
 
-    @Post(':id/close')
-    @HttpCode(HttpStatus.OK)
-    async close(
-        @Param('id', ParseUUIDPipe) id: string,
-        @Req() req: any,
-    ) {
-        return this.conversationService.updateStatus(id, {
-            status: 'closed',
-            actorId: req.user?.id,
-        });
-    }
+  /**
+   * POST /api/conversations/:id/messages
+   * Body: { channelId, text?, attachments?, metadata? }
+   */
+//   @UseGuards(PermissionGuard)
+//   @RequirePermission('message.send')
+//   @Post(':id/messages')
+//   @HttpCode(HttpStatus.CREATED)
+//   sendMessage(
+//     @Param('id', ParseUUIDPipe) id: string,
+//     @Body() body: SendMessageBody,
+//     @Req() req: any,
+//   ) {
+//     return this.conversationsService.sendMessage({
+//       workspaceId:    req.workspaceId,
+//       conversationId: id,
+//       channelId:      body.channelId,
+//       actorId:        req.user.id,
+//       text:           body.text,
+//       attachments:    body.attachments,
+//       metadata:       body.metadata,
+//     });
+//   }
 
-    // ── POST open (reopen) ────────────────────────────────────────────────────
+  // ══════════════════════════════════════════════════════════════
+  // TIMELINE
+  // ══════════════════════════════════════════════════════════════
 
-    @Post(':id/open')
-    @HttpCode(HttpStatus.OK)
-    async open(
-        @Param('id', ParseUUIDPipe) id: string,
-        @Req() req: any,
-    ) {
-        return this.conversationService.updateStatus(id, {
-            status: 'open',
-            actorId: req.user?.id,
-        });
-    }
+  /**
+   * GET /api/conversations/:id/timeline?cursor=...&limit=30
+   * Returns merged messages + activities sorted by timestamp.
+   */
+  @Get(':id/timeline')
+  getTimeline(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Req() req: any,
+    @Query('cursor') cursor?: string,
+    @Query('limit', new DefaultValuePipe(30), ParseIntPipe) limit?: number,
+  ) {
+    return this.conversationsService.getTimeline(
+      id, req.workspaceId, cursor, limit,
+    );
+  }
 
-    // ── POST pending ──────────────────────────────────────────────────────────
+  // ══════════════════════════════════════════════════════════════
+  // ACTIVITIES
+  // ══════════════════════════════════════════════════════════════
 
-    @Post(':id/pending')
-    @HttpCode(HttpStatus.OK)
-    async pending(
-        @Param('id', ParseUUIDPipe) id: string,
-        @Req() req: any,
-    ) {
-        return this.conversationService.updateStatus(id, {
-            status: 'pending',
-            actorId: req.user?.id,
-        });
-    }
+  @Get(':id/activities')
+  getActivities(@Param('id', ParseUUIDPipe) id: string) {
+    return this.activityService.findByConversation(id);
+  }
 
-    // ── POST assign user ──────────────────────────────────────────────────────
+  // ══════════════════════════════════════════════════════════════
+  // STATUS MUTATIONS
+  // ══════════════════════════════════════════════════════════════
 
-    @Post(':id/assign/user')
-    @HttpCode(HttpStatus.OK)
-    async assignUser(
-        @Param('id', ParseUUIDPipe) id: string,
-        @Body() body: AssignUserBody,
-        @Req() req: any,
-    ) {
-        return this.conversationService.assignUser(id, {
-            userId: body.userId,
-            teamId: body.teamId,
-            actorId: req.user?.id,
-        });
-    }
+  /** PATCH /api/conversations/:id/status  { status: "closed" } */
+  @Patch(':id/status')
+  updateStatus(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() body: UpdateStatusBody,
+    @Req() req: any,
+  ) {
+    return this.conversationsService.updateStatus(id, {
+      status:  body.status,
+      actorId: req.user?.id,
+    });
+  }
 
-    // ── DELETE unassign user ──────────────────────────────────────────────────
+  @Post(':id/close')
+  @HttpCode(HttpStatus.OK)
+  close(@Param('id', ParseUUIDPipe) id: string, @Req() req: any) {
+    return this.conversationsService.updateStatus(id, {
+      status: 'closed', actorId: req.user?.id,
+    });
+  }
 
-    @Delete(':id/assign/user')
-    @HttpCode(HttpStatus.OK)
-    async unassignUser(
-        @Param('id', ParseUUIDPipe) id: string,
-        @Req() req: any,
-    ) {
-        return this.conversationService.unassignUser(id, {
-            actorId: req.user?.id,
-        });
-    }
+  @Post(':id/open')
+  @HttpCode(HttpStatus.OK)
+  open(@Param('id', ParseUUIDPipe) id: string, @Req() req: any) {
+    return this.conversationsService.updateStatus(id, {
+      status: 'open', actorId: req.user?.id,
+    });
+  }
 
-    // ── POST assign team ──────────────────────────────────────────────────────
+  @Post(':id/pending')
+  @HttpCode(HttpStatus.OK)
+  pending(@Param('id', ParseUUIDPipe) id: string, @Req() req: any) {
+    return this.conversationsService.updateStatus(id, {
+      status: 'pending', actorId: req.user?.id,
+    });
+  }
 
-    @Post(':id/assign/team')
-    @HttpCode(HttpStatus.OK)
-    async assignTeam(
-        @Param('id', ParseUUIDPipe) id: string,
-        @Body() body: AssignTeamBody,
-        @Req() req: any,
-    ) {
-        return this.conversationService.assignTeam(id, {
-            teamId: body.teamId,
-            actorId: req.user?.id,
-        });
-    }
+  // ══════════════════════════════════════════════════════════════
+  // ASSIGN / UNASSIGN
+  // ══════════════════════════════════════════════════════════════
 
-    // ── DELETE unassign team ──────────────────────────────────────────────────
+  @Post(':id/assign/user')
+  @HttpCode(HttpStatus.OK)
+  assignUser(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() body: AssignUserBody,
+    @Req() req: any,
+  ) {
+    return this.conversationsService.assignUser(id, {
+      userId:  body.userId,
+      teamId:  body.teamId,
+      actorId: req.user?.id,
+    });
+  }
 
-    @Delete(':id/assign/team')
-    @HttpCode(HttpStatus.OK)
-    async unassignTeam(
-        @Param('id', ParseUUIDPipe) id: string,
-        @Req() req: any,
-    ) {
-        return this.conversationService.unassignTeam(id, {
-            actorId: req.user?.id,
-        });
-    }
+  @Delete(':id/assign/user')
+  @HttpCode(HttpStatus.OK)
+  unassignUser(@Param('id', ParseUUIDPipe) id: string, @Req() req: any) {
+    return this.conversationsService.unassignUser(id, { actorId: req.user?.id });
+  }
 
-    // ── POST internal note ────────────────────────────────────────────────────
+  @Post(':id/assign/team')
+  @HttpCode(HttpStatus.OK)
+  assignTeam(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() body: AssignTeamBody,
+    @Req() req: any,
+  ) {
+    return this.conversationsService.assignTeam(id, {
+      teamId:  body.teamId,
+      actorId: req.user?.id,
+    });
+  }
 
-    @Post(':id/notes')
-    async addNote(
-        @Param('id', ParseUUIDPipe) id: string,
-        @Body() body: AddNoteBody,
-        @Req() req: any,
-    ) {
-        const actorId = req.user?.id;
-        if (!actorId) throw new Error('Authenticated user required for notes');
+  @Delete(':id/assign/team')
+  @HttpCode(HttpStatus.OK)
+  unassignTeam(@Param('id', ParseUUIDPipe) id: string, @Req() req: any) {
+    return this.conversationsService.unassignTeam(id, { actorId: req.user?.id });
+  }
 
-        return this.conversationService.addNote(id, {
-            text: body.text,
-            actorId,
-            mentionedUserIds: body.mentionedUserIds,
-        });
-    }
+  // ══════════════════════════════════════════════════════════════
+  // NOTES / PRIORITY / MERGE / READ
+  // ══════════════════════════════════════════════════════════════
 
-    // ── POST merge contact ────────────────────────────────────────────────────
+  @Post(':id/notes')
+  addNote(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() body: AddNoteBody,
+    @Req() req: any,
+  ) {
+    if (!req.user?.id) throw new Error('Authenticated user required for notes');
+    return this.conversationsService.addNote(id, {
+      text:              body.text,
+      actorId:           req.user.id,
+      mentionedUserIds:  body.mentionedUserIds,
+    });
+  }
 
-    @Post(':id/merge-contact')
-    @HttpCode(HttpStatus.OK)
-    async mergeContact(
-        @Param('id', ParseUUIDPipe) id: string,
-        @Body() body: MergeContactBody,
-        @Req() req: any,
-    ) {
-        return this.conversationService.mergeContact(id, {
-            mergedContactId: body.mergedContactId,
-            actorId: req.user?.id,
-        });
-    }
+  @Patch(':id/priority')
+  changePriority(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() body: ChangePriorityBody,
+    @Req() req: any,
+  ) {
+    return this.conversationsService.changePriority(id, {
+      priority: body.priority,
+      actorId:  req.user?.id,
+    });
+  }
 
-    // ── PATCH priority ────────────────────────────────────────────────────────
+  @Post(':id/merge-contact')
+  @HttpCode(HttpStatus.OK)
+  mergeContact(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() body: MergeContactBody,
+    @Req() req: any,
+  ) {
+    return this.conversationsService.mergeContact(id, {
+      mergedContactId: body.mergedContactId,
+      actorId:         req.user?.id,
+    });
+  }
 
-    @Patch(':id/priority')
-    async changePriority(
-        @Param('id', ParseUUIDPipe) id: string,
-        @Body() body: ChangePriorityBody,
-        @Req() req: any,
-    ) {
-        return this.conversationService.changePriority(id, {
-            priority: body.priority,
-            actorId: req.user?.id,
-        });
-    }
-
-
+  /** POST /api/conversations/:id/read — zeroes unread counter */
+  @Post(':id/read')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  markRead(@Param('id', ParseUUIDPipe) id: string, @Req() req: any) {
+    return this.conversationsService.markRead(id, req.workspaceId);
+  }
 }

@@ -17,10 +17,10 @@ export class SupabaseService {
 
         const { data, error } =
             await this.supabase.auth.admin.inviteUserByEmail(email, {
-  data: {
-    password_pending: true,
-  },
-});
+                data: {
+                    password_pending: true,
+                },
+            });
 
         if (error) {
             throw new Error(error.message);
@@ -40,7 +40,7 @@ export class SupabaseService {
         //             html: options.html,
         //         },
         //     ]);
-        
+
     }
 
 }

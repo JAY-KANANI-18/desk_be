@@ -27,7 +27,7 @@ export class WhatsAppTemplatesService {
   // ─── Sync ──────────────────────────────────────────────────────────────────
 
   async sync(channel: any): Promise<{ synced: number; errors: number }> {
-    const token  = channel.config?.accessToken;
+    const token  = channel.credentials?.accessToken;
     const wabaId = channel.config?.wabaId;
     console.log({token,wabaId});
     

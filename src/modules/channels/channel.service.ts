@@ -1,6 +1,5 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from 'prisma/prisma.service';
-import { ChannelRegistry } from './channel-registry.service';
 import { validateTemplateVariables, buildTemplateComponents, extractTemplateVariables } from './utils/template-validator';
 import { SendMessageDto } from './dto/send-message.dto';
 
@@ -8,7 +7,7 @@ import { SendMessageDto } from './dto/send-message.dto';
 @Injectable()
 export class ChannelService {
     constructor(private prisma: PrismaService,
-        private registry: ChannelRegistry) { }
+        ) { }
 
 
 // email sending example

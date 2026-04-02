@@ -25,7 +25,7 @@ export class InstagramIcebreakersService {
 
   async sync(channelId: string, workspaceId: string): Promise<{ synced: number; errors: number }> {
     const channel:any = await this.findChannel(channelId, workspaceId);
-    const token   = channel.config?.accessToken;
+    const token   = channel.credentials?.accessToken;
     const pageId  = channel.identifier;
 
     let synced = 0;
@@ -84,7 +84,7 @@ export class InstagramIcebreakersService {
 
   async push(channelId: string, workspaceId: string, items: IceBreakerItem[]): Promise<void> {
     const channel:any = await this.findChannel(channelId, workspaceId);
-    const token   = channel.config?.accessToken;
+    const token   = channel.credentials?.accessToken;
     const pageId  = channel.identifier;
 
     await axios.post(

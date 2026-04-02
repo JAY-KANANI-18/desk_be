@@ -5,7 +5,7 @@ import { MessengerMenuService, PersistentMenuLocale } from './messenger-menu.ser
 // import { JwtGuard } from '../../../../../common/guards/jwt.guard';
 // import { WorkspaceGuard } from '../../../../../common/guards/workspace.guard';
 
-@Controller('channels/:channelId/messenger/menu')
+@Controller('api/channels/:channelId/messenger/menu')
 // @UseGuards(JwtGuard, WorkspaceGuard)
 export class MessengerMenuController {
   constructor(private readonly svc: MessengerMenuService) {}
@@ -15,7 +15,6 @@ export class MessengerMenuController {
    * Pull persistent menu + get_started + greetings from Meta → DB
    */
   @Post('sync')
-  @HttpCode(HttpStatus.OK)
   sync(
     @Param('channelId') channelId: string,
     @Query('workspaceId') workspaceId: string,

@@ -1,7 +1,7 @@
 // modules/channels/providers/meta/messenger/messenger-validator.ts
 
 import { BadRequestException } from '@nestjs/common';
-import { ValidateOutboundOpts } from '../../../channel-provider.interface';
+import { ValidateOutboundOpts } from 'src/modules/channel-adapters/channel-adapter.interface';
 
 export class MessengerValidator {
   static validate({ channel, contactChannel }: ValidateOutboundOpts): void {

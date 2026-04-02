@@ -28,12 +28,12 @@ model User {
 
   organizationMemberships OrganizationMember[]
   workspaceMemberships    WorkspaceMember[]
-  assignedContacts        Contact[]            @relation("ContactToUser")
+  assignedContacts        Contact[]              @relation("ContactToUser")
   messages                Message[]
   teamMembers             TeamMember[]
   notifications           Notification[]
-    actorActivities    ConversationActivity[] @relation("ActivityActor")
-  subjectActivities  ConversationActivity[] @relation("ActivitySubject")
+  actorActivities         ConversationActivity[] @relation("ActivityActor")
+  subjectActivities       ConversationActivity[] @relation("ActivitySubject")
   userActivity            UserActivity?
 }
 
@@ -71,30 +71,33 @@ model OrganizationMember {
 }
 
 model Workspace {
-  id             String   @id @default(uuid()) @db.Uuid
-  organizationId String   @db.Uuid
+  id             String    @id @default(uuid()) @db.Uuid
+  organizationId String    @db.Uuid
   name           String
-  timeZone       String   @default("UTC")
-  language       String   @default("en")
-  dateFormat     String   @default("MM/DD/YYYY")
-  timeFormat     String   @default("hh:mm A")
-  createdAt      DateTime @default(now())
+  timeZone       String    @default("UTC")
+  language       String    @default("en")
+  dateFormat     String    @default("MM/DD/YYYY")
+  timeFormat     String    @default("hh:mm A")
+  createdAt      DateTime  @default(now())
+  invoices       Invoice[]
 
-  organization      Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  members           WorkspaceMember[]
-  contacts          Contact[]
-  conversations     Conversation[]
-  messages          Message[]
-  channels          Channel[]
-  teams             Team[]
-  workflows         Workflow[]
-  whatsAppTemplates WhatsAppTemplate[]
-  contactChannels   ContactChannel[]
-  mediaAssets       MediaAsset[]
-  outboundQueue     OutboundQueue[]
-  messageTemplates  MessageTemplate[]
-  metaPageTemplates MetaPageTemplate[]
+  organization           Organization           @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  members                WorkspaceMember[]
+  contacts               Contact[]
+  conversations          Conversation[]
+  messages               Message[]
+  channels               Channel[]
+  teams                  Team[]
+  workflows              Workflow[]
+  whatsAppTemplates      WhatsAppTemplate[]
+  contactChannels        ContactChannel[]
+  mediaAssets            MediaAsset[]
+  outboundQueue          OutboundQueue[]
+  messageTemplates       MessageTemplate[]
+  metaPageTemplates      MetaPageTemplate[]
   conversationActivities ConversationActivity[]
+  lifecycleStages        LifecycleStage[]
+  tags                   Tag[]
 }
 
 model WorkspaceMember {
@@ -129,6 +132,7 @@ model Contact {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
   status      String?
+  lifecycleId String?  @db.Uuid
 
   assigneeId        String?          @db.Uuid
   assignee          User?            @relation("ContactToUser", fields: [assigneeId], references: [id])
@@ -138,10 +142,39 @@ model Contact {
   workspaceMember   WorkspaceMember? @relation(fields: [workspaceMemberId], references: [id])
 
   workspace       Workspace        @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  lifecycle       LifecycleStage?  @relation(fields: [lifecycleId], references: [id])
   conversations   Conversation[]
   contactChannels ContactChannel[]
+  tags            ContactTag[]
 
   @@index([workspaceId])
+}
+
+// ============================================================
+// Contact Tags (many-to-many between Contact and a Tag model)
+// ============================================================
+
+model Tag {
+  id          String   @id @default(uuid()) @db.Uuid
+  workspaceId String   @db.Uuid
+  name        String
+  createdAt   DateTime @default(now())
+  color       String   @default("#000000")
+
+  workspace Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  contacts  ContactTag[] // ✅ fix this
+
+  @@unique([workspaceId, name])
+}
+
+model ContactTag {
+  contactId String @db.Uuid
+  tagId     String @db.Uuid
+
+  contact Contact @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  tag     Tag     @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@id([contactId, tagId])
 }
 
 // ============================================================
@@ -149,11 +182,9 @@ model Contact {
 // ============================================================
 
 model Conversation {
-  id          String  @id @default(uuid()) @db.Uuid
-  workspaceId String  @db.Uuid
-  contactId   String  @db.Uuid
-  channelId   String? @db.Uuid
-  channelType String?
+  id          String @id @default(uuid()) @db.Uuid
+  workspaceId String @db.Uuid
+  contactId   String @db.Uuid
 
   subject String? // email subject / thread subject
 
@@ -175,17 +206,14 @@ model Conversation {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  workspace   Workspace @relation(fields: [workspaceId], references: [id])
-  contact     Contact   @relation(fields: [contactId], references: [id])
-  channel     Channel?  @relation(fields: [channelId], references: [id])
-  messages    Message[] @relation("ConversationMessages")
-  lastMessage Message?  @relation("LastMessage", fields: [lastMessageId], references: [id])
-    activities ConversationActivity[]
-
+  workspace   Workspace              @relation(fields: [workspaceId], references: [id])
+  contact     Contact                @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  messages    Message[]              @relation("ConversationMessages")
+  lastMessage Message?               @relation("LastMessage", fields: [lastMessageId], references: [id])
+  activities  ConversationActivity[]
 
   @@index([workspaceId])
   @@index([contactId])
-  @@index([channelId])
   @@index([status])
 }
 
@@ -239,7 +267,7 @@ model Message {
   createdAt DateTime  @default(now())
   sentAt    DateTime?
 
-  conversation       Conversation        @relation("ConversationMessages", fields: [conversationId], references: [id])
+  conversation       Conversation        @relation("ConversationMessages", fields: [conversationId], references: [id], onDelete: Cascade)
   workspace          Workspace           @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   author             User?               @relation(fields: [authorId], references: [id])
   channel            Channel?            @relation(fields: [channelId], references: [id])
@@ -264,7 +292,7 @@ model Channel {
   workspaceId String   @db.Uuid
   type        String // whatsapp | instagram | messenger | email
   name        String
-  identifier  String? // phone_number_id | page_id | email prefix | IG account id
+  identifier  String   @unique // phone_number_id | page_id | email prefix | IG account id
   status      String   @default("connected") // connected | disconnected | error
   createdAt   DateTime @default(now())
 
@@ -279,7 +307,6 @@ model Channel {
   config Json?
 
   workspace       Workspace        @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  conversations   Conversation[]
   messages        Message[]
   contactChannels ContactChannel[]
   outboundQueue   OutboundQueue[]
@@ -401,11 +428,10 @@ model Team {
   name        String
   createdAt   DateTime @default(now())
 
-  workspace Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  members   TeamMember[]
-  contacts  Contact[]
-    activities ConversationActivity[]
-
+  workspace  Workspace              @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  members    TeamMember[]
+  contacts   Contact[]
+  activities ConversationActivity[]
 }
 
 model TeamMember {
@@ -420,15 +446,62 @@ model TeamMember {
 }
 
 model Workflow {
-  id          String   @id @default(uuid()) @db.Uuid
-  workspaceId String   @db.Uuid
+  id          String        @id @default(uuid()) @db.Uuid
+  workspaceId String        @db.Uuid
   name        String
-  trigger     String
+  description String?
+  createBy    String        @db.Uuid // user ID of workflow creator
+  publishedAt DateTime?
+  publishedBy String?       @db.Uuid // user ID of who published the workflow
+  // trigger     String
   config      Json?
-  isActive    Boolean  @default(true)
-  createdAt   DateTime @default(now())
+  status      String        @default("draft") // draft | published | archived
+  createdAt   DateTime      @default(now())
+  runs        WorkflowRun[]
 
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+}
+
+model WorkflowRun {
+  id            String    @id @default(uuid()) @db.Uuid
+  workspaceId   String    @db.Uuid
+  workflowId    String    @db.Uuid
+  contactId     String    @db.Uuid
+  status        String    @default("running") // running | waiting | completed | failed | cancelled
+  currentStepId String?
+  variables     Json?     @default("{}")
+  triggerData   Json?
+  startedAt     DateTime  @default(now())
+  completedAt   DateTime?
+  failedAt      DateTime?
+  error         String?
+
+  workflow Workflow          @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+  steps    WorkflowRunStep[]
+
+  @@index([workflowId])
+  @@index([contactId])
+  @@index([status])
+  @@index([workspaceId, status])
+}
+
+model WorkflowRunStep {
+  id          String    @id @default(uuid()) @db.Uuid
+  runId       String    @db.Uuid
+  stepId      String // matches StepConfig.id from workflow config
+  stepType    String
+  status      String    @default("pending") // pending | running | completed | failed | skipped
+  input       Json?
+  output      Json?
+  error       String?
+  attempts    Int       @default(0)
+  startedAt   DateTime?
+  completedAt DateTime?
+
+  run WorkflowRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@index([runId])
+  @@index([stepId])
 }
 
 // ============================================================
@@ -468,10 +541,10 @@ model MetaPageTemplate {
   name        String
   syncedAt    DateTime? // when we last synced with Meta
 
-  metaId     String? // the template ID assigned by Meta (for API calls)
- 
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
+  metaId String? // the template ID assigned by Meta (for API calls)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   workspace Workspace @relation(fields: [workspaceId], references: [id])
 
@@ -586,7 +659,6 @@ model NotificationPreference {
   inappNewMessage Boolean @default(true)
 }
 
-
 // ============================================================
 // CONVERSATION ACTIVITY (add to existing schema.prisma)
 // ============================================================
@@ -620,68 +692,28 @@ model NotificationPreference {
 // ============================================================
 
 model ConversationActivity {
-  id             String   @id @default(uuid()) @db.Uuid
-  workspaceId    String   @db.Uuid
-  conversationId String   @db.Uuid
+  id             String @id @default(uuid()) @db.Uuid
+  workspaceId    String @db.Uuid
+  conversationId String @db.Uuid
 
-  // What happened
-  // open | close | reopen | pending
-  // assign_user | unassign_user | assign_team | unassign_team
-  // merge_contact
-  // channel_added
-  // note
-  // label_added | label_removed
-  // priority_changed
-  // sla_breached
   eventType String
 
   // Who did it (null = system / automation)
-  actorId   String? @db.Uuid   // User who triggered this
+  actorId   String? @db.Uuid // User who triggered this
   actorType String  @default("user") // user | system | automation | bot
 
   // Who was affected (for assign/unassign events)
-  subjectUserId String? @db.Uuid  // the agent being assigned
-  subjectTeamId String? @db.Uuid  // the team being assigned
+  subjectUserId String? @db.Uuid // the agent being assigned
+  subjectTeamId String? @db.Uuid // the team being assigned
 
-  // Arbitrary context stored per event type:
-  //
-  // open / close / reopen:
-  //   { previousStatus: 'closed' }
-  //
-  // assign_user:
-  //   { previousUserId: 'uuid|null', newUserId: 'uuid', userName: 'Jane' }
-  //
-  // assign_team:
-  //   { previousTeamId: 'uuid|null', newTeamId: 'uuid', teamName: 'Sales' }
-  //
-  // unassign_user:
-  //   { previousUserId: 'uuid', userName: 'Jane' }
-  //
-  // merge_contact:
-  //   { mergedContactId: 'uuid', mergedContactName: 'John', survivorContactId: 'uuid' }
-  //
-  // channel_added:
-  //   { channelType: 'whatsapp', identifier: '+1234567890', channelName: 'WA Main' }
-  //
-  // note:
-  //   { text: 'Internal note text', mentionedUserIds: ['uuid'] }
-  //
-  // label_added / label_removed:
-  //   { labelName: 'VIP', color: '#ff0000' }
-  //
-  // priority_changed:
-  //   { previousPriority: 'normal', newPriority: 'high' }
-  //
-  // sla_breached:
-  //   { slaPolicy: 'First Reply', dueAt: '2024-01-01T00:00:00Z' }
   metadata Json?
 
   createdAt DateTime @default(now())
 
   workspace    Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
-  actor        User?        @relation("ActivityActor",   fields: [actorId],        references: [id])
-  subjectUser  User?        @relation("ActivitySubject", fields: [subjectUserId],  references: [id])
+  actor        User?        @relation("ActivityActor", fields: [actorId], references: [id])
+  subjectUser  User?        @relation("ActivitySubject", fields: [subjectUserId], references: [id])
   subjectTeam  Team?        @relation(fields: [subjectTeamId], references: [id])
 
   @@index([conversationId, createdAt])
@@ -689,6 +721,133 @@ model ConversationActivity {
   @@index([eventType])
 }
 
+enum StageType {
+  lifecycle
+  lost
+}
+
+model LifecycleStage {
+  id          String    @id @default(uuid()) @db.Uuid
+  workspaceId String    @db.Uuid
+  name        String    @db.VarChar(100)
+  description String    @default("") @db.VarChar(500)
+  emoji       String    @default("⭐") @db.VarChar(10)
+  type        StageType @default(lifecycle)
+  order       Int       @default(1)
+  isDefault   Boolean   @default(false)
+  isWon       Boolean   @default(false)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  contacts  Contact[]
+
+  @@index([workspaceId])
+  @@index([workspaceId, type])
+  @@map("lifecycle_stages")
+}
+
 // ─── Also add Workspace relation ───────────────────────────
 // On Workspace model add:
 //   conversationActivities ConversationActivity[]
+
+model Subscription {
+  id                 String  @id @default(uuid())  @db.Uuid
+  workspaceId        String  @unique
+  plan               String
+  status             String // trialing | active | past_due | cancelled | expired | paused | unpaid
+  provider           String? // razorpay | stripe
+  providerCustomerId String?
+  providerSubId      String? @unique
+
+  trialStartAt DateTime?
+  trialEndAt   DateTime?
+
+  currentPeriodStart   DateTime?
+  currentPeriodEnd     DateTime?
+  pendingPlan          String?
+  pendingEffectiveAt   String?
+  pendingProviderSubId String?
+
+  quantity Int @default(1)
+
+  lastRefundAmount Int?
+  lastRefundStatus String? // "initiated" | "processed"
+  lastRefundAt     DateTime?
+
+  cancelAtPeriodEnd Boolean   @default(false)
+  invoices          Invoice[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Payment {
+  id                String    @id @default(uuid())  @db.Uuid
+  workspaceId       String
+  subscriptionId    String?  @db.Uuid
+  amount            Int
+  currency          String    @default("INR")
+  status            String // paid | failed | refunded | pending
+  provider          String
+  providerPaymentId String?
+  providerInvoiceId String?
+  metadata          Json?
+  paidAt            DateTime?
+  type              String    @default("subscription") // "subscription" | "addon"
+  description       String?
+  createdAt         DateTime  @default(now())
+}
+
+model Usage {
+  id          String @id @default(uuid())
+  workspaceId String
+  metric      String
+  value       Int    @default(0)
+  period      String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([workspaceId, metric, period])
+}
+
+model Invoice {
+  id             String  @id @default(uuid())
+  workspaceId    String  @db.Uuid
+  subscriptionId String? @db.Uuid
+
+  // Provider
+  provider          String // "razorpay" | "stripe"
+  providerInvoiceId String  @unique // Razorpay invoice id or Stripe invoice id
+  providerPaymentId String? // linked payment id once paid
+
+  // Details
+  type        String  @default("subscription") // "subscription" | "addon"
+  description String?
+  amount      Int // in paise / smallest currency unit
+  amountDue   Int?
+  amountPaid  Int?
+  currency    String  @default("INR")
+  status      String // "draft"|"open"|"paid"|"void"|"uncollectible"|"pending"
+
+  // Dates
+  invoiceDate DateTime?
+  dueDate     DateTime?
+  paidAt      DateTime?
+  periodStart DateTime?
+  periodEnd   DateTime?
+
+  // URLs
+  invoiceUrl String? // hosted invoice URL
+  invoicePdf String? // PDF download URL
+
+  // Raw
+  metadata Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  workspace    Workspace     @relation(fields: [workspaceId], references: [id])
+  subscription Subscription? @relation(fields: [subscriptionId], references: [id])
+}

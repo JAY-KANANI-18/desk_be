@@ -54,6 +54,14 @@ export class ContactsController {
         return this.contactsService.assign(req.workspaceId, id, dto);
     }
 
+    @Patch(':id/lifecycle')
+    updateLifecycle(
+        @Req() req: any,
+        @Param('id') id: string,
+        @Body() dto: { lifecycleId: string },
+    ) {
+        return this.contactsService.updateLifecycle(req.workspaceId, id, dto.lifecycleId);
+    }
 
     @UseGuards(JwtGuard, WorkspaceGuard)
     // @RequirePermission('conversation.assign')

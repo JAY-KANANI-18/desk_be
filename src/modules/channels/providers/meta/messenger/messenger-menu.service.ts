@@ -33,7 +33,7 @@ export class MessengerMenuService {
 
   async sync(channelId: string, workspaceId: string): Promise<{ synced: number; errors: number }> {
     const channel :any= await this.findChannel(channelId, workspaceId);
-    const token   = channel.config?.accessToken;
+    const token   = channel.credentials?.accessToken;
 
     let synced = 0;
     let errors = 0;
@@ -123,7 +123,7 @@ export class MessengerMenuService {
 
   async pushMenu(channelId: string, workspaceId: string, menu: PersistentMenuLocale[]): Promise<void> {
     const channel:any = await this.findChannel(channelId, workspaceId);
-    const token   = channel.config?.accessToken;
+    const token   = channel.credentials?.accessToken;
 
     await axios.post(
       `${GRAPH}/me/messenger_profile`,
@@ -138,7 +138,7 @@ export class MessengerMenuService {
 
   async pushGetStarted(channelId: string, workspaceId: string, payload: string): Promise<void> {
     const channel:any = await this.findChannel(channelId, workspaceId);
-    const token   = channel.config?.accessToken;
+    const token   = channel.credentials?.accessToken;
 
     await axios.post(
       `${GRAPH}/me/messenger_profile`,

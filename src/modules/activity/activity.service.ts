@@ -62,7 +62,7 @@ export class ActivityService {
     const response = this.toResponse(activity);
 
     // Emit for real-time socket delivery
-    this.events.emit('activity.created', {
+    this.events.emit('activity.upsert', {
       workspaceId:    dto.workspaceId,
       conversationId: dto.conversationId,
       activity:       response,
@@ -133,6 +133,9 @@ export class ActivityService {
     return items;
   }
 
+   toResponsePublic(row: any) {
+    return this.toResponse(row);
+  }
   // ─── Helpers ──────────────────────────────────────────────────────────────
 
   private toResponse(row: any): ActivityResponse {

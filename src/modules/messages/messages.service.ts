@@ -2,7 +2,6 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from 'prisma/prisma.service';
 import { CreateMessageDto } from './dto/create-message.dto';
 import { messageQueue } from '../../queues/message.queue';
-import { WorkflowEngineService } from '../workflows/workflow-engine.service';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 // import { ChannelService } from '../channels/channel.service';
 
@@ -10,7 +9,6 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 export class MessagesService {
     constructor(private prisma: PrismaService,
 
-        private workflowEngine: WorkflowEngineService,
         private     eventEmitter: EventEmitter2
 
         // private channelService: ChannelService,
@@ -69,13 +67,13 @@ export class MessagesService {
             });
         }
         // 3️⃣ If incoming → handle workflow
-        if (dto.direction === 'incoming') {
-            await this.workflowEngine.handleMessageReceived({
-                workspaceId,
-                conversationId,
-                messageText: dto.text ?? '',
-            });
-        }
+        // if (dto.direction === 'incoming') {
+        //     await this.workflowEngine.handleMessageReceived({
+        //         workspaceId,
+        //         conversationId,
+        //         messageText: dto.text ?? '',
+        //     });
+        // }
         // 3️⃣ If outgoing → update SLA
         if (dto.direction === 'outgoing') {
             await this.prisma.conversation.update({

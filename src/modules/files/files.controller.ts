@@ -5,7 +5,6 @@ import { R2Service } from "../../common/storage/r2.service";
 export class FilesController {
 
     constructor(private r2: R2Service) { }
-
     @Post("presign")
     async createPresignedUrl(
         @Body() body: {

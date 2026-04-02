@@ -1,44 +1,37 @@
+// src/workers/workflow.worker.ts
 import { Worker } from 'bullmq';
-import { PrismaClient } from '@prisma/client';
-import { workflowQueue } from '../queues/workflow.queue';
+import { WorkflowEngineService } from '../modules/workflows/workflow-engine.service';
+import { WorkflowJob } from '../queues/workflow.queue';
 
-const prisma = new PrismaClient();
+export function createWorkflowWorker(engine: WorkflowEngineService) {
+    return new Worker<WorkflowJob>(
+        'workflow',
+        async (job) => {
+            const data = job.data;
 
-const worker = new Worker(
-    'workflow',
-    async job => {
-        const { workspaceId, contactId, nodes } = job.data;
+            switch (data.type) {
+                case 'TRIGGER':
+                    await engine.startRun(data);
+                    break;
 
-        for (const node of nodes) {
-            if (node.type === 'wait') {
-                await new Promise(resolve =>
-                    setTimeout(resolve, node.delayMs),
-                );
+                case 'EXECUTE_STEP':
+                    await engine.executeStep(data.runId, data.stepId);
+                    break;
+
+                case 'RESUME':
+                    await engine.resumeRun(data.runId, data.resumeData);
+                    break;
             }
-
-            if (node.type === 'action') {
-                if (node.actionType === 'assign_team') {
-                    await prisma.contact.update({
-                        where: { id: contactId },
-                        data: { teamId: node.teamId },
-                    });
-                }
-
-                if (node.actionType === 'assign_agent') {
-                    await prisma.contact.update({
-                        where: { id: contactId },
-                        data: { assigneeId: node.userId },
-                    });
-                }
-            }
-        }
-    },
-    {
-        connection: {
-            host: '127.0.0.1',
-            port: 6379,
         },
-    },
-);
+        {
 
-console.log('Workflow worker running...');
+            connection: {
+                host: '127.0.0.1',
+                port: 6379,
+            },
+
+            concurrency: 1,
+            limiter: { max: 100, duration: 1000 },
+        },
+    );
+}

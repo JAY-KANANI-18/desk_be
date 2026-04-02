@@ -7,8 +7,8 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { PrismaService } from 'prisma/prisma.service';
-import { MediaService } from '../channels/media.service';
-import { ParsedAttachment } from '../channels/channel-provider.interface';
+import { MediaService } from '../media/media.service';
+import { ParsedAttachment } from '../channel-adapters/channel-adapter.interface';
 
 // ─── DTO ─────────────────────────────────────────────────────────────────────
 // This is what EVERY webhook controller passes to inbound.process()
@@ -19,7 +19,7 @@ export interface InboundDto {
   channelType: string;           // 'whatsapp' | 'instagram' | 'messenger' | 'email'
 
   contactIdentifier: string;     // phone / PSID / email address
-  direction: 'incoming';
+  direction: 'incoming' | 'outgoing'; // from provider's POV
 
   // The normalized message type from provider.parseWebhook()
   messageType?: string;
@@ -49,11 +49,11 @@ export class InboundService {
   private readonly logger = new Logger(InboundService.name);
 
   constructor(
-    
+
     private readonly prisma: PrismaService,
     private readonly media: MediaService,
-    private readonly events: EventEmitter2,
-  ) {}
+    private readonly emitter: EventEmitter2,
+  ) { }
 
   async process(dto: InboundDto): Promise<void> {
     const {
@@ -70,9 +70,10 @@ export class InboundService {
     });
 
     // ── 2. Upsert Conversation ─────────────────────────────────────────────
-    const conversation = await this.upsertConversation({
+    const  conversation = await this.upsertConversation({
       workspaceId, channelId, channelType, contactId: contact.id, subject,
     });
+    
 
     // ── 3. Process media attachments ───────────────────────────────────────
     const storedMedia = await this.media.processAttachments(
@@ -92,11 +93,16 @@ export class InboundService {
         subject,
         status: 'delivered',
         replyToChannelMsgId,
-        metadata: metadata ? metadata : undefined,
+        metadata: metadata ? { ...metadata, contactIdentifier: contactChannel.identifier } : undefined,
         rawPayload: raw ?? undefined,
         sentAt: new Date(),
       },
-    });
+      include: {
+        channel: true
+      }
+    },
+
+    );
 
     // ── 5. Persist MessageAttachments ──────────────────────────────────────
     if (attachments.length > 0) {
@@ -126,15 +132,10 @@ export class InboundService {
     });
 
     // ── 7. Emit for downstream (AI, notifications, websocket) ──────────────
-    this.events.emit('message.inbound', {
+    this.emitter.emit('message.inbound', {
       workspaceId,
-      channelId,
-      channelType,
       conversationId: conversation.id,
-      contactId: contact.id,
-      messageId: message.id,
-      messageType: message.type,
-      text,
+      message
     });
 
     this.logger.log(`Inbound OK conv=${conversation.id} msg=${message.id} type=${message.type} attachments=${attachments.length}`);
@@ -174,6 +175,27 @@ export class InboundService {
           });
         }
       }
+
+      // ── Reopen contact if they were closed and sent a new message ──────
+      if (contactChannel.contact.status === 'closed') {
+        await this.prisma.contact.update({
+          where: { id: contactChannel.contact.id },
+          data: { status: 'open' },
+        });
+
+        // Refresh contact object
+        contactChannel.contact.status = 'open';
+
+        // Emit for workflow engine — conversation_opened trigger
+        this.emitter.emit('conversation.opened', {
+          workspaceId,
+          contactId: contactChannel.contact.id,
+          conversationId: null,   // filled after upsertConversation
+          source: 'contact',
+          channel: channelType,
+        });
+      }
+
       return { contact: contactChannel.contact, contactChannel };
     }
 
@@ -189,6 +211,7 @@ export class InboundService {
         email: channelType === 'email' ? contactIdentifier : undefined,
         phone: channelType === 'whatsapp' ? contactIdentifier : undefined,
         avatarUrl: profile?.avatarUrl,
+        status: 'open',   // ← new contact starts as open
       },
     });
 
@@ -206,11 +229,17 @@ export class InboundService {
       include: { contact: true },
     });
 
+    this.emitter.emit('conversation.opened', {
+          workspaceId,
+          contactId: contactChannel.contact.id,
+          conversationId: null,   // filled after upsertConversation
+          source: 'contact',
+          channel: channelType,
+        });
     return { contact, contactChannel };
   }
 
   // ─── Conversation upsert ───────────────────────────────────────────────────
-
   private async upsertConversation(opts: {
     workspaceId: string;
     channelId: string;
@@ -224,9 +253,7 @@ export class InboundService {
     const existing = await this.prisma.conversation.findFirst({
       where: {
         workspaceId,
-        channelId,
         contactId,
-        status: { not: 'closed' },
         // Email: same subject = same thread
         ...(subject ? { subject } : {}),
       },
@@ -243,15 +270,12 @@ export class InboundService {
     return this.prisma.conversation.create({
       data: {
         workspaceId,
-        channelId,
-        channelType,
         contactId,
         subject,
         status: 'open',
       },
     });
   }
-
   // ─── Helpers ──────────────────────────────────────────────────────────────
 
   private deriveName(
@@ -271,19 +295,19 @@ export class InboundService {
 
   private buildAttachmentMeta(att: ParsedAttachment): any {
     const meta: any = {};
-    if (att.caption)               meta.caption = att.caption;
-    if (att.duration)              meta.duration = att.duration;
-    if (att.width)                 meta.width = att.width;
-    if (att.height)                meta.height = att.height;
-    if (att.latitude != null)      meta.lat = att.latitude;
-    if (att.longitude != null)     meta.lng = att.longitude;
-    if (att.locationName)          meta.locationName = att.locationName;
-    if (att.locationAddress)       meta.locationAddress = att.locationAddress;
-    if (att.contactVcard)          meta.vcard = att.contactVcard;
-    if (att.reactionEmoji)         meta.emoji = att.reactionEmoji;
-    if (att.reactionTargetMsgId)   meta.targetMsgId = att.reactionTargetMsgId;
-    if (att.stickerId)             meta.stickerId = att.stickerId;
-    if (att.thumbnailUrl)          meta.thumbnailUrl = att.thumbnailUrl;
+    if (att.caption) meta.caption = att.caption;
+    if (att.duration) meta.duration = att.duration;
+    if (att.width) meta.width = att.width;
+    if (att.height) meta.height = att.height;
+    if (att.latitude != null) meta.lat = att.latitude;
+    if (att.longitude != null) meta.lng = att.longitude;
+    if (att.locationName) meta.locationName = att.locationName;
+    if (att.locationAddress) meta.locationAddress = att.locationAddress;
+    if (att.contactVcard) meta.vcard = att.contactVcard;
+    if (att.reactionEmoji) meta.emoji = att.reactionEmoji;
+    if (att.reactionTargetMsgId) meta.targetMsgId = att.reactionTargetMsgId;
+    if (att.stickerId) meta.stickerId = att.stickerId;
+    if (att.thumbnailUrl) meta.thumbnailUrl = att.thumbnailUrl;
     return Object.keys(meta).length > 0 ? meta : undefined;
   }
 }

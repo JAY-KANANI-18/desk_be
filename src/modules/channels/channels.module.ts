@@ -13,19 +13,15 @@ import { forwardRef, Module } from '@nestjs/common';
 import { ScheduleModule } from '@nestjs/schedule';
 
 // ── Shared ─────────────────────────────────────────────────────────────────
-import { ChannelRegistry } from './channel-registry.service';
 import { ChannelsController } from './channels.controller';
 import { ChannelService } from './channel.service';
-import { MediaService } from './media.service';
 
 // ── WhatsApp ───────────────────────────────────────────────────────────────
-import { WhatsAppProvider } from './providers/whatsapp/whatsapp.provider';
 import { WhatsAppController } from './providers/whatsapp/whatsapp.controller';
 import { WhatsAppTemplatesService } from './providers/whatsapp/whatsapp-templates.service';
 import { WhatsAppTemplatesController } from './providers/whatsapp/whatsapp-templates.controller';
 
 // ── Meta (Instagram + Messenger shared core) ───────────────────────────────
-import { MetaProvider } from './providers/meta/meta.providers';
 
 // Instagram feature layer
 import { InstagramController } from './providers/meta/instagram/instagram.controller';
@@ -38,7 +34,6 @@ import { MessengerMenuService } from './providers/meta/messenger/messenger-menu.
 import { MessengerMenuController } from './providers/meta/messenger/messenger-menu.controller';
 
 // ── Mailgun ────────────────────────────────────────────────────────────────
-import { MailgunProvider } from './providers/email/mailgun.provider';
 import { MailgunController } from './providers/email/mailgun.controller';
 
 
@@ -46,36 +41,45 @@ import { MailgunController } from './providers/email/mailgun.controller';
 import { PrismaModule } from 'prisma/prisma.module';
 import { InboundModule } from '../inbound/inbound.module';
 import { R2Service } from 'src/common/storage/r2.service';
+import { OutboundService } from '../outbound/outbound.service';
+import { WebchatSessionService } from './providers/webchat/webchat-session.service';
+import { WebchatManageController } from './providers/webchat/webchat-manage.controller';
+import { WebchatController } from './providers/webchat/webchat.controller';
+import { OutboundModule } from '../outbound/outbound.module';
+import { ChannelAdaptersModule } from '../channel-adapters/channel-adapters.module';
+import { MediaModule } from '../media/media.module';
 
 @Module({
     imports: [
         PrismaModule,
-        forwardRef(() => InboundModule), // ✅ fix
+        InboundModule,
+        OutboundModule,
+        ChannelAdaptersModule,
+        MediaModule,
         
-        ScheduleModule.forRoot(),
+        ScheduleModule.forRoot()
     ],
 
     // ── Providers (services + providers) ────────────────────────────────────
     providers: [
         // Registry
-        ChannelRegistry,
 
         // Channel management
         ChannelService,
-        MediaService,
-        R2Service,
 
         // WhatsApp
-        WhatsAppProvider,
+      
         WhatsAppTemplatesService,
 
-        // Meta (single instance, registered under 'instagram' AND 'messenger')
-        MetaProvider,
+          
         InstagramIcebreakersService,
         MessengerMenuService,
 
         // Mailgun
-        MailgunProvider,
+              
+
+      
+        WebchatSessionService
     ],
 
     // ── Controllers ──────────────────────────────────────────────────────────
@@ -93,13 +97,12 @@ import { R2Service } from 'src/common/storage/r2.service';
         WhatsAppTemplatesController, // GET/POST  channels/:channelId/whatsapp/templates
         InstagramIcebreakersController, // GET/POST channels/:channelId/instagram/icebreakers
         MessengerMenuController,     // GET/POST  channels/:channelId/messenger/menu
+        WebchatManageController,      // POST/PATCH channels/:channelId/webchat
+        WebchatController
     ],
 
     exports: [
-        ChannelRegistry,
         ChannelService,
-        MediaService,
-        R2Service,
     ],
 })
 export class ChannelsModule { }
