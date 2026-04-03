@@ -7,7 +7,7 @@ import {
     Logger, HttpCode,
 } from '@nestjs/common';
 import { Response } from 'express';
-import { PrismaService } from 'prisma/prisma.service';
+import { PrismaService } from '../../../../../prisma/prisma.service';
 import { InboundService } from '../../../../inbound/inbound.service';
 import { OutboundService } from '../../../../outbound/outbound.service';
 import { verifyMetaSignature } from '../meta-signature.util';

@@ -1,6 +1,7 @@
 import { Worker } from "bullmq";
 import { RedisService } from "../redis/redis.service";
 import { SupabaseService } from "../supdabse/supabase.service";
+import { connection } from "./connection";
 
 export class NotificationWorker {
   constructor(
@@ -17,10 +18,7 @@ export class NotificationWorker {
         }
       },
       {
-        connection: {
-  host: "127.0.0.1",
-  port: 6379
-},
+        connection: connection
       }
     );
   }

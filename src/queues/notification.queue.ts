@@ -1,6 +1,7 @@
 import { Injectable } from "@nestjs/common";
 import { Queue } from "bullmq";
 import { RedisService } from "../redis/redis.service";
+import { connection } from "./connection";
 
 @Injectable()
 export class NotificationQueue {
@@ -8,10 +9,7 @@ export class NotificationQueue {
 
   constructor(private redisService: RedisService) {
     this.queue = new Queue("notification-queue", {
-      connection: {
-  host: "127.0.0.1",
-  port: 6379
-},
+      connection :connection
     });
   }
 

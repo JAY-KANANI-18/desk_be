@@ -1,8 +1,6 @@
 import { Queue } from 'bullmq';
+import { connection } from './connection';
 
 export const slaQueue = new Queue('sla', {
-    connection: {
-        host: '127.0.0.1',
-        port: 6379,
-    },
+    connection: connection,
 });

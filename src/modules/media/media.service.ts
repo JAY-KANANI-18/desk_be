@@ -1,7 +1,7 @@
 // src/channels/media.service.ts
 
 import { Injectable, Logger, BadRequestException } from '@nestjs/common';
-import { PrismaService } from 'prisma/prisma.service';
+import { PrismaService } from '../../prisma/prisma.service';
 
 import { randomUUID } from 'crypto';
 import * as path from 'path';

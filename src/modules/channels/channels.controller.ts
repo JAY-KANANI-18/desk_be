@@ -1,7 +1,7 @@
 import { Controller, Param, Put, Req, UseGuards } from "@nestjs/common";
 import { JwtGuard } from "../../common/guards/jwt.guard";
 import { WorkspaceGuard } from "../../common/guards/workspace.guard";
-import { PrismaService } from "prisma/prisma.service";
+import { PrismaService } from "../../prisma/prisma.service";
 import { Get, Query } from "@nestjs/common";
 import { Post, Body } from "@nestjs/common";
 import { ChannelService } from "./channel.service";

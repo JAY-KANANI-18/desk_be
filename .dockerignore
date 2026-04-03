@@ -1,0 +1,37 @@
+# Node modules (reinstalled in container)
+node_modules
+npm-debug.log
+
+# Build output
+dist
+
+# Logs
+logs
+*.log
+
+# OS files
+.DS_Store
+
+# Git
+.git
+.gitignore
+
+# Env files (optional - depends on your setup)
+.env
+.env.local
+.env.*.local
+
+# Docker files (optional)
+Dockerfile
+docker-compose.yml
+
+# IDE
+.vscode
+.idea
+
+# Tests
+test
+coverage
+
+# Misc
+*.md

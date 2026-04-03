@@ -1,11 +1,9 @@
 // src/queues/outbound.queue.ts
 import { Queue } from 'bullmq';
+import { connection } from './connection';
 
 export const outboundQueue = new Queue('outbound', {
-    connection: {
-        host: "127.0.0.1",
-        port: 6379
-    },
+    connection: connection,
     defaultJobOptions: {
         attempts: 3,
         backoff: { type: 'exponential', delay: 2000 },

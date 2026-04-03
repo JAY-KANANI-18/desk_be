@@ -4,7 +4,7 @@ import {
     Injectable,
     UnauthorizedException,
 } from '@nestjs/common';
-import { PrismaService } from 'prisma/prisma.service';
+import { PrismaService } from '../../prisma/prisma.service';
 import { verifySupabaseToken } from './supabase-jwt';
 import { ForbiddenException } from '@nestjs/common';
 

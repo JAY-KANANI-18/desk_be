@@ -7,7 +7,7 @@ import { JwtGuard } from 'src/common/guards/jwt.guard';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { InviteUserDto } from './dto/invite-user.dto';
 import { FileInterceptor } from '@nestjs/platform-express';
-import { PrismaService } from 'prisma/prisma.service';
+import { PrismaService } from '../../prisma/prisma.service';
 
 
 @Controller('api/users')

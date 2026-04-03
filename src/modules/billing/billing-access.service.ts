@@ -1,5 +1,5 @@
 import { ForbiddenException, Injectable } from '@nestjs/common';
-import { PrismaService } from 'prisma/prisma.service';
+import { PrismaService } from '../../prisma/prisma.service';
 import { PLANS } from './plans.config';
 import { UsageService } from './usage/usage.service';
 import { BillingFeature, BillingMetric } from './types/billing.types';

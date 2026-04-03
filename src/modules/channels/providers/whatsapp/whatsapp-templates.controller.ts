@@ -2,7 +2,7 @@
 
 import { Controller, Get, Post, Param, Body, Query, HttpCode, HttpStatus, Req } from '@nestjs/common';
 import { WhatsAppTemplatesService } from './whatsapp-templates.service';
-import { PrismaService } from 'prisma/prisma.service';
+import { PrismaService } from '../../../../prisma/prisma.service';
 // import { JwtGuard } from '../../../../common/guards/jwt.guard';
 // import { WorkspaceGuard } from '../../../../common/guards/workspace.guard';
 

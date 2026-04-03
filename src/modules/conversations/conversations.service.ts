@@ -37,7 +37,7 @@ import {
   CloseActivityMeta,
 } from '../activity/activity.types';
 import { Prisma } from '@prisma/client';
-import { PrismaService } from 'prisma/prisma.service';
+import { PrismaService } from '../../prisma/prisma.service';
 
 // ─── DTOs ─────────────────────────────────────────────────────────────────────
 

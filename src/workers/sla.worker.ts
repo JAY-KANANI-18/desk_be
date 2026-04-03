@@ -1,6 +1,7 @@
 import { Worker } from 'bullmq';
 import { PrismaClient } from '@prisma/client';
 import { RedisService } from 'src/redis/redis.service';
+import { connection } from './connection';
 
 const prisma = new PrismaClient();
 const redis = new RedisService();
@@ -39,10 +40,7 @@ const worker = new Worker(
         console.log('SLA breached for conversation:', conversationId);
     },
     {
-        connection: {
-            host: '127.0.0.1',
-            port: 6379,
-        },
+        connection: connection
     },
 );
 

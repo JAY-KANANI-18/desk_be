@@ -17,7 +17,7 @@ import {
 import { FilesInterceptor } from '@nestjs/platform-express';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { InboundService } from '../../../inbound/inbound.service';
-import { PrismaService } from 'prisma/prisma.service';
+import { PrismaService } from '../../../../prisma/prisma.service';
 import { WebchatSessionService } from './webchat-session.service';
 import { MediaService } from 'src/modules/media/media.service';
 

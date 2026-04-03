@@ -2,7 +2,7 @@ import { Injectable, BadRequestException } from '@nestjs/common';
 import { SetupOrganizationDto } from './dto/setup-organization.dto';
 import { User } from '@prisma/client';
 import slugify from 'slugify';
-import { PrismaService } from 'prisma/prisma.service';
+import { PrismaService } from '../../prisma/prisma.service';
 import { InviteUserDto } from './dto/invite-user.dto';
 import { SupabaseService } from 'src/supdabse/supabase.service';
 

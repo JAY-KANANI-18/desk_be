@@ -4,7 +4,7 @@
 // Synced from Meta Graph API → stored in MetaPageTemplate table.
 
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
-import { PrismaService } from 'prisma/prisma.service';
+import { PrismaService } from '../../../../../prisma/prisma.service';
 import axios from 'axios';
 
 const GRAPH = 'https://graph.facebook.com/v19.0';

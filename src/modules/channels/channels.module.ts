@@ -38,7 +38,7 @@ import { MailgunController } from './providers/email/mailgun.controller';
 
 
 // ── Shared modules ─────────────────────────────────────────────────────────
-import { PrismaModule } from 'prisma/prisma.module';
+import { PrismaModule } from '../../prisma/prisma.module';
 import { InboundModule } from '../inbound/inbound.module';
 import { R2Service } from 'src/common/storage/r2.service';
 import { OutboundService } from '../outbound/outbound.service';

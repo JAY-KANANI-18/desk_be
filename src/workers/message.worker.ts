@@ -2,7 +2,8 @@ import { Worker } from 'bullmq';
 // import { PrismaClient } from '@prisma/client';
 // import { ChannelService } from '../modules/channels/channel.service';
 // import { ChannelAdaptersRegistry } from '../modules/channels/channel-registry.service';
-import { PrismaService } from 'prisma/prisma.service';
+import { PrismaService } from '../prisma/prisma.service';
+import { connection } from './connection';
 
 const prisma = new PrismaService();
 // const registry = new ChannelAdaptersRegistry();
@@ -63,10 +64,7 @@ const worker = new Worker(
         }
     },
     {
-        connection: {
-            host: '127.0.0.1',
-            port: 6379,
-        },
+        connection: connection
     },
 );
 

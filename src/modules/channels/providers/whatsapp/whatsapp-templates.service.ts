@@ -1,7 +1,7 @@
 // modules/channels/providers/whatsapp/whatsapp-templates.service.ts
 
 import { Injectable, Logger, NotFoundException, BadRequestException } from '@nestjs/common';
-import { PrismaService } from 'prisma/prisma.service';
+import { PrismaService } from '../../../../prisma/prisma.service';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import axios from 'axios';
 

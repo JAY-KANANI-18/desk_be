@@ -2,6 +2,7 @@
 import { Worker } from 'bullmq';
 import { WorkflowEngineService } from '../modules/workflows/workflow-engine.service';
 import { WorkflowJob } from '../queues/workflow.queue';
+import { connection } from './connection';
 
 export function createWorkflowWorker(engine: WorkflowEngineService) {
     return new Worker<WorkflowJob>(
@@ -25,10 +26,7 @@ export function createWorkflowWorker(engine: WorkflowEngineService) {
         },
         {
 
-            connection: {
-                host: '127.0.0.1',
-                port: 6379,
-            },
+            connection: connection,
 
             concurrency: 1,
             limiter: { max: 100, duration: 1000 },

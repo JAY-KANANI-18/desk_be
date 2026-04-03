@@ -1,10 +1,8 @@
 import { Queue } from 'bullmq';
+import { connection } from './connection';
 
 export const messageQueue = new Queue('messages', {
-    connection: {
-        host: '127.0.0.1',
-        port: 6379,
-    },
+    connection,
     defaultJobOptions: {
         attempts: 5, // max retries
         backoff: {

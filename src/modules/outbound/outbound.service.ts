@@ -3,7 +3,7 @@
 
 import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
-import { PrismaService } from 'prisma/prisma.service';
+import { PrismaService } from '../../prisma/prisma.service';
 import { validateTemplateVariables, buildTemplateComponents } from '../channels/utils/template-validator';
 import { SendValidator, ProviderErrorNormaliser } from './send-validator';
 import { MediaService } from '../media/media.service';

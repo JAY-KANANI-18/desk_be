@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { PrismaService } from 'prisma/prisma.service';
+import { PrismaService } from '../../prisma/prisma.service';
 import { validateTemplateVariables, buildTemplateComponents, extractTemplateVariables } from './utils/template-validator';
 import { SendMessageDto } from './dto/send-message.dto';
 

@@ -1,6 +1,6 @@
 // src/modules/workflows/workflow-engine.service.ts
 import { Injectable, Logger } from '@nestjs/common';
-import { PrismaService } from 'prisma/prisma.service';
+import { PrismaService } from '../../prisma/prisma.service';
 import { RedisService } from '../../redis/redis.service';
 import { workflowQueue, WorkflowJob } from '../../queues/workflow.queue';
 import { OnEvent } from '@nestjs/event-emitter';

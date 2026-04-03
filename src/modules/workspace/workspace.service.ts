@@ -2,7 +2,7 @@ import { Injectable, BadRequestException, ConflictException } from '@nestjs/comm
 import { SetupWorkspaceDto } from './dto/add-workspace.dto';
 import { User } from '@prisma/client';
 import slugify from 'slugify';
-import { PrismaService } from 'prisma/prisma.service';
+import { PrismaService } from '../../prisma/prisma.service';
 
 @Injectable()
 export class WorkspaceService {
