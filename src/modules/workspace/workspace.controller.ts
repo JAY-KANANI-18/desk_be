@@ -31,8 +31,7 @@ export class WorkspaceController {
 
     @Get('users')
     async getUsersInWorkspace(@Req() req: any) {
-        const workspaceId = req.headers['x-workspace-id'] as string;
-        return this.workspaceService.getWorkspaceusers(workspaceId);
+        return this.workspaceService.getWorkspaceusers(req.workspaceId);
     }
 
     // Update workspace
