@@ -229,6 +229,7 @@ async removeTag(workspaceId: string, contactId: string, tagId: string) {
     return this.prisma.contact.findMany({
       where: { workspaceId },
       orderBy: { createdAt: 'desc' },
+      include:{contactChannels:true}
     });
   }
 

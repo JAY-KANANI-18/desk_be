@@ -12,7 +12,7 @@ export class UpdateUserDto {
 
 
     @IsString()
-    lastName: string;
+    lastName?: string;
 
 
     

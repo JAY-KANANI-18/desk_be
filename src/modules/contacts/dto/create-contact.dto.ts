@@ -17,4 +17,8 @@ export class CreateContactDto {
     @IsOptional()
     @IsString()
     company?: string;
+
+    @IsOptional()
+    @IsString()
+    lifecycleId?: string;
 }
