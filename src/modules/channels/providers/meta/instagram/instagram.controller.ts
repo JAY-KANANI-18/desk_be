@@ -299,6 +299,7 @@ this.logger.log(`Short-lived token: ${shortLivedToken}`);
         },
         name: igUser.username,
         config: {
+          userName: igUser.username,
           accountType: igUser.account_type,
           mediaCount: igUser.media_count,
           igUserId: igUser.id,          // store here too for easy access
@@ -317,6 +318,8 @@ this.logger.log(`Short-lived token: ${shortLivedToken}`);
           igUserId: igUser.id,          // ← used when calling /messages API
         },
         config: {
+                    userName: igUser.username,
+
           accountType: igUser.account_type,
           mediaCount: igUser.media_count,
           igUserId: igUser.id,

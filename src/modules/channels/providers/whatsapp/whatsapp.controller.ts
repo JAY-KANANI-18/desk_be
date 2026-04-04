@@ -279,6 +279,7 @@ export class WhatsAppController implements OnModuleInit {
                                 wabaId: waba.id,
                                 wabaName: waba.name,
                                 phoneNumber: phone.display_phone_number,
+                                phoneNumberId:phone.id,
                                 verifiedName: phone.verified_name,
                                 qualityRating: phone.quality_rating,
                                 codeVerificationStatus: phone.code_verification_status,
@@ -298,6 +299,8 @@ export class WhatsAppController implements OnModuleInit {
                                 wabaId: waba.id,
                                 wabaName: waba.name,
                                 phoneNumber: phone.display_phone_number,
+                                phoneNumberId:phone.id,
+
                                 verifiedName: phone.verified_name,
                                 qualityRating: phone.quality_rating,
                                 codeVerificationStatus: phone.code_verification_status,

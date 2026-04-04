@@ -259,10 +259,11 @@ export class MessengerController {
 
                     },
                     update: {
-                        credentials: {accessToken : pageToken, tokenLastValidatedAt: new Date() },
+                        credentials: { accessToken: pageToken, tokenLastValidatedAt: new Date() },
                         name: pageName,
                         status: 'connected',
                         config: {
+                            pageName,
                             pageCategory: page.category,
                             pagePicture: pageInfo?.picture?.data?.url,
                             pageFollowers: pageInfo?.fan_count,
@@ -274,9 +275,11 @@ export class MessengerController {
                         type: 'messenger',
                         identifier: pageId,
                         name: pageName,
-                        credentials: {accessToken: pageToken, tokenLastValidatedAt: new Date() },
+                        credentials: { accessToken: pageToken, tokenLastValidatedAt: new Date() },
                         status: 'connected',
                         config: {
+                            pageName,
+
                             pageCategory: page.category,
                             pagePicture: pageInfo?.picture?.data?.url,
                             pageFollowers: pageInfo?.fan_count,
