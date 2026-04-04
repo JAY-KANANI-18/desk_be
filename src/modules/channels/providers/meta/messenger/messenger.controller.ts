@@ -40,13 +40,19 @@ class ConnectMessengerDto {
     redirectUri: string;
 }
 export class GetPagesDto {
+    @IsString()
     code: string;
+    @IsString()
     workspaceId: string;
+    @IsString()
     redirectUri: string;
 }
 export class ConnectSelectedPagesDto {
+        @IsString()
+
     workspaceId: string;
     selectedPageIds: string[];
+
     pages: {
         id: string;
         name: string;
@@ -229,211 +235,211 @@ export class MessengerController {
     // POST /webhooks/messenger/auth/callback
     // ─────────────────────────────────────────────────────────────────────────
 
-   // New DTO
+    // New DTO
 
 
-// New endpoint — just returns pages, doesn't connect yet
-@Post('auth/pages')
-async getPages(@Body() dto: GetPagesDto) {
-    const { code, workspaceId, redirectUri } = dto;
-    if (!code || !workspaceId || !redirectUri) {
-        console.log("code, workspaceId, redirectUri are required");
-        
-        throw new BadRequestException('code, workspaceId, redirectUri are required');
-    }
+    // New endpoint — just returns pages, doesn't connect yet
+    @Post('auth/pages')
+    async getPages(@Body() dto: GetPagesDto) {
+        const { code, workspaceId, redirectUri } = dto;
+        if (!code || !workspaceId || !redirectUri) {
+            console.log("code, workspaceId, redirectUri are required");
 
-    // Step 1: Exchange code for short-lived user token
-    const shortLivedUserToken = await this.exchangeCodeForUserToken(code, redirectUri);
-
-    // Step 2: Exchange for long-lived user token
-    const longLivedUserToken = await this.exchangeLongLivedUserToken(shortLivedUserToken);
-
-    // Step 3: Get all pages
-    const pages = await this.getUserPages(longLivedUserToken);
-    if (!pages.length) {
-        throw new BadRequestException('No Facebook Pages found.');
-    }
-
-    // Return pages + long lived token (frontend will send back selected pages)
-    return {
-        pages: pages.map(p => ({
-            id: p.id,
-            name: p.name,
-            category: p.category,
-            access_token: p.access_token,
-        })),
-        longLivedUserToken, // send back to FE, FE sends it with selected pages
-    };
-}
-
-// New DTO for connecting selected pages
-
-
-// Modified callback — now only connects selected pages
-@Post('auth/callback')
-async handleCallback(@Body() dto: ConnectSelectedPagesDto) {
-    const { workspaceId, selectedPageIds, pages } = dto;
-
-    if (!workspaceId || !selectedPageIds?.length || !pages?.length) {
-        throw new BadRequestException('workspaceId, selectedPageIds, pages are required');
-    }
-
-    // Only process selected pages
-    const selectedPages = pages.filter(p => selectedPageIds.includes(p.id));
-    const connectedChannels: any[] = [];
-
-    for (const page of selectedPages) {
-        try {
-            const pageToken = page.access_token;
-            const pageId = page.id;
-            const pageName = page.name;
-
-            const pageInfo = await this.getPageInfo(pageId, pageToken);
-            await this.subscribePageToWebhook(pageId, pageToken);
-
-            const channel = await this.prisma.channel.upsert({
-                where: {
-                    workspaceId,
-                    type: 'messenger',
-                    identifier: pageId,
-                },
-                update: {
-                    credentials: { accessToken: pageToken, tokenLastValidatedAt: new Date() },
-                    name: pageName,
-                    status: 'connected',
-                    config: {
-                        pageName,
-                        pageCategory: page.category,
-                        pagePicture: pageInfo?.picture?.data?.url,
-                        tokenNeverExpires: true,
-                    },
-                },
-                create: {
-                    workspaceId,
-                    type: 'messenger',
-                    identifier: pageId,
-                    name: pageName,
-                    credentials: { accessToken: pageToken, tokenLastValidatedAt: new Date() },
-                    status: 'connected',
-                    config: {
-                        pageName,
-                        pageCategory: page.category,
-                        pagePicture: pageInfo?.picture?.data?.url,
-                        tokenNeverExpires: true,
-                    },
-                },
-            });
-
-            connectedChannels.push(channel);
-            this.logger.log(`Messenger page connected: ${pageName} (${pageId})`);
-        } catch (e) {
-            this.logger.error(`Failed to connect page ${page.id}`, e);
+            throw new BadRequestException('code, workspaceId, redirectUri are required');
         }
+
+        // Step 1: Exchange code for short-lived user token
+        const shortLivedUserToken = await this.exchangeCodeForUserToken(code, redirectUri);
+
+        // Step 2: Exchange for long-lived user token
+        const longLivedUserToken = await this.exchangeLongLivedUserToken(shortLivedUserToken);
+
+        // Step 3: Get all pages
+        const pages = await this.getUserPages(longLivedUserToken);
+        if (!pages.length) {
+            throw new BadRequestException('No Facebook Pages found.');
+        }
+
+        // Return pages + long lived token (frontend will send back selected pages)
+        return {
+            pages: pages.map(p => ({
+                id: p.id,
+                name: p.name,
+                category: p.category,
+                access_token: p.access_token,
+            })),
+            longLivedUserToken, // send back to FE, FE sends it with selected pages
+        };
     }
 
-    return { success: true, channels: connectedChannels };
-}
-// ─────────────────────────────────────────────────────────────────────────
-// 5. DISCONNECT channel
-// DELETE /webhooks/messenger/channel/:channelId
-// ─────────────────────────────────────────────────────────────────────────
+    // New DTO for connecting selected pages
 
-@Delete('channel/:channelId')
-async disconnectChannel(@Param('channelId') channelId: string) {
-    const channel: any = await this.findChannelOrThrow(channelId);
 
-    // Unsubscribe page from webhooks
-    try {
-        await axios.delete(`${FB_BASE}/${channel.identifier}/subscribed_apps`, {
-            params: { access_token: channel.credentials.accessToken },
+    // Modified callback — now only connects selected pages
+    @Post('auth/callback')
+    async handleCallback(@Body() dto: any) {
+        const { workspaceId, selectedPageIds, pages } = dto;
+
+        if (!workspaceId || !selectedPageIds?.length || !pages?.length) {
+            throw new BadRequestException('workspaceId, selectedPageIds, pages are required');
+        }
+
+        // Only process selected pages
+        const selectedPages = pages.filter(p => selectedPageIds.includes(p.id));
+        const connectedChannels: any[] = [];
+
+        for (const page of selectedPages) {
+            try {
+                const pageToken = page.access_token;
+                const pageId = page.id;
+                const pageName = page.name;
+
+                const pageInfo = await this.getPageInfo(pageId, pageToken);
+                await this.subscribePageToWebhook(pageId, pageToken);
+
+                const channel = await this.prisma.channel.upsert({
+                    where: {
+                        workspaceId,
+                        type: 'messenger',
+                        identifier: pageId,
+                    },
+                    update: {
+                        credentials: { accessToken: pageToken, tokenLastValidatedAt: new Date() },
+                        name: pageName,
+                        status: 'connected',
+                        config: {
+                            pageName,
+                            pageCategory: page.category,
+                            pagePicture: pageInfo?.picture?.data?.url,
+                            tokenNeverExpires: true,
+                        },
+                    },
+                    create: {
+                        workspaceId,
+                        type: 'messenger',
+                        identifier: pageId,
+                        name: pageName,
+                        credentials: { accessToken: pageToken, tokenLastValidatedAt: new Date() },
+                        status: 'connected',
+                        config: {
+                            pageName,
+                            pageCategory: page.category,
+                            pagePicture: pageInfo?.picture?.data?.url,
+                            tokenNeverExpires: true,
+                        },
+                    },
+                });
+
+                connectedChannels.push(channel);
+                this.logger.log(`Messenger page connected: ${pageName} (${pageId})`);
+            } catch (e) {
+                this.logger.error(`Failed to connect page ${page.id}`, e);
+            }
+        }
+
+        return { success: true, channels: connectedChannels };
+    }
+    // ─────────────────────────────────────────────────────────────────────────
+    // 5. DISCONNECT channel
+    // DELETE /webhooks/messenger/channel/:channelId
+    // ─────────────────────────────────────────────────────────────────────────
+
+    @Delete('channel/:channelId')
+    async disconnectChannel(@Param('channelId') channelId: string) {
+        const channel: any = await this.findChannelOrThrow(channelId);
+
+        // Unsubscribe page from webhooks
+        try {
+            await axios.delete(`${FB_BASE}/${channel.identifier}/subscribed_apps`, {
+                params: { access_token: channel.credentials.accessToken },
+            });
+        } catch (e) {
+            this.logger.warn('Failed to unsubscribe page from webhooks', e);
+        }
+
+        await this.prisma.channel.update({
+            where: { id: channelId },
+            data: { status: 'disconnected', credentials: { accessToken: null, tokenLastValidatedAt: null } },
         });
-    } catch (e) {
-        this.logger.warn('Failed to unsubscribe page from webhooks', e);
+
+        this.logger.log(`Messenger channel disconnected: ${channelId}`);
+        return { success: true };
     }
 
-    await this.prisma.channel.update({
-        where: { id: channelId },
-        data: { status: 'disconnected', credentials: { accessToken: null, tokenLastValidatedAt: null } },
-    });
+    // ─────────────────────────────────────────────────────────────────────────
+    // 6. GET CHANNEL INFO
+    // GET /webhooks/messenger/channel/:channelId/info
+    // ─────────────────────────────────────────────────────────────────────────
 
-    this.logger.log(`Messenger channel disconnected: ${channelId}`);
-    return { success: true };
-}
-
-// ─────────────────────────────────────────────────────────────────────────
-// 6. GET CHANNEL INFO
-// GET /webhooks/messenger/channel/:channelId/info
-// ─────────────────────────────────────────────────────────────────────────
-
-@Get('channel/:channelId/info')
-async getChannelInfo(@Param('channelId') channelId: string) {
-    const channel: any = await this.findChannelOrThrow(channelId);
-    const info = await this.getPageInfo(channel.identifier, channel.credentials.accessToken);
-    return { success: true, data: info };
-}
+    @Get('channel/:channelId/info')
+    async getChannelInfo(@Param('channelId') channelId: string) {
+        const channel: any = await this.findChannelOrThrow(channelId);
+        const info = await this.getPageInfo(channel.identifier, channel.credentials.accessToken);
+        return { success: true, data: info };
+    }
 
 
-// ─────────────────────────────────────────────────────────────────────────
-// 11. GET CONTACT PROFILE (by PSID)
-// GET /webhooks/messenger/channel/:channelId/contact/:psid
-// ─────────────────────────────────────────────────────────────────────────
+    // ─────────────────────────────────────────────────────────────────────────
+    // 11. GET CONTACT PROFILE (by PSID)
+    // GET /webhooks/messenger/channel/:channelId/contact/:psid
+    // ─────────────────────────────────────────────────────────────────────────
 
-@Get('channel/:channelId/contact/:psid')
-async getContactProfile(
-    @Param('channelId') channelId: string,
-    @Param('psid') psid: string,
-) {
-    const channel: any = await this.findChannelOrThrow(channelId);
+    @Get('channel/:channelId/contact/:psid')
+    async getContactProfile(
+        @Param('channelId') channelId: string,
+        @Param('psid') psid: string,
+    ) {
+        const channel: any = await this.findChannelOrThrow(channelId);
 
-    const { data } = await axios.get(`${FB_BASE}/${psid}`, {
-        params: {
-            fields: 'name,first_name,last_name,profile_pic,locale,timezone,gender',
-            access_token: channel.credentials.accessToken,
-        },
-    });
-    return { success: true, data };
-}
+        const { data } = await axios.get(`${FB_BASE}/${psid}`, {
+            params: {
+                fields: 'name,first_name,last_name,profile_pic,locale,timezone,gender',
+                access_token: channel.credentials.accessToken,
+            },
+        });
+        return { success: true, data };
+    }
 
-// ─────────────────────────────────────────────────────────────────────────
-// 12. MARK AS READ
-// POST /webhooks/messenger/channel/:channelId/mark-read
-// ─────────────────────────────────────────────────────────────────────────
+    // ─────────────────────────────────────────────────────────────────────────
+    // 12. MARK AS READ
+    // POST /webhooks/messenger/channel/:channelId/mark-read
+    // ─────────────────────────────────────────────────────────────────────────
 
-@Post('channel/:channelId/mark-read')
-async markAsRead(
-    @Param('channelId') channelId: string,
-    @Body('recipientPsid') recipientPsid: string,
-) {
-    const channel: any = await this.findChannelOrThrow(channelId);
+    @Post('channel/:channelId/mark-read')
+    async markAsRead(
+        @Param('channelId') channelId: string,
+        @Body('recipientPsid') recipientPsid: string,
+    ) {
+        const channel: any = await this.findChannelOrThrow(channelId);
 
-    const { data } = await axios.post(
-        `${FB_BASE}/${channel.identifier}/messages`,
-        { recipient: { id: recipientPsid }, sender_action: 'mark_seen' },
-        { params: { access_token: channel.credentials.accessToken } },
-    );
-    return { success: true, data };
-}
+        const { data } = await axios.post(
+            `${FB_BASE}/${channel.identifier}/messages`,
+            { recipient: { id: recipientPsid }, sender_action: 'mark_seen' },
+            { params: { access_token: channel.credentials.accessToken } },
+        );
+        return { success: true, data };
+    }
 
-// ─────────────────────────────────────────────────────────────────────────
-// 13. TYPING INDICATOR
-// POST /webhooks/messenger/channel/:channelId/typing
-// ─────────────────────────────────────────────────────────────────────────
+    // ─────────────────────────────────────────────────────────────────────────
+    // 13. TYPING INDICATOR
+    // POST /webhooks/messenger/channel/:channelId/typing
+    // ─────────────────────────────────────────────────────────────────────────
 
-@Post('channel/:channelId/typing')
-async sendTyping(
-    @Param('channelId') channelId: string,
-    @Body('recipientPsid') recipientPsid: string,
-    @Body('action') action: 'typing_on' | 'typing_off' = 'typing_on',
-) {
-    const channel: any = await this.findChannelOrThrow(channelId);
+    @Post('channel/:channelId/typing')
+    async sendTyping(
+        @Param('channelId') channelId: string,
+        @Body('recipientPsid') recipientPsid: string,
+        @Body('action') action: 'typing_on' | 'typing_off' = 'typing_on',
+    ) {
+        const channel: any = await this.findChannelOrThrow(channelId);
 
-    const { data } = await axios.post(
-        `${FB_BASE}/${channel.identifier}/messages`,
-        { recipient: { id: recipientPsid }, sender_action: action },
-        { params: { access_token: channel.credentials.accessToken } },
-    );
-    return { success: true, data };
-}
+        const { data } = await axios.post(
+            `${FB_BASE}/${channel.identifier}/messages`,
+            { recipient: { id: recipientPsid }, sender_action: action },
+            { params: { access_token: channel.credentials.accessToken } },
+        );
+        return { success: true, data };
+    }
 
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -461,83 +467,83 @@ async sendTyping(
     // ─────────────────────────────────────────────────────────────────────────
 
     private async findChannelOrThrow(channelId: string) {
-    const channel: any = await this.prisma.channel.findUnique({
-        where: { id: channelId },
-    });
-    if (!channel) throw new NotFoundException(`Channel ${channelId} not found`);
-    if (!channel.credentials?.accessToken) throw new UnauthorizedException(`Channel ${channelId} has no access token. Please reconnect.`);
-    return channel;
-}
+        const channel: any = await this.prisma.channel.findUnique({
+            where: { id: channelId },
+        });
+        if (!channel) throw new NotFoundException(`Channel ${channelId} not found`);
+        if (!channel.credentials?.accessToken) throw new UnauthorizedException(`Channel ${channelId} has no access token. Please reconnect.`);
+        return channel;
+    }
 
-    private async exchangeCodeForUserToken(code: string, redirectUri: string): Promise < string > {
-    const { data } = await axios.get(`${FB_BASE}/oauth/access_token`, {
-        params: {
-            client_id: process.env.MESSENGER_APP_ID!,
-            client_secret: process.env.MESSENGER_APP_SECRET!,
-            redirect_uri: redirectUri,
-            code,
-        },
-    });
-    return data.access_token;
-}
-
-    private async exchangeLongLivedUserToken(shortLivedToken: string): Promise < string > {
-    const { data } = await axios.get(`${FB_BASE}/oauth/access_token`, {
-        params: {
-            grant_type: 'fb_exchange_token',
-            client_id: process.env.MESSENGER_APP_ID!,
-            client_secret: process.env.MESSENGER_APP_SECRET!,
-            fb_exchange_token: shortLivedToken,
-        },
-    });
-    return data.access_token;
-}
-
-    private async getUserPages(userToken: string): Promise < any[] > {
-    // /me/accounts returns pages with their never-expiring page tokens directly
-    const { data } = await axios.get(`${FB_BASE}/me/accounts`, {
-        params: {
-            fields: 'id,name,access_token,category,tasks',
-            access_token: userToken,
-        },
-    });
-    this.logger.debug(`user Pages  found: ${JSON.stringify(data)}`)
-
-        return data.data ?? [];
-}
-
-    private async getPageInfo(pageId: string, pageToken: string): Promise < any > {
-    try {
-        const { data } = await axios.get(`${FB_BASE}/${pageId}`, {
+    private async exchangeCodeForUserToken(code: string, redirectUri: string): Promise<string> {
+        const { data } = await axios.get(`${FB_BASE}/oauth/access_token`, {
             params: {
-                fields: 'id,name,picture,category',
-                access_token: pageToken,
+                client_id: process.env.MESSENGER_APP_ID!,
+                client_secret: process.env.MESSENGER_APP_SECRET!,
+                redirect_uri: redirectUri,
+                code,
             },
         });
-        this.logger.debug(`Page Info found: ${JSON.stringify(data)}`)
-            return data;
-    } catch {
-        return null;
+        return data.access_token;
     }
-}
 
-    private async subscribePageToWebhook(pageId: string, pageToken: string): Promise < void> {
-    await axios.post(
-        `${FB_BASE}/${pageId}/subscribed_apps`,
-        {
-            subscribed_fields: [
-                'messages',
-                'messaging_postbacks',
-                'messaging_optins',
-                'message_deliveries',
-                'message_reads',
-                'messaging_referrals',
-            ],
-        },
-        { params: { access_token: pageToken } },
-    );
-    this.logger.log(`Page ${pageId} subscribed to webhook`);
-}
+    private async exchangeLongLivedUserToken(shortLivedToken: string): Promise<string> {
+        const { data } = await axios.get(`${FB_BASE}/oauth/access_token`, {
+            params: {
+                grant_type: 'fb_exchange_token',
+                client_id: process.env.MESSENGER_APP_ID!,
+                client_secret: process.env.MESSENGER_APP_SECRET!,
+                fb_exchange_token: shortLivedToken,
+            },
+        });
+        return data.access_token;
+    }
+
+    private async getUserPages(userToken: string): Promise<any[]> {
+        // /me/accounts returns pages with their never-expiring page tokens directly
+        const { data } = await axios.get(`${FB_BASE}/me/accounts`, {
+            params: {
+                fields: 'id,name,access_token,category,tasks',
+                access_token: userToken,
+            },
+        });
+        this.logger.debug(`user Pages  found: ${JSON.stringify(data)}`)
+
+        return data.data ?? [];
+    }
+
+    private async getPageInfo(pageId: string, pageToken: string): Promise<any> {
+        try {
+            const { data } = await axios.get(`${FB_BASE}/${pageId}`, {
+                params: {
+                    fields: 'id,name,picture,category',
+                    access_token: pageToken,
+                },
+            });
+            this.logger.debug(`Page Info found: ${JSON.stringify(data)}`)
+            return data;
+        } catch {
+            return null;
+        }
+    }
+
+    private async subscribePageToWebhook(pageId: string, pageToken: string): Promise<void> {
+        await axios.post(
+            `${FB_BASE}/${pageId}/subscribed_apps`,
+            {
+                subscribed_fields: [
+                    'messages',
+                    'messaging_postbacks',
+                    'messaging_optins',
+                    'message_deliveries',
+                    'message_reads',
+                    'messaging_referrals',
+                ],
+            },
+            { params: { access_token: pageToken } },
+        );
+        this.logger.log(`Page ${pageId} subscribed to webhook`);
+    }
 
 
 }
