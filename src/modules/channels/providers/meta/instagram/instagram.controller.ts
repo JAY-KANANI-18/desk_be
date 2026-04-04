@@ -271,6 +271,7 @@ this.logger.log(`Short-lived token: ${shortLivedToken}`);
 
     // Step 2: Exchange short-lived for long-lived token (60 days)
     const { access_token: longLivedToken, expires_in } = await this.exchangeLongLivedToken(shortLivedToken);
+this.logger.log(`long-lived token: ${{longLivedToken,expires_in}}`);
 
     // Step 3: Get Instagram profile info
     // igUser.id = 25930098660015623 → used for sending messages via API
@@ -567,12 +568,15 @@ this.logger.log(`Short-lived token: ${shortLivedToken}`);
         access_token: accessToken,
       },
     });
+        console.dir({getIGUserInfo:data},{depth:null});
+
     return data;
   }
   private async getIGBusinessAccountId(accessToken: string): Promise<string> {
     const { data } = await axios.get(`${IG_BASE}/me/accounts`, {
       params: { access_token: accessToken },
     });
+    
     // Returns the page/business account ID = 17841473852821256
     return data?.data?.[0]?.instagram_business_account?.id ?? data?.data?.[0]?.id;
   }

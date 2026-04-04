@@ -224,9 +224,11 @@ export class MessengerController {
 
         // Step 1: Exchange code for short-lived user token
         const shortLivedUserToken = await this.exchangeCodeForUserToken(code, redirectUri);
+        this.logger.log(`Short-lived token: ${shortLivedUserToken}`);
 
         // Step 2: Exchange for long-lived user token (60 days)
         const longLivedUserToken = await this.exchangeLongLivedUserToken(shortLivedUserToken);
+        this.logger.log(`long-lived token: ${{ longLivedUserToken }}`);
 
         // Step 3: Get all pages this user manages
         const pages = await this.getUserPages(longLivedUserToken);
@@ -466,6 +468,8 @@ export class MessengerController {
                 access_token: userToken,
             },
         });
+        this.logger.debug(`user Pages  found: ${JSON.stringify(data)}`)
+
         return data.data ?? [];
     }
 
@@ -477,6 +481,7 @@ export class MessengerController {
                     access_token: pageToken,
                 },
             });
+            this.logger.debug(`Page Info found: ${JSON.stringify(data)}`)
             return data;
         } catch {
             return null;
