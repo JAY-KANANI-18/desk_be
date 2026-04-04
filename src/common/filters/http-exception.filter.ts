@@ -8,9 +8,8 @@ import {
 @Catch()
 export class HttpExceptionFilter implements ExceptionFilter {
     catch(exception: any, host: ArgumentsHost) {
-        console.log({exception});
         
-        console.dir({ exception:exception.message },{ depth: null });
+        console.dir({ exception:exception },{ depth: null });
         const ctx = host.switchToHttp();
         const response = ctx.getResponse();
 

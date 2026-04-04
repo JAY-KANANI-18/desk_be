@@ -237,6 +237,8 @@ export class MessengerController {
 async getPages(@Body() dto: GetPagesDto) {
     const { code, workspaceId, redirectUri } = dto;
     if (!code || !workspaceId || !redirectUri) {
+        console.log("code, workspaceId, redirectUri are required");
+        
         throw new BadRequestException('code, workspaceId, redirectUri are required');
     }
 
