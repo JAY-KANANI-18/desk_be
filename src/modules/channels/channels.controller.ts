@@ -1,4 +1,4 @@
-import { Controller, Param, Put, Req, UseGuards } from "@nestjs/common";
+import { Controller, Delete, Param, Put, Req, UseGuards } from "@nestjs/common";
 import { JwtGuard } from "../../common/guards/jwt.guard";
 import { WorkspaceGuard } from "../../common/guards/workspace.guard";
 import { PrismaService } from "../../prisma/prisma.service";
@@ -395,6 +395,13 @@ export class ChannelsController {
         const workspaceId = req.headers['x-workspace-id'] as string;
         return this.channelService.getChannels(workspaceId);
     }
+
+    @Delete(":id")
+    async deleteChannels(@Req() req: any,@Param('id') channelId: string) {
+        const workspaceId = req.headers['x-workspace-id'] as string;
+        return this.channelService.deleteChannels(workspaceId,channelId);
+    }
+
 
     // @Post("message")
     // async sendMessage(@Body() dto: any, @Req() req) {

@@ -195,10 +195,12 @@ export class MessengerController {
             redirect_uri: redirectUri,
             response_type: 'code',
             scope: [
-                'pages_show_list',
-                'pages_messaging',
-                'pages_read_engagement',
+                "business_management",
                 'pages_manage_metadata',
+
+                // 'pages_show_list', // respond --
+                'pages_messaging', // repond ++ 2Cpages_messaging_phone_number 2Cpages_utility_messaging email
+                'pages_read_engagement',
                 'public_profile',
             ].join(','),
             state,

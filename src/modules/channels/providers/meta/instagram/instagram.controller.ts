@@ -242,7 +242,7 @@ export class InstagramController {
         'instagram_business_basic',
         'instagram_business_manage_messages',
         'instagram_business_manage_comments',
-        'instagram_business_content_publish',
+        // 'instagram_business_content_publish',
       ].join(','),
       state,
     });
@@ -265,6 +265,7 @@ export class InstagramController {
 
     // Step 1: Exchange code for short-lived token
     const shortLivedToken = await this.exchangeCodeForToken(code, redirectUri);
+this.logger.log(`Short-lived token: ${shortLivedToken}`);
 
 
 
@@ -286,6 +287,7 @@ export class InstagramController {
 
     const channel = await this.prisma.channel.upsert({
       where: {
+        workspaceId:workspaceId,
         type: 'instagram',
         identifier: igUser.user_id,  // ← webhook entry.id matches this
       },

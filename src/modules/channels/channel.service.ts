@@ -604,4 +604,12 @@ export class ChannelService {
             where: { workspaceId },
         });
     }
+    async deleteChannels(workspaceId: string,channelId:string){
+        return await this.prisma.channel.delete({
+            where:{
+                workspaceId,
+                id:channelId
+            }
+        })
+    }
 }
