@@ -201,6 +201,11 @@ export class OutboundService {
                     workspaceId,
                 });
                 await this.finalise(message.id, result?.id, conversation.id, workspaceId, channel.id);
+                 this.events.emit('message.outbound', {
+                workspaceId, channelId: channel.id,
+                conversationId: conversation.id,
+                message: message
+            });
                 return message;
             }
 
