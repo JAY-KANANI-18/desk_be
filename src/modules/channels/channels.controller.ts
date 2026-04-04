@@ -67,13 +67,15 @@ export class ChannelsController {
         accessToken: string;
         phoneNumberId: string;
         wabaId: string;
+        name: string
+
     }) {
 
         return this.prisma.channel.update({
 
             where: { id: channelId },
             data: {
-
+                name: dto.name,
                 config: {
 
                     accessToken: dto.accessToken,
@@ -108,11 +110,14 @@ export class ChannelsController {
     @Put('instagram/:channelId')
     async UpdateInstagramChannel(@Param('channelId') channelId: string, @Body() dto: {
         accessToken: string;
+        name: string
+
     }) {
 
         return this.prisma.channel.update({
             where: { id: channelId },
             data: {
+                name: dto.name,
 
                 config: {
 
@@ -154,11 +159,14 @@ export class ChannelsController {
     @Put('messenger/:channelId')
     async UpdateMessengerChannel(@Param('channelId') channelId: string, @Body() dto: {
         accessToken: string;
+        name: string
+
     }) {
 
         return this.prisma.channel.update({
             where: { id: channelId },
             data: {
+                name: dto.name,
 
                 config: {
 
@@ -218,6 +226,7 @@ export class ChannelsController {
             smtpport: number
             smtpserver: string
             userId: string
+            name: string
         },
     ) {
 
@@ -230,6 +239,8 @@ export class ChannelsController {
         return this.prisma.channel.update({
             where: { id: channelId },
             data: {
+                name: dto.name,
+
                 config: {
                     ...existingConfig,
 
@@ -397,9 +408,9 @@ export class ChannelsController {
     }
 
     @Delete(":id")
-    async deleteChannels(@Req() req: any,@Param('id') channelId: string) {
+    async deleteChannels(@Req() req: any, @Param('id') channelId: string) {
         const workspaceId = req.headers['x-workspace-id'] as string;
-        return this.channelService.deleteChannels(workspaceId,channelId);
+        return this.channelService.deleteChannels(workspaceId, channelId);
     }
 
 

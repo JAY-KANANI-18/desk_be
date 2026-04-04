@@ -186,6 +186,7 @@ export class OutboundService {
             },
             include: {
                 channel: true,
+                author:true
             }
         });
 
@@ -262,7 +263,7 @@ export class OutboundService {
             message = await this.prisma.message.update({
                 where: { id: message.id },
                 data: { status: 'sent', channelMsgId: result?.externalId ?? result?.id ?? null, metadata: updatedMeta },
-                include: { channel: true }
+                include: { channel: true ,author:true }
             });
 
             await this.prisma.conversation.update({

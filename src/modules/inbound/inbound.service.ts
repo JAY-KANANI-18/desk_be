@@ -98,7 +98,8 @@ export class InboundService {
         sentAt: new Date(),
       },
       include: {
-        channel: true
+        channel: true,
+        author:true
       }
     },
 

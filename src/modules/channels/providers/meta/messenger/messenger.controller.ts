@@ -195,12 +195,12 @@ export class MessengerController {
             redirect_uri: redirectUri,
             response_type: 'code',
             scope: [
-                "business_management",
+                // "business_management",
                 'pages_manage_metadata',
 
                 // 'pages_show_list', // respond --
                 'pages_messaging', // repond ++ 2Cpages_messaging_phone_number 2Cpages_utility_messaging email
-                'pages_read_engagement',
+                // 'pages_read_engagement',
                 'public_profile',
             ].join(','),
             state,
@@ -470,7 +470,7 @@ export class MessengerController {
         try {
             const { data } = await axios.get(`${FB_BASE}/${pageId}`, {
                 params: {
-                    fields: 'id,name,picture,fan_count,category',
+                    fields: 'id,name,picture,category',
                     access_token: pageToken,
                 },
             });
