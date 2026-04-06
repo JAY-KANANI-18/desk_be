@@ -15,15 +15,13 @@ import { CreateCheckoutDto } from './dto/create-checkout.dto';
 import { StripeService } from './providers/stripe.service';
 import { RazorpayService } from './providers/razorpay.service';
 import { JwtGuard } from 'src/common/guards/jwt.guard';
-import { PermissionGuard } from 'src/common/guards/permission.guard';
-import { WorkspaceGuard } from 'src/common/guards/workspace.guard';
 import { ChangePlanDto } from './types/change-plan.dto';
 import { ChangeSeatsDto } from './types/change-seats.dto';
 import { CurrentUser } from 'src/common/decorators/current-user.decorator';
 import { Param } from '@nestjs/common';
 
 @Controller('api/billing')
-@UseGuards(JwtGuard, WorkspaceGuard)
+@UseGuards(JwtGuard)
 
 export class BillingController {
   constructor(

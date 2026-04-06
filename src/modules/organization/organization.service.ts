@@ -19,14 +19,14 @@ export class OrganizationService {
 
 
 
-        
+
         const organization = await this.prisma.organization.create({
             data: {
                 name: dto.organizationName,
                 members: {
                     create: {
                         userId: user.id,
-                        role: 'org_owner',
+                        role: 'ORG_ADMIN',
                         joinedAt: new Date(),
                     },
                 },
@@ -36,7 +36,7 @@ export class OrganizationService {
                         members: {
                             create: {
                                 userId: user.id,
-                                role: 'owner',
+                                role: 'WS_OWNER',
                                 joinedAt: new Date(),
                             },
                         },
@@ -50,6 +50,15 @@ export class OrganizationService {
         });
 
         return organization;
+    }
+    async update(dto: any, organizationId: string){
+        return await this.prisma.organization.update({
+            where:{id: organizationId},
+            data:{
+                name:dto.name,
+                website:dto.website
+            }
+        })
     }
 
     async getMyOrganizations(userId: string) {
@@ -76,22 +85,49 @@ export class OrganizationService {
         }));
 
     }
-    async  getusersInOrganization(organizationId: string) {
-        let users = await this.prisma.organizationMember.findMany({
+    async getUsersInOrganization(organizationId: string) {
+        const users = await this.prisma.organizationMember.findMany({
             where: { organizationId },
             include: {
-                user: true,
+                user: {
+                    include: {
+                        workspaceMemberships: {
+                            include: {
+                                workspace: true,
+                            },
+                        },
+                    },
+                },
             },
         });
-        return (users?.map((membership) => ({ role: membership.role, ...membership.user })));
+
+        return users.map((membership) => ({
+            id: membership.user.id,
+            email: membership.user.email,
+            firstName: membership.user.firstName,
+            lastName: membership.user.lastName,
+            avatarUrl: membership.user.avatarUrl,
+            role: membership.role, // organization role
+            status: membership.status,
+
+            workspaces: membership.user.workspaceMemberships.map((wm) => ({
+                id: wm.workspace.id,
+                name: wm.workspace.name,
+                organizationId: wm.workspace.organizationId,
+                role: wm.role,          // ✅ workspace role
+                status: wm.status,
+                availability: wm.availability,
+                joinedAt: wm.joinedAt,
+            })),
+        }));
     }
     async inviteUser(
         dto: InviteUserDto,
         organizationId: string,
     ) {
-     let supaUser =    await this.supabase.inviteUser(dto.email);
-     console.log({supaUser});
-     
+        let supaUser = await this.supabase.inviteUser(dto.email);
+        console.log({ supaUser });
+
         // create pending user in prisma
         const user = await this.prisma.user.create({
             data: {
@@ -101,7 +137,7 @@ export class OrganizationService {
 
                 organizationMemberships: {
                     create: {
-                        organizationId ,
+                        organizationId,
                         role: dto.role,
                         joinedAt: new Date(),
                     },
@@ -121,12 +157,54 @@ export class OrganizationService {
 
         return user;
     }
+    async updateUser(
+        dto: any,
+        organizationId: string,
+    ) {
+
+
+        // create pending user in prisma
+        const user = await this.prisma.user.update({
+            where: { email: dto.email },
+            data: {
+                organizationMemberships: {
+                    deleteMany: {
+
+                    },
+                    create: {
+                        organizationId,
+                        role: dto.role,
+                        joinedAt: new Date(),
+                    },
+                },
+
+                workspaceMemberships: {
+                    deleteMany: {
+
+                    },
+                    create: dto.workspaceAccess.map(ws => ({
+                        workspaceId: ws.workspaceId,
+                        role: ws.role,
+                        joinedAt: new Date(),
+                    })),
+                },
+            },
+            include: {
+                workspaceMemberships: true,
+                organizationMemberships: true
+            }
+        });
+
+        // send supabase invite email
+
+        return user;
+    }
     async removeUserFromOrganization(organizationId: string, userId: string) {
         // remove user from organization in prisma
         await this.prisma.organizationMember.deleteMany({
             where: {
                 organizationId,
-                userId, 
+                userId,
             },
         });
 
@@ -156,6 +234,6 @@ export class OrganizationService {
                 },
             });
         }
-        
+
     }
 }

@@ -25,8 +25,15 @@ import { MediaModule } from './modules/media/media.module';
 import { AnalyticsModule } from './modules/analytics/analytics.module';
 import { BillingModule } from './modules/billing/billing.module';
 import { PrismaModule } from './prisma/prisma.module';
+import { APP_GUARD, DiscoveryModule } from '@nestjs/core';
+import { JwtGuard } from './common/guards/jwt.guard';
+
+import { RouteGuard } from './common/auth/route.guard';
+
 @Module({
-  imports: [PrismaModule,
+  imports: [
+    DiscoveryModule,
+    PrismaModule,
     RedisModule,
     RealtimeModule,
     OrganizationModule, ContactsModule, ConversationsModule, MessagesModule,
@@ -48,7 +55,11 @@ import { PrismaModule } from './prisma/prisma.module';
 
   ],
   controllers: [AppController],
-  providers: [AppService, NotificationQueue],
+  providers: [AppService, NotificationQueue,
+ { provide: APP_GUARD, useClass: JwtGuard },   // 1. verify token
+{ provide: APP_GUARD, useClass: RouteGuard }, // 2. read decorator, enforce
+
+  ],
   exports: [NotificationQueue],
 
 })

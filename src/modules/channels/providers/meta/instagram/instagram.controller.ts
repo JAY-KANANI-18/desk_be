@@ -14,6 +14,8 @@ import { verifyMetaSignature } from '../meta-signature.util';
 import axios from 'axios';
 import { IsString } from 'class-validator';
 import { ChannelAdaptersRegistry } from 'src/modules/channel-adapters/channel-adapters.registry';
+import { Public, WorkspaceRoute } from 'src/common/auth/route-access.decorator';
+import { WorkspacePermission } from 'src/common/constants/permissions';
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -69,6 +71,7 @@ export class InstagramController {
   // ─────────────────────────────────────────────────────────────────────────
 
   @Get('webhook')
+  @Public()
   verify(
     @Query('hub.mode') mode: string,
     @Query('hub.verify_token') token: string,
@@ -89,6 +92,8 @@ export class InstagramController {
   // ─────────────────────────────────────────────────────────────────────────
 
   @Post('webhook')
+    @Public()
+
   @HttpCode(200)
   async handle(
     @Req() req: any,
@@ -223,6 +228,8 @@ export class InstagramController {
   // ─────────────────────────────────────────────────────────────────────────
 
   @Get('auth/url')
+  @WorkspaceRoute(WorkspacePermission.CHANNELS_MANAGE)
+
   getAuthUrl(
     @Query('workspaceId') workspaceId: string,
     @Query('redirectUri') redirectUri: string,
@@ -257,6 +264,8 @@ export class InstagramController {
   // ─────────────────────────────────────────────────────────────────────────
 
   @Post('auth/callback')
+    @WorkspaceRoute(WorkspacePermission.CHANNELS_MANAGE)
+
   async handleCallback(@Body() dto: ConnectInstagramDto) {
     const { code, workspaceId, redirectUri } = dto;
     if (!code || !workspaceId || !redirectUri) {
@@ -288,8 +297,7 @@ this.logger.log(`long-lived token: ${{longLivedToken,expires_in}}`);
 
     const channel = await this.prisma.channel.upsert({
       where: {
-        workspaceId:workspaceId,
-        type: 'instagram',
+   
         identifier: igUser.user_id,  // ← webhook entry.id matches this
       },
       update: {
@@ -370,6 +378,8 @@ this.logger.log(`long-lived token: ${{longLivedToken,expires_in}}`);
   // ─────────────────────────────────────────────────────────────────────────
 
   @Post('auth/refresh/:channelId')
+    @WorkspaceRoute(WorkspacePermission.CHANNELS_MANAGE)
+
   async refreshToken(@Param('channelId') channelId: string) {
     const channel: any = await this.findChannelOrThrow(channelId);
 
@@ -396,6 +406,8 @@ this.logger.log(`long-lived token: ${{longLivedToken,expires_in}}`);
   // ─────────────────────────────────────────────────────────────────────────
 
   @Delete('channel/:channelId')
+    @WorkspaceRoute(WorkspacePermission.CHANNELS_MANAGE)
+
   async disconnectChannel(@Param('channelId') channelId: string) {
     await this.findChannelOrThrow(channelId);
     await this.prisma.channel.update({
@@ -412,6 +424,8 @@ this.logger.log(`long-lived token: ${{longLivedToken,expires_in}}`);
   // ─────────────────────────────────────────────────────────────────────────
 
   @Get('channel/:channelId/info')
+    @WorkspaceRoute(WorkspacePermission.CHANNELS_MANAGE)
+
   async getChannelInfo(@Param('channelId') channelId: string) {
     const channel: any = await this.findChannelOrThrow(channelId);
     const igUser = await this.getIGUserInfo(channel.credentials.accessToken);

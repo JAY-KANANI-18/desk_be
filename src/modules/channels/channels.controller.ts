@@ -1,19 +1,22 @@
 import { Controller, Delete, Param, Put, Req, UseGuards } from "@nestjs/common";
 import { JwtGuard } from "../../common/guards/jwt.guard";
-import { WorkspaceGuard } from "../../common/guards/workspace.guard";
 import { PrismaService } from "../../prisma/prisma.service";
 import { Get, Query } from "@nestjs/common";
 import { Post, Body } from "@nestjs/common";
 import { ChannelService } from "./channel.service";
 import { SendMessageDto } from "./dto/send-message.dto";
+import { JwtOnly, WorkspaceRoute } from "src/common/auth/route-access.decorator";
+import { WorkspacePermission } from "src/common/constants/permissions";
 
 
 @Controller('api/channels')
-@UseGuards(JwtGuard, WorkspaceGuard)
 export class ChannelsController {
     constructor(private prisma: PrismaService,
         private channelService: ChannelService) { }
+
+
     @Get('whatsapp/oauth')
+    @WorkspaceRoute(WorkspacePermission.CHANNELS_MANAGE)
     async startOAuth(@Query('workspaceId') workspaceId: string) {
         const url = `https://www.facebook.com/v19.0/dialog/oauth?client_id=${process.env.META_APP_ID}
     &redirect_uri=${process.env.META_REDIRECT_URI}
@@ -25,6 +28,8 @@ export class ChannelsController {
 
 
     @Get('whatsapp/oauth/callback')
+    @WorkspaceRoute(WorkspacePermission.CHANNELS_MANAGE)
+
     async handleCallback(
         @Query('code') code: string,
         @Query('state') workspaceId: string,
@@ -39,6 +44,8 @@ export class ChannelsController {
     }
 
     @Post('whatsapp/connect-manual')
+        @WorkspaceRoute(WorkspacePermission.CHANNELS_MANAGE)
+
     async connectManual(@Body() dto: {
         workspaceId: string;
         phoneNumberId: string;
@@ -63,6 +70,8 @@ export class ChannelsController {
     }
 
     @Put('whatsapp/:channelId')
+        @WorkspaceRoute(WorkspacePermission.CHANNELS_MANAGE)
+
     async UpdateWhatsAppChannel(@Param('channelId') channelId: string, @Body() dto: {
         accessToken: string;
         phoneNumberId: string;
@@ -108,6 +117,8 @@ export class ChannelsController {
         });
     }
     @Put('instagram/:channelId')
+        @WorkspaceRoute(WorkspacePermission.CHANNELS_MANAGE)
+
     async UpdateInstagramChannel(@Param('channelId') channelId: string, @Body() dto: {
         accessToken: string;
         name: string
@@ -157,6 +168,8 @@ export class ChannelsController {
         });
     }
     @Put('messenger/:channelId')
+        @WorkspaceRoute(WorkspacePermission.CHANNELS_MANAGE)
+
     async UpdateMessengerChannel(@Param('channelId') channelId: string, @Body() dto: {
         accessToken: string;
         name: string
@@ -210,6 +223,8 @@ export class ChannelsController {
         });
     }
     @Put('email/:channelId')
+        @WorkspaceRoute(WorkspacePermission.CHANNELS_MANAGE)
+
     async UpdateEmailChannel(
         @Param('channelId') channelId: string,
         @Body() dto: {
@@ -271,6 +286,8 @@ export class ChannelsController {
 
 
     @Get('instagram/oauth')
+        @WorkspaceRoute(WorkspacePermission.CHANNELS_MANAGE)
+
     async startInstagramOAuth(@Query('workspaceId') workspaceId: string) {
 
         const state = JSON.stringify({
@@ -290,6 +307,8 @@ export class ChannelsController {
 
 
     @Get('instagram/oauth/callback')
+        @WorkspaceRoute(WorkspacePermission.CHANNELS_MANAGE)
+
     async handleInstagramCallback(
         @Query('code') code: string,
         @Query('state') workspaceId: string,
@@ -306,6 +325,8 @@ export class ChannelsController {
 
 
     @Get('messenger/oauth')
+        @WorkspaceRoute(WorkspacePermission.CHANNELS_MANAGE)
+
     async startMessengerOAuth(@Query('workspaceId') workspaceId: string) {
 
         const state = JSON.stringify({
@@ -323,6 +344,8 @@ export class ChannelsController {
         return { url };
     }
     @Get('messenger/oauth/callback')
+        @WorkspaceRoute(WorkspacePermission.CHANNELS_MANAGE)
+
     async handleMessengerCallback(
         @Query('code') code: string,
         @Query('state') workspaceId: string,
@@ -342,6 +365,8 @@ export class ChannelsController {
     // }
 
     @Get('whatsapp/:workspaceId/templates')
+        @WorkspaceRoute(WorkspacePermission.CHANNELS_MANAGE)
+
     async listTemplates(@Param('workspaceId') workspaceId: string) {
         return this.prisma.whatsAppTemplate.findMany({
             where: { workspaceId, status: 'APPROVED' },
@@ -349,6 +374,8 @@ export class ChannelsController {
     }
 
     @Get('email/gmail/oauth')
+        @WorkspaceRoute(WorkspacePermission.CHANNELS_MANAGE)
+
     async startGmailOAuth(@Query('workspaceId') workspaceId: string) {
 
         const state = JSON.stringify({
@@ -390,6 +417,8 @@ export class ChannelsController {
     //     return { url };
     // }
     @Post('email/smtp/connect')
+        @WorkspaceRoute(WorkspacePermission.CHANNELS_MANAGE)
+
     async connectSMTP(@Body() dto: {
         workspaceId: string;
         smtpHost: string;
@@ -402,12 +431,14 @@ export class ChannelsController {
     }
 
     @Get()
+    @JwtOnly()
     async getChannels(@Req() req: any) {
         const workspaceId = req.headers['x-workspace-id'] as string;
         return this.channelService.getChannels(workspaceId);
     }
 
     @Delete(":id")
+    @WorkspaceRoute(WorkspacePermission.CHANNELS_MANAGE)
     async deleteChannels(@Req() req: any, @Param('id') channelId: string) {
         const workspaceId = req.headers['x-workspace-id'] as string;
         return this.channelService.deleteChannels(workspaceId, channelId);

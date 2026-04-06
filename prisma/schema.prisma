@@ -48,7 +48,8 @@ model UserActivity {
 model Organization {
   id        String   @id @default(uuid()) @db.Uuid
   name      String
-  logoUrl   String?
+  website  String?
+
   plan      String   @default("free")
   createdAt DateTime @default(now())
 

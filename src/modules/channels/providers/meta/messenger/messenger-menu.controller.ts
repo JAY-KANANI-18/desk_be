@@ -2,6 +2,8 @@
 
 import { Controller, Get, Post, Param, Body, Query, UseGuards, HttpCode, HttpStatus } from '@nestjs/common';
 import { MessengerMenuService, PersistentMenuLocale } from './messenger-menu.service';
+import { WorkspaceRoute } from 'src/common/auth/route-access.decorator';
+import { WorkspacePermission } from 'src/common/constants/permissions';
 // import { JwtGuard } from '../../../../../common/guards/jwt.guard';
 // import { WorkspaceGuard } from '../../../../../common/guards/workspace.guard';
 
@@ -15,6 +17,8 @@ export class MessengerMenuController {
    * Pull persistent menu + get_started + greetings from Meta → DB
    */
   @Post('sync')
+    @WorkspaceRoute(WorkspacePermission.CHANNELS_MANAGE)
+  
   sync(
     @Param('channelId') channelId: string,
     @Query('workspaceId') workspaceId: string,
@@ -27,6 +31,8 @@ export class MessengerMenuController {
    * List from DB — optional ?type filter
    */
   @Get()
+    @WorkspaceRoute(WorkspacePermission.CHANNELS_MANAGE)
+  
   list(
     @Param('channelId') channelId: string,
     @Query('workspaceId') workspaceId: string,
@@ -41,6 +47,8 @@ export class MessengerMenuController {
    * Body: { menu: PersistentMenuLocale[] }
    */
   @Post('push')
+    @WorkspaceRoute(WorkspacePermission.CHANNELS_MANAGE)
+  
   @HttpCode(HttpStatus.OK)
   pushMenu(
     @Param('channelId') channelId: string,
@@ -56,6 +64,8 @@ export class MessengerMenuController {
    * Body: { payload: "GET_STARTED" }
    */
   @Post('get-started')
+    @WorkspaceRoute(WorkspacePermission.CHANNELS_MANAGE)
+  
   @HttpCode(HttpStatus.OK)
   pushGetStarted(
     @Param('channelId') channelId: string,

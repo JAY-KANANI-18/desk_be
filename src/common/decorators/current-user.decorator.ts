@@ -1,13 +1,15 @@
-import { createParamDecorator, ExecutionContext, UnauthorizedException } from '@nestjs/common';
+import { createParamDecorator, ExecutionContext } from '@nestjs/common';
+
+export interface CurrentUserPayload {
+  sub: string;
+  orgId: string;
+  orgRole: string;
+  workspaceRoles: Record<string, string>;
+  currentWorkspaceId?: string;
+}
 
 export const CurrentUser = createParamDecorator(
-    (data: unknown, ctx: ExecutionContext) => {
-        const request = ctx.switchToHttp().getRequest();
-
-        if (!request.user) {
-            throw new UnauthorizedException('User not found in request');
-        }
-
-        return request.user;
-    },
+  (_data: unknown, ctx: ExecutionContext): CurrentUserPayload => {
+    return ctx.switchToHttp().getRequest().user;
+  },
 );

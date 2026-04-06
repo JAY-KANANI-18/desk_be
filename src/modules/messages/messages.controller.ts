@@ -5,15 +5,11 @@ import {
     Param,
     Body,
     Req,
-    UseGuards,
     Logger,
     BadRequestException,
 } from '@nestjs/common';
 import { MessagesService } from './messages.service';
 import { JwtGuard } from '../../common/guards/jwt.guard';
-import { WorkspaceGuard } from '../../common/guards/workspace.guard';
-import { PermissionGuard } from '../../common/guards/permission.guard';
-import { RequirePermission } from '../../common/decorators/require-permission.decorator';
 import { CreateMessageDto } from './dto/create-message.dto';
 import { User } from '@prisma/client';
 import { CurrentUser } from 'src/common/decorators/current-user.decorator';
@@ -21,6 +17,8 @@ import { OutboundService, SendMessageDto } from '../outbound/outbound.service';
 import { IsIn, IsString, IsUUID } from 'class-validator';
 import { v4 as uuid } from 'uuid';
 import { R2Service } from 'src/common/storage/r2.service';
+import { JwtOnly, WorkspaceRoute } from 'src/common/auth/route-access.decorator';
+import { WorkspacePermission } from 'src/common/constants/permissions';
 
 
 
@@ -41,7 +39,6 @@ class PresignDto {
     entityId: string;
 }
 @Controller('api/conversations/:conversationId/messages')
-@UseGuards(JwtGuard, WorkspaceGuard)
 export class MessagesController {
     private readonly logger = new Logger(MessagesController.name);
     constructor(private service: MessagesService,
@@ -51,8 +48,6 @@ export class MessagesController {
 
     ) { }
 
-    // @UseGuards(JwtGuard, WorkspaceGuard, PermissionGuard)
-    // @RequirePermission('message.send')
     // @Post()
     // create(
     //     @Req() req: any,
@@ -102,8 +97,9 @@ export class MessagesController {
     //     return { uploadUrl, fileUrl, key };
     // }
 
-    @UseGuards(JwtGuard, WorkspaceGuard)
     @Get()
+          @WorkspaceRoute(WorkspacePermission.MESSAGES_VIEW)
+
     findAll(
         @Req() req: any,
         @Param('conversationId') conversationId: string,
@@ -111,8 +107,8 @@ export class MessagesController {
         return this.service.findAll(req.workspaceId, conversationId);
     }
 
-    @UseGuards(JwtGuard, WorkspaceGuard)
     @Post('read')
+    @JwtOnly()
     async markRead(
         @Req() req: any,
         @Param('conversationId') conversationId: string,
@@ -121,6 +117,8 @@ export class MessagesController {
     }
 
     @Post()
+      @WorkspaceRoute(WorkspacePermission.MESSAGES_SEND)
+
     async send(
         @Param('conversationId') conversationId: string,
         @Body() body: SendMessageDto,

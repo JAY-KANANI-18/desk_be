@@ -10,17 +10,20 @@ import {
   Req,
 } from '@nestjs/common';
 import { JwtGuard } from '../../../../common/guards/jwt.guard';
-import { WorkspaceGuard } from '../../../../common/guards/workspace.guard';
 import { PrismaService } from '../../../../prisma/prisma.service';
 import { v4 as uuidv4 } from 'uuid';
+import { WorkspaceRoute } from 'src/common/auth/route-access.decorator';
+import { WorkspacePermission } from 'src/common/constants/permissions';
 
 @Controller('api/channels/webchat')
-@UseGuards(JwtGuard, WorkspaceGuard)
+@UseGuards(JwtGuard)
 export class WebchatManageController {
   constructor(private readonly prisma: PrismaService) {}
 
   // ── Create webchat channel ─────────────────────────────────────────────────
   @Post()
+    @WorkspaceRoute(WorkspacePermission.CHANNELS_MANAGE)
+  
   async create(
     @Req() req: any,
     @Body()
@@ -65,6 +68,8 @@ export class WebchatManageController {
 
   // ── Update appearance / settings ───────────────────────────────────────────
   @Patch(':channelId')
+    @WorkspaceRoute(WorkspacePermission.CHANNELS_MANAGE)
+
   async update(
     @Param('channelId') channelId: string,
     @Param('workspaceId') workspaceId: string,
@@ -111,6 +116,8 @@ export class WebchatManageController {
   // ── Rotate widget token ────────────────────────────────────────────────────
   // Useful if a token is compromised
   @Post(':channelId/rotate-token')
+    @WorkspaceRoute(WorkspacePermission.CHANNELS_MANAGE)
+
   async rotateToken(
     @Param('channelId') channelId: string,
     @Param('workspaceId') workspaceId: string,
@@ -135,6 +142,8 @@ export class WebchatManageController {
 
   // ── Get embed code ─────────────────────────────────────────────────────────
   @Get(':channelId/embed')
+    @WorkspaceRoute(WorkspacePermission.CHANNELS_MANAGE)
+
   async getEmbed(
     @Param('channelId') channelId: string,
     @Param('workspaceId') workspaceId: string,
@@ -148,6 +157,8 @@ export class WebchatManageController {
 
   // ── Delete channel ─────────────────────────────────────────────────────────
   @Delete(':channelId')
+    @WorkspaceRoute(WorkspacePermission.CHANNELS_MANAGE)
+
   async remove(
     @Param('channelId') channelId: string,
     @Param('workspaceId') workspaceId: string,

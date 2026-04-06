@@ -14,6 +14,8 @@ import { verifyMetaSignature } from '../meta-signature.util';
 import axios from 'axios';
 import { IsString } from 'class-validator';
 import { ChannelAdaptersRegistry } from 'src/modules/channel-adapters/channel-adapters.registry';
+import { Public, WorkspaceRoute } from 'src/common/auth/route-access.decorator';
+import { WorkspacePermission } from 'src/common/constants/permissions';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -82,6 +84,8 @@ export class MessengerController {
     // ─────────────────────────────────────────────────────────────────────────
 
     @Get('webhook')
+        @Public()
+    
     verify(
         @Query('hub.mode') mode: string,
         @Query('hub.verify_token') token: string,
@@ -102,6 +106,8 @@ export class MessengerController {
     // ─────────────────────────────────────────────────────────────────────────
 
     @Post('webhook')
+        @Public()
+    
     @HttpCode(200)
     async handle(
         @Req() req: any,
@@ -200,6 +206,8 @@ export class MessengerController {
     // ─────────────────────────────────────────────────────────────────────────
 
     @Get('auth/url')
+      @WorkspaceRoute(WorkspacePermission.CHANNELS_MANAGE)
+    
     async getAuthUrl(
         @Query('workspaceId') workspaceId: string,
         @Query('redirectUri') redirectUri: string,
@@ -240,6 +248,8 @@ export class MessengerController {
 
     // New endpoint — just returns pages, doesn't connect yet
     @Post('auth/pages')
+      @WorkspaceRoute(WorkspacePermission.CHANNELS_MANAGE)
+    
     async getPages(@Body() dto: GetPagesDto) {
         const { code, workspaceId, redirectUri } = dto;
         if (!code || !workspaceId || !redirectUri) {
@@ -277,6 +287,8 @@ export class MessengerController {
 
     // Modified callback — now only connects selected pages
     @Post('auth/callback')
+      @WorkspaceRoute(WorkspacePermission.CHANNELS_MANAGE)
+    
     async handleCallback(@Body() dto: any) {
         const { workspaceId, selectedPageIds, pages } = dto;
 
@@ -345,6 +357,8 @@ export class MessengerController {
     // ─────────────────────────────────────────────────────────────────────────
 
     @Delete('channel/:channelId')
+      @WorkspaceRoute(WorkspacePermission.CHANNELS_MANAGE)
+    
     async disconnectChannel(@Param('channelId') channelId: string) {
         const channel: any = await this.findChannelOrThrow(channelId);
 
@@ -372,6 +386,8 @@ export class MessengerController {
     // ─────────────────────────────────────────────────────────────────────────
 
     @Get('channel/:channelId/info')
+      @WorkspaceRoute(WorkspacePermission.CHANNELS_MANAGE)
+    
     async getChannelInfo(@Param('channelId') channelId: string) {
         const channel: any = await this.findChannelOrThrow(channelId);
         const info = await this.getPageInfo(channel.identifier, channel.credentials.accessToken);
@@ -385,6 +401,8 @@ export class MessengerController {
     // ─────────────────────────────────────────────────────────────────────────
 
     @Get('channel/:channelId/contact/:psid')
+      @WorkspaceRoute(WorkspacePermission.CHANNELS_MANAGE)
+    
     async getContactProfile(
         @Param('channelId') channelId: string,
         @Param('psid') psid: string,
@@ -406,6 +424,8 @@ export class MessengerController {
     // ─────────────────────────────────────────────────────────────────────────
 
     @Post('channel/:channelId/mark-read')
+      @WorkspaceRoute(WorkspacePermission.CHANNELS_MANAGE)
+    
     async markAsRead(
         @Param('channelId') channelId: string,
         @Body('recipientPsid') recipientPsid: string,
@@ -426,6 +446,8 @@ export class MessengerController {
     // ─────────────────────────────────────────────────────────────────────────
 
     @Post('channel/:channelId/typing')
+      @WorkspaceRoute(WorkspacePermission.CHANNELS_MANAGE)
+    
     async sendTyping(
         @Param('channelId') channelId: string,
         @Body('recipientPsid') recipientPsid: string,

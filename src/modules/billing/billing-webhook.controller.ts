@@ -15,8 +15,6 @@ import { CreateCheckoutDto } from './dto/create-checkout.dto';
 import { StripeService } from './providers/stripe.service';
 import { RazorpayService } from './providers/razorpay.service';
 import { JwtGuard } from 'src/common/guards/jwt.guard';
-import { PermissionGuard } from 'src/common/guards/permission.guard';
-import { WorkspaceGuard } from 'src/common/guards/workspace.guard';
 
 @Controller('api/billing')
 

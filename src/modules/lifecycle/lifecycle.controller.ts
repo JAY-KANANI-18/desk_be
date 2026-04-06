@@ -15,22 +15,25 @@ import {
 import { LifecycleService } from './lifecycle.service';
 import { CreateLifecycleStageDto, ReorderStagesDto, ToggleVisibilityDto, UpdateLifecycleStageDto } from './lifecycle.helper';
 import { JwtGuard } from 'src/common/guards/jwt.guard';
-import { WorkspaceGuard } from 'src/common/guards/workspace.guard';
+import { JwtOnly, WorkspaceRoute } from 'src/common/auth/route-access.decorator';
+import { WorkspacePermission } from 'src/common/constants/permissions';
 
 
 @Controller('api/workspaces/lifecycle')
-@UseGuards(JwtGuard,WorkspaceGuard)
 export class LifecycleController {
   constructor(private readonly lifecycleService: LifecycleService) {}
 
   /** GET /workspaces/:workspaceId/lifecycle */
   @Get()
+  @JwtOnly()
   findAll(@Req() req) {
     return this.lifecycleService.findAll(req.workspaceId);
   }
 
   /** GET /workspaces/:workspaceId/lifecycle/:id */
   @Get(':id')
+    @JwtOnly()
+
   findOne(
     @Req() req,
     @Param('id', ParseIntPipe) id: string,
@@ -40,6 +43,7 @@ export class LifecycleController {
 
   /** POST /workspaces/:workspaceId/lifecycle */
   @Post()
+  @WorkspaceRoute(WorkspacePermission.SETTINGS_MANAGE)
   @HttpCode(HttpStatus.CREATED)
   create(
     @Req() req,
@@ -50,6 +54,8 @@ export class LifecycleController {
 
   /** PATCH /workspaces/:workspaceId/lifecycle/reorder  ← must come before :id */
   @Patch('reorder')
+    @WorkspaceRoute(WorkspacePermission.SETTINGS_MANAGE)
+
   reorder(
     @Req() req,
     @Body() dto: any,
@@ -61,6 +67,8 @@ export class LifecycleController {
 
   /** PATCH /workspaces/:workspaceId/lifecycle/visibility */
   @Patch('visibility')
+    @WorkspaceRoute(WorkspacePermission.SETTINGS_MANAGE)
+
   toggleVisibility(
     @Req() req,
     @Body() dto: ToggleVisibilityDto,
@@ -70,6 +78,8 @@ export class LifecycleController {
 
   /** PATCH /workspaces/:workspaceId/lifecycle/:id */
   @Patch(':id')
+    @WorkspaceRoute(WorkspacePermission.SETTINGS_MANAGE)
+
   update(
     @Req() req,
     @Param('id') id: string,
@@ -80,6 +90,8 @@ export class LifecycleController {
 
   /** DELETE /workspaces/:workspaceId/lifecycle/:id */
   @Delete(':id')
+    @WorkspaceRoute(WorkspacePermission.SETTINGS_MANAGE)
+
   @HttpCode(HttpStatus.NO_CONTENT)
   remove(
     @Req() req,

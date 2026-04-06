@@ -15,6 +15,8 @@ import { Cron, CronExpression } from '@nestjs/schedule';
 import axios from 'axios';
 import { IsString } from 'class-validator';
 import { ChannelAdaptersRegistry } from 'src/modules/channel-adapters/channel-adapters.registry';
+import { Public, WorkspaceRoute } from 'src/common/auth/route-access.decorator';
+import { WorkspacePermission } from 'src/common/constants/permissions';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -114,6 +116,7 @@ export class WhatsAppController implements OnModuleInit {
     // ─────────────────────────────────────────────────────────────────────────
 
     @Get('webhook')
+    @Public()
     verify(
         @Query('hub.mode') mode: string,
         @Query('hub.verify_token') token: string,
@@ -134,6 +137,8 @@ export class WhatsAppController implements OnModuleInit {
     // ─────────────────────────────────────────────────────────────────────────
 
     @Post('webhook')
+        @Public()
+
     @HttpCode(200)
     async handle(
         @Req() req: any,
@@ -200,6 +205,8 @@ export class WhatsAppController implements OnModuleInit {
     // ─────────────────────────────────────────────────────────────────────────
 
     @Get('auth/url')
+      @WorkspaceRoute(WorkspacePermission.CHANNELS_MANAGE)
+    
     getAuthUrl(
         @Query('workspaceId') workspaceId: string,
         @Query('redirectUri') redirectUri: string,
@@ -232,6 +239,8 @@ export class WhatsAppController implements OnModuleInit {
     // ─────────────────────────────────────────────────────────────────────────
 
     @Post('auth/callback')
+      @WorkspaceRoute(WorkspacePermission.CHANNELS_MANAGE)
+
     async handleCallback(@Body() dto: ConnectWhatsAppDto) {
         const { code, workspaceId, redirectUri } = dto;
         if (!code || !workspaceId || !redirectUri) {
@@ -325,6 +334,8 @@ export class WhatsAppController implements OnModuleInit {
     // ─────────────────────────────────────────────────────────────────────────
 
     @Post('connect/manual')
+      @WorkspaceRoute(WorkspacePermission.CHANNELS_MANAGE)
+
     async manualConnect(@Body() dto: ManualConnectDto) {
         const { workspaceId, accessToken, phoneNumberId, wabaId, displayName } = dto;
 
@@ -372,6 +383,8 @@ export class WhatsAppController implements OnModuleInit {
     // ─────────────────────────────────────────────────────────────────────────
 
     @Post('channel/:channelId/refresh-token')
+      @WorkspaceRoute(WorkspacePermission.CHANNELS_MANAGE)
+
     async refreshToken(
         @Param('channelId') channelId: string,
         @Body('newAccessToken') newAccessToken?: string,
@@ -441,6 +454,8 @@ export class WhatsAppController implements OnModuleInit {
     // ─────────────────────────────────────────────────────────────────────────
 
     @Delete('channel/:channelId')
+      @WorkspaceRoute(WorkspacePermission.CHANNELS_MANAGE)
+
     async disconnectChannel(@Param('channelId') channelId: string) {
         const channel = await this.findChannelOrThrow(channelId);
 
@@ -458,7 +473,10 @@ export class WhatsAppController implements OnModuleInit {
     // GET /webhooks/whatsapp/channel/:channelId/info
     // ─────────────────────────────────────────────────────────────────────────
 
-    @Get('channel/:channelId/info')
+    @Get('channel/:channelId/info'
+        
+    )
+    @WorkspaceRoute(WorkspacePermission.CHANNELS_MANAGE)
     async getChannelInfo(@Param('channelId') channelId: string) {
         const channel: any = await this.findChannelOrThrow(channelId);
 
@@ -478,6 +496,8 @@ export class WhatsAppController implements OnModuleInit {
     // ─────────────────────────────────────────────────────────────────────────
 
     @Get('channel/:channelId/validate-token')
+      @WorkspaceRoute(WorkspacePermission.CHANNELS_MANAGE)
+
     async validateToken(@Param('channelId') channelId: string) {
         const channel = await this.findChannelOrThrow(channelId);
         const result = await this.checkAndHealToken(channel);
@@ -490,6 +510,8 @@ export class WhatsAppController implements OnModuleInit {
     // ─────────────────────────────────────────────────────────────────────────
 
     @Post('channel/:channelId/mark-read')
+      @WorkspaceRoute(WorkspacePermission.CHANNELS_MANAGE)
+
     async markAsRead(
         @Param('channelId') channelId: string,
         @Body('messageId') messageId: string,
@@ -515,6 +537,8 @@ export class WhatsAppController implements OnModuleInit {
     // ─────────────────────────────────────────────────────────────────────────
 
     @Get('channel/:channelId/quality')
+      @WorkspaceRoute(WorkspacePermission.CHANNELS_MANAGE)
+
     async getQuality(@Param('channelId') channelId: string) {
         const channel: any = await this.findChannelOrThrow(channelId);
 

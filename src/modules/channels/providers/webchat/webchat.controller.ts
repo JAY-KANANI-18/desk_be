@@ -20,6 +20,7 @@ import { InboundService } from '../../../inbound/inbound.service';
 import { PrismaService } from '../../../../prisma/prisma.service';
 import { WebchatSessionService } from './webchat-session.service';
 import { MediaService } from 'src/modules/media/media.service';
+import { Public } from 'src/common/auth/route-access.decorator';
 
 // ─── Event types the widget can send ─────────────────────────────────────────
 type WebchatEvent =
@@ -47,6 +48,8 @@ export class WebchatController {
 
     @Post('webhook')
     @HttpCode(200)
+        @Public()
+    
     @UseInterceptors(FilesInterceptor('files', 5))
     async webhook(
         @Body() body: {
@@ -170,6 +173,8 @@ export class WebchatController {
 
     // ── Poll fallback — GET stays separate (different HTTP method) ────────────
     @Get('messages')
+        @Public()
+    
     async pollMessages(
         @Query('sessionId') sessionId: string,
         @Query('widgetToken') widgetToken: string,
@@ -207,6 +212,8 @@ export class WebchatController {
 
     // ── Public config — called by widget on load ──────────────────────────────
     @Get('config/:widgetToken')
+        @Public()
+
     async getConfig(@Param('widgetToken') widgetToken: string) {
         const channel = await this.resolveChannel(widgetToken);
         const config = channel.config as any;

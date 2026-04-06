@@ -167,6 +167,8 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
         conversationId: string;
         message: any;
     }) {
+                console.log("socker sent ",event.conversationId);
+
         // Conversation room — live chat area
         this.server
             .to(`conversation:${event.conversationId}`)
@@ -245,6 +247,8 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     @OnEvent('conversation.updated')
     handleConversationUpdated(conv: any) {
         if (!conv?.workspaceId) return;
+        console.log("socker sent ",conv?.workspaceId);
+        
         this.server
             .to(`workspace:${conv.workspaceId}`)
             .emit('conversation.upsert', conv);

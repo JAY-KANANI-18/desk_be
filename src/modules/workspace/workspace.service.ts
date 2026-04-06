@@ -3,10 +3,16 @@ import { SetupWorkspaceDto } from './dto/add-workspace.dto';
 import { User } from '@prisma/client';
 import slugify from 'slugify';
 import { PrismaService } from '../../prisma/prisma.service';
+import { InviteUserDto } from './workspace.controller';
+import { SupabaseService } from 'src/supdabse/supabase.service';
 
 @Injectable()
 export class WorkspaceService {
-    constructor(private prisma: PrismaService) { }
+    constructor(private prisma: PrismaService,
+
+                private supabase: SupabaseService,
+
+    ) { }
 
     async create(dto: SetupWorkspaceDto, user: User) {
 
@@ -61,6 +67,88 @@ export class WorkspaceService {
         }));
 
     }
+      async getWorkspacesUserAvailability(workspaceId: string) {
+
+        const members = await this.prisma.userActivity.findMany({
+            where: {
+                user: {
+                    workspaceMemberships: { 
+                        some: {
+                            workspaceId: workspaceId,
+                            status: 'active',
+
+                        },
+                    },
+                },
+            },
+            select: {
+                userId: true,
+                activityStatus: true,
+            }
+        });
+
+        return members;
+    }
+     async inviteUser(
+           dto: InviteUserDto,
+           workspaceId: string,
+       ) {
+
+        let supaUser =    await this.supabase.inviteUser(dto.email);
+        console.log({supaUser});
+        
+           // create pending user in prisma
+           const user = await this.prisma.user.create({
+               data: {
+                   id: supaUser.user.id,
+                   email: dto.email,
+                   status: "PENDING",
+   
+         
+   
+                   workspaceMemberships: {
+                       create: dto.workspaceAccess.map(ws => ({
+                           workspaceId: workspaceId,
+                           role: ws.role,
+                           joinedAt: new Date(),
+                       })),
+                   },
+               },
+           });
+   
+           // send supabase invite email
+   
+           return user;
+       }
+       async updateUser(
+           dto: any,
+           workspaceId: string,
+       ) {
+       
+        
+           // create pending user in prisma
+           const user = await this.prisma.user.update({
+               where:{email:dto.email},
+               data: {
+        
+   
+                   workspaceMemberships: {
+                       deleteMany:{
+                        workspaceId
+                       },
+                       create: dto.workspaceAccess.map(ws => ({
+                           workspaceId: workspaceId,
+                           role: ws.role,
+                           joinedAt: new Date(),
+                       })),
+                   },
+               },
+           });
+   
+           // send supabase invite email
+   
+           return user;
+       }
 
     async getWorkspaceusers(workspaceId: string) {
         let users = await this.prisma.workspaceMember.findMany({

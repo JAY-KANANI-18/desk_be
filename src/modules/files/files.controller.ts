@@ -1,11 +1,13 @@
 import { Controller, Post, Body } from "@nestjs/common";
 import { R2Service } from "../../common/storage/r2.service";
+import { JwtOnly } from "src/common/auth/route-access.decorator";
 
 @Controller("api/files")
 export class FilesController {
 
     constructor(private r2: R2Service) { }
     @Post("presign")
+    @JwtOnly()
     async createPresignedUrl(
         @Body() body: {
             type: string

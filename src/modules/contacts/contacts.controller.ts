@@ -7,45 +7,44 @@ import {
     Param,
     Body,
     Req,
-    UseGuards,
 } from '@nestjs/common';
 import { ContactsService } from './contacts.service';
 import { JwtGuard } from '../../common/guards/jwt.guard';
-import { WorkspaceGuard } from '../../common/guards/workspace.guard';
-import { PermissionGuard } from '../../common/guards/permission.guard';
-import { RequirePermission } from '../../common/decorators/require-permission.decorator';
 import { CreateContactDto } from './dto/create-contact.dto';
 import { UpdateContactDto } from './dto/update-contact.dto';
 import { AssignContactDto } from './dto/assign.dto';
+import { WorkspacePermission } from 'src/common/constants/permissions';
+import { WorkspaceRoute } from 'src/common/auth/route-access.decorator';
 
 @Controller('api/contacts')
 export class ContactsController {
     constructor(private contactsService: ContactsService) { }
 
-    @UseGuards(JwtGuard, WorkspaceGuard, PermissionGuard)
-    @RequirePermission('message.send')
     @Post()
+    @WorkspaceRoute(WorkspacePermission.CONTACTS_MANAGE)
     create(@Req() req: any, @Body() dto: CreateContactDto) {
         return this.contactsService.create(req.workspaceId, dto);
     }
 
-    @UseGuards(JwtGuard, WorkspaceGuard)
+    
     @Get()
+    @WorkspaceRoute(WorkspacePermission.CONTACTS_VIEW)
     findAll(@Req() req: any) {
         return this.contactsService.findAll(req.workspaceId);
     }
 
-    @UseGuards(JwtGuard, WorkspaceGuard)
+    
     @Get(':id')
+    @WorkspaceRoute(WorkspacePermission.CONTACTS_VIEW)
     findOne(@Req() req: any, @Param('id') id: string) {
         return this.contactsService.findOne(req.workspaceId, id);
     }
 
-  
 
-    @UseGuards(JwtGuard, WorkspaceGuard)
-    // @RequirePermission('conversation.assign')
+
+    
     @Patch(':id/assign')
+    @WorkspaceRoute(WorkspacePermission.CONTACTS_MANAGE)
     assign(
         @Req() req: any,
         @Param('id') id: string,
@@ -55,6 +54,8 @@ export class ContactsController {
     }
 
     @Patch(':id/lifecycle')
+    @WorkspaceRoute(WorkspacePermission.CONTACTS_MANAGE)
+
     updateLifecycle(
         @Req() req: any,
         @Param('id') id: string,
@@ -63,9 +64,8 @@ export class ContactsController {
         return this.contactsService.updateLifecycle(req.workspaceId, id, dto.lifecycleId);
     }
 
-    @UseGuards(JwtGuard, WorkspaceGuard)
-    // @RequirePermission('conversation.assign')
     @Patch(':id/status')
+    @WorkspaceRoute(WorkspacePermission.CONTACTS_MANAGE)
     statusUpdate(
         @Req() req: any,
         @Param('id') id: string,
@@ -75,16 +75,14 @@ export class ContactsController {
     }
 
 
-    @UseGuards(JwtGuard, WorkspaceGuard)
-    // @RequirePermission('message.send')
     @Patch(':id')
+    @WorkspaceRoute(WorkspacePermission.CONTACTS_MANAGE)
     update(@Req() req: any, @Param('id') id: string, @Body() dto: UpdateContactDto) {
         return this.contactsService.update(req.workspaceId, id, dto);
     }
 
-    @UseGuards(JwtGuard, WorkspaceGuard, PermissionGuard)
-    @RequirePermission('workspace.manage')
     @Delete(':id')
+    @WorkspaceRoute(WorkspacePermission.CONTACTS_MANAGE)
     remove(@Req() req: any, @Param('id') id: string) {
         return this.contactsService.remove(req.workspaceId, id);
     }

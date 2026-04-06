@@ -7,12 +7,27 @@ import {
 import { PrismaService } from '../../prisma/prisma.service';
 import { verifySupabaseToken } from './supabase-jwt';
 import { ForbiddenException } from '@nestjs/common';
+import { Reflector } from '@nestjs/core';
+import { RouteAccessConfig, ROUTE_ACCESS_KEY } from '../auth/route-access.decorator';
 
 @Injectable()
 export class JwtGuard implements CanActivate {
-    constructor(private prisma: PrismaService) { }
+    constructor(private prisma: PrismaService,
+        private reflector: Reflector,   // ← add this
+
+
+    ) { }
 
     async canActivate(context: ExecutionContext): Promise<boolean> {
+
+        // Check if route is public — skip JWT entirely
+        const access = this.reflector.getAllAndOverride<RouteAccessConfig>(
+            ROUTE_ACCESS_KEY,
+            [context.getHandler(), context.getClass()],
+        );
+
+        if (access?.type === 'public') return true;  // ← exits before token check
+
         const req = context.switchToHttp().getRequest();
         const authHeader = req.headers.authorization;
 
@@ -37,12 +52,12 @@ export class JwtGuard implements CanActivate {
 
         const dbUser = await this.prisma.user.upsert({
             where: { email: email },
-            update: {  status: 'ACTIVE' }, // Set to ACTIVE if password is already set, otherwise PENDING),},
+            update: { status: 'ACTIVE' }, // Set to ACTIVE if password is already set, otherwise PENDING),},
             create: {
                 id: userId,
                 email,
                 firstName: email?.split('@')[0] ?? 'User',
-             status: 'ACTIVE' // Set to ACTIVE if password is already set, otherwise PENDING),
+                status: 'ACTIVE' // Set to ACTIVE if password is already set, otherwise PENDING),
             },
 
             // get workspace
@@ -53,6 +68,8 @@ export class JwtGuard implements CanActivate {
         });
 
         req.user = dbUser;
+        req.user.workspaceRoles = Object.fromEntries(dbUser.workspaceMemberships.map(wm => [wm.workspaceId, wm.role])) // { wsId: WorkspaceRole }
+        req.user.orgRoles = Object.fromEntries(dbUser.organizationMemberships.map(or => [or.organizationId, or.role])) // { wsId: WorkspaceRole }
 
 
         // allow password setup route

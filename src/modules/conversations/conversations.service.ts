@@ -190,6 +190,7 @@ export class ConversationsService {
     } = opts;
 
     const take = Math.min(limit, 100);
+    console.log({workspaceId});
 
     // ── Build where clause ────────────────────────────────────────────────────
     const where: Prisma.ConversationWhereInput = { workspaceId };
@@ -364,6 +365,7 @@ export class ConversationsService {
     limit = 30,
   ) {
     const take = Math.min(limit, 100);
+    
 
     // Resolve cursor timestamp if provided
     let cursorDate: Date | undefined;

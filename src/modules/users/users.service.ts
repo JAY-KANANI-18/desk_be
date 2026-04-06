@@ -99,7 +99,49 @@ export class UsersService {
             },
         });
     }
+async getMyOrganizations(userId: string) {
+        const memberships = await this.prisma.organizationMember.findMany({
+            where: { userId },
+            include: {
+                organization: {
+                    include: {
+                        workspaces: {
+                            include: {
+                                members: {
+                                    where: { userId },
+                                },
+                            },
+                        },
+                    },
+                },
+            },
+        });
 
+        return memberships.map((membership) => ({
+            role: membership.role,
+            ...membership.organization,
+        }));
+
+    }
+
+        async getMyWorkspaces(userId: string) {
+        const memberships = await this.prisma.workspaceMember.findMany({
+            where: { userId },
+            include: {
+                workspace: {
+                    include: {
+                        members: true,
+                    },
+                },
+            },
+        });
+
+        return memberships.map((membership) => ({
+            role: membership.role,
+            ...membership.workspace,
+        }));
+
+    }
     async updateAvailability(userId: string, available: string) {
 
         return this.prisma.userActivity.update({
@@ -109,29 +151,7 @@ export class UsersService {
             },
         });
     }
-    async getWorkspacesUserAvailability(workspaceId: string) {
-
-        const members = await this.prisma.userActivity.findMany({
-            where: {
-                user: {
-                    workspaceMemberships: { 
-                        some: {
-                            workspaceId: workspaceId,
-                            status: 'active',
-
-                        },
-                    },
-                },
-            },
-            select: {
-                userId: true,
-                activityStatus: true,
-            }
-        });
-
-        return members;
-    }
-   
+  
 
     async inviteUser(workspaceId: string, email: string, role: string) {
 
@@ -151,4 +171,7 @@ export class UsersService {
             },
         });
     }
+
+
+
 }
