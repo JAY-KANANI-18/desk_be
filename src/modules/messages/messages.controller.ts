@@ -108,7 +108,7 @@ export class MessagesController {
     }
 
     @Post('read')
-    @JwtOnly()
+    @WorkspaceRoute()
     async markRead(
         @Req() req: any,
         @Param('conversationId') conversationId: string,

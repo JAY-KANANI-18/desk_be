@@ -431,10 +431,9 @@ export class ChannelsController {
     }
 
     @Get()
-    @JwtOnly()
+    @WorkspaceRoute()
     async getChannels(@Req() req: any) {
-        const workspaceId = req.headers['x-workspace-id'] as string;
-        return this.channelService.getChannels(workspaceId);
+        return this.channelService.getChannels(req.workspaceId);
     }
 
     @Delete(":id")

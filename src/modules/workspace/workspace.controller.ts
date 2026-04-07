@@ -87,8 +87,8 @@ export class WorkspaceController {
         return this.workspaceService.getWorkspaceusers(req.workspaceId);
     }
 
-    @Get('/availability')
-    @JwtOnly()
+    @Get('availability')
+    @WorkspaceRoute()
     async getAvailability(
         @CurrentUser() user: any,
         @Req() req: any,

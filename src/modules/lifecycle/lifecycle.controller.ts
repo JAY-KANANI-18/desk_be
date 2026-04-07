@@ -25,14 +25,14 @@ export class LifecycleController {
 
   /** GET /workspaces/:workspaceId/lifecycle */
   @Get()
-  @JwtOnly()
+  @WorkspaceRoute()
   findAll(@Req() req) {
     return this.lifecycleService.findAll(req.workspaceId);
   }
 
   /** GET /workspaces/:workspaceId/lifecycle/:id */
   @Get(':id')
-    @JwtOnly()
+    @WorkspaceRoute()
 
   findOne(
     @Req() req,
