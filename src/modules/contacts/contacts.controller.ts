@@ -7,6 +7,7 @@ import {
     Param,
     Body,
     Req,
+    Put,
 } from '@nestjs/common';
 import { ContactsService } from './contacts.service';
 import { JwtGuard } from '../../common/guards/jwt.guard';
@@ -53,7 +54,7 @@ export class ContactsController {
         return this.contactsService.assign(req.workspaceId, id, dto);
     }
 
-    @Patch(':id/lifecycle')
+    @Put(':id/lifecycle')
     @WorkspaceRoute(WorkspacePermission.CONTACTS_MANAGE)
 
     updateLifecycle(

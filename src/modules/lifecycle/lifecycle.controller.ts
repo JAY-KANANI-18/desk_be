@@ -95,7 +95,7 @@ export class LifecycleController {
   @HttpCode(HttpStatus.NO_CONTENT)
   remove(
     @Req() req,
-    @Param('id', ParseIntPipe) id: string,
+    @Param('id') id: string,
   ) {
     return this.lifecycleService.remove(id, req.workspaceId);
   }
