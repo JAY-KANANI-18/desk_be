@@ -150,26 +150,48 @@ export class RouteGuard implements CanActivate, OnModuleInit {
 
     private async enforce(access: RouteAccessConfig, request: any): Promise<boolean> {
         if (access.type === 'public') return true;
-
         if (!request.user) throw new UnauthorizedException('Authentication required');
         if (access.type === 'jwt') return true;
 
-        if (access.type === 'org') {
-            const organizationId =
-                request.headers['x-organization-id'] ??
-                request.params?.organizationId;
+        // ── Always resolve both if available ──────────────────────
+        const organizationId =
+            request.headers['x-organization-id'] ??
+            request.params?.organizationId;
 
+        const workspaceId =
+            request.headers['x-workspace-id'] ??
+            request.params?.workspaceId;
+
+        // Resolve roles from what's available
+        const orgRole = organizationId
+            ? request.user.orgRoles?.[organizationId]
+            : null;
+
+        const wsRole = workspaceId
+            ? request.user.workspaceRoles?.[workspaceId]
+            : null;
+
+        // Stamp everything onto request — controllers can use whatever they need
+        if (organizationId && orgRole) {
+            request.organizationId = organizationId;
+            request.orgRole = orgRole;
+        }
+
+        if (workspaceId && wsRole) {
+            request.workspaceId = workspaceId;
+            request.workspaceRole = wsRole;
+        }
+
+        const isOrgAdmin = Object.values(request.user.orgRoles ?? {}).includes('ORG_ADMIN');
+
+        // ── Now enforce based on route type ───────────────────────
+        if (access.type === 'org') {
             if (!organizationId) {
                 throw new BadRequestException('X-Organization-Id header is required');
             }
-
-            const orgRole = request.user.orgRoles?.[organizationId];
             if (!orgRole) {
                 throw new ForbiddenException('You are not a member of this organization');
             }
-
-            request.organizationId = organizationId;
-            request.orgRole = orgRole;
 
             if (access.permissions?.length) {
                 const granted = ORG_ROLE_PERMISSIONS[orgRole] ?? [];
@@ -184,24 +206,12 @@ export class RouteGuard implements CanActivate, OnModuleInit {
         }
 
         if (access.type === 'workspace') {
-            const workspaceId =
-                request.headers['x-workspace-id'] ??
-                request.params?.workspaceId;
-
             if (!workspaceId) {
                 throw new BadRequestException('X-Workspace-Id header is required');
             }
-
-            const wsRole = request.user.workspaceRoles?.[workspaceId];
             if (!wsRole) {
                 throw new ForbiddenException('You do not have access to this workspace');
             }
-
-            request.workspaceId = workspaceId;
-            request.workspaceRole = wsRole;
-
-            const isOrgAdmin = Object.values(request.user.orgRoles ?? {})
-                .includes('ORG_ADMIN');
 
             if (access.permissions?.length && !isOrgAdmin) {
                 const granted = WS_ROLE_PERMISSIONS[wsRole] ?? [];

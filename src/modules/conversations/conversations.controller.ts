@@ -44,10 +44,10 @@ import {
 import { IsString, IsOptional, IsArray, IsIn, IsBoolean } from 'class-validator';
 import { Transform } from 'class-transformer';
 
-import { ConversationsService }   from './conversations.service';
-import { ActivityService }         from '../activity/activity.service';
-import { JwtGuard }               from '../../common/guards/jwt.guard';
-import { CreateConversationDto }   from './dto/create-conversation.dto';
+import { ConversationsService } from './conversations.service';
+import { ActivityService } from '../activity/activity.service';
+import { JwtGuard } from '../../common/guards/jwt.guard';
+import { CreateConversationDto } from './dto/create-conversation.dto';
 import { SendMessageDto as SendMessageBody } from './dto/send-message.dto';
 import { WorkspacePermission } from 'src/common/constants/permissions';
 import { WorkspaceRoute } from 'src/common/auth/route-access.decorator';
@@ -118,7 +118,7 @@ export class ListConversationsQuery {
   @Transform(({ value }) => parseInt(value, 10))
   limit?: number;
 
-    @IsOptional() @IsString()
+  @IsOptional() @IsString()
   lifecycleId?: string;
 }
 
@@ -128,8 +128,8 @@ export class ListConversationsQuery {
 export class ConversationsController {
   constructor(
     private readonly conversationsService: ConversationsService,
-    private readonly activityService:       ActivityService,
-  ) {}
+    private readonly activityService: ActivityService,
+  ) { }
 
   // ══════════════════════════════════════════════════════════════
   // LIST + SEARCH
@@ -141,7 +141,7 @@ export class ConversationsController {
    *        teamId, unreplied, search, cursor, limit
    */
   @Get()
-  @WorkspaceRoute(WorkspacePermission.MESSAGES_VIEW) 
+  @WorkspaceRoute(WorkspacePermission.MESSAGES_VIEW)
   findAll(@Req() req: any, @Query() query: ListConversationsQuery) {
     const workspaceId = req.workspaceId as string;
     const actorUserId = req.user?.id as string;
@@ -158,8 +158,8 @@ export class ConversationsController {
    * MUST be defined before /:id to avoid route collision.
    */
   @Get('search')
-      @WorkspaceRoute(WorkspacePermission.MESSAGES_VIEW) 
- 
+  @WorkspaceRoute(WorkspacePermission.MESSAGES_VIEW)
+
 
   searchMessages(
     @Req() req: any,
@@ -175,8 +175,8 @@ export class ConversationsController {
   // ══════════════════════════════════════════════════════════════
 
   @Get(':id')
-      @WorkspaceRoute(WorkspacePermission.MESSAGES_VIEW) 
- 
+  @WorkspaceRoute(WorkspacePermission.MESSAGES_VIEW)
+
 
   findOne(
     @Param('id', ParseUUIDPipe) id: string,
@@ -190,8 +190,8 @@ export class ConversationsController {
   // ══════════════════════════════════════════════════════════════
 
   @Post()
-      @WorkspaceRoute(WorkspacePermission.MESSAGES_VIEW) 
- 
+  @WorkspaceRoute(WorkspacePermission.MESSAGES_VIEW)
+
 
 
   create(@Req() req: any, @Body() dto: CreateConversationDto) {
@@ -211,8 +211,8 @@ export class ConversationsController {
    * Returns messages only (newest-first from BE; FE reverses for display).
    */
   @Get(':id/messages')
-      @WorkspaceRoute(WorkspacePermission.MESSAGES_VIEW) 
- 
+  @WorkspaceRoute(WorkspacePermission.MESSAGES_VIEW)
+
 
   getMessages(
     @Param('id', ParseUUIDPipe) id: string,
@@ -227,24 +227,24 @@ export class ConversationsController {
    * POST /api/conversations/:id/messages
    * Body: { channelId, text?, attachments?, metadata? }
    */
-//   @RequirePermission('message.send')
-//   @Post(':id/messages')
-//   @HttpCode(HttpStatus.CREATED)
-//   sendMessage(
-//     @Param('id', ParseUUIDPipe) id: string,
-//     @Body() body: SendMessageBody,
-//     @Req() req: any,
-//   ) {
-//     return this.conversationsService.sendMessage({
-//       workspaceId:    req.workspaceId,
-//       conversationId: id,
-//       channelId:      body.channelId,
-//       actorId:        req.user.id,
-//       text:           body.text,
-//       attachments:    body.attachments,
-//       metadata:       body.metadata,
-//     });
-//   }
+  //   @RequirePermission('message.send')
+  //   @Post(':id/messages')
+  //   @HttpCode(HttpStatus.CREATED)
+  //   sendMessage(
+  //     @Param('id', ParseUUIDPipe) id: string,
+  //     @Body() body: SendMessageBody,
+  //     @Req() req: any,
+  //   ) {
+  //     return this.conversationsService.sendMessage({
+  //       workspaceId:    req.workspaceId,
+  //       conversationId: id,
+  //       channelId:      body.channelId,
+  //       actorId:        req.user.id,
+  //       text:           body.text,
+  //       attachments:    body.attachments,
+  //       metadata:       body.metadata,
+  //     });
+  //   }
 
   // ══════════════════════════════════════════════════════════════
   // TIMELINE
@@ -255,8 +255,8 @@ export class ConversationsController {
    * Returns merged messages + activities sorted by timestamp.
    */
   @Get(':id/timeline')
-      @WorkspaceRoute(WorkspacePermission.MESSAGES_VIEW) 
- 
+  @WorkspaceRoute(WorkspacePermission.MESSAGES_VIEW)
+
 
   getTimeline(
     @Param('id', ParseUUIDPipe) id: string,
@@ -274,8 +274,8 @@ export class ConversationsController {
   // ══════════════════════════════════════════════════════════════
 
   @Get(':id/activities')
-      @WorkspaceRoute(WorkspacePermission.MESSAGES_VIEW) 
- 
+  @WorkspaceRoute(WorkspacePermission.MESSAGES_VIEW)
+
 
   getActivities(@Param('id', ParseUUIDPipe) id: string) {
     return this.activityService.findByConversation(id);
@@ -287,8 +287,8 @@ export class ConversationsController {
 
   /** PATCH /api/conversations/:id/status  { status: "closed" } */
   @Patch(':id/status')
-      @WorkspaceRoute(WorkspacePermission.MESSAGES_VIEW) 
- 
+  @WorkspaceRoute(WorkspacePermission.MESSAGES_VIEW)
+
 
   updateStatus(
     @Param('id', ParseUUIDPipe) id: string,
@@ -296,14 +296,14 @@ export class ConversationsController {
     @Req() req: any,
   ) {
     return this.conversationsService.updateStatus(id, {
-      status:  body.status,
+      status: body.status,
       actorId: req.user?.id,
     });
   }
 
   @Post(':id/close')
-      @WorkspaceRoute(WorkspacePermission.MESSAGES_VIEW) 
- 
+  @WorkspaceRoute(WorkspacePermission.MESSAGES_VIEW)
+
 
   @HttpCode(HttpStatus.OK)
   close(@Param('id', ParseUUIDPipe) id: string, @Req() req: any) {
@@ -313,8 +313,8 @@ export class ConversationsController {
   }
 
   @Post(':id/open')
-      @WorkspaceRoute(WorkspacePermission.MESSAGES_VIEW) 
- 
+  @WorkspaceRoute(WorkspacePermission.MESSAGES_VIEW)
+
 
   @HttpCode(HttpStatus.OK)
   open(@Param('id', ParseUUIDPipe) id: string, @Req() req: any) {
@@ -325,6 +325,8 @@ export class ConversationsController {
 
   @Post(':id/pending')
   @HttpCode(HttpStatus.OK)
+  @WorkspaceRoute(WorkspacePermission.MESSAGES_VIEW)
+
   pending(@Param('id', ParseUUIDPipe) id: string, @Req() req: any) {
     return this.conversationsService.updateStatus(id, {
       status: 'pending', actorId: req.user?.id,
@@ -337,38 +339,46 @@ export class ConversationsController {
 
   @Post(':id/assign/user')
   @HttpCode(HttpStatus.OK)
+  @WorkspaceRoute(WorkspacePermission.MESSAGES_VIEW)
+
   assignUser(
     @Param('id', ParseUUIDPipe) id: string,
     @Body() body: AssignUserBody,
     @Req() req: any,
   ) {
     return this.conversationsService.assignUser(id, {
-      userId:  body.userId,
-      teamId:  body.teamId,
+      userId: body.userId,
+      teamId: body.teamId,
       actorId: req.user?.id,
     });
   }
 
   @Delete(':id/assign/user')
   @HttpCode(HttpStatus.OK)
+  @WorkspaceRoute(WorkspacePermission.MESSAGES_VIEW)
+
   unassignUser(@Param('id', ParseUUIDPipe) id: string, @Req() req: any) {
     return this.conversationsService.unassignUser(id, { actorId: req.user?.id });
   }
 
   @Post(':id/assign/team')
   @HttpCode(HttpStatus.OK)
+  @WorkspaceRoute(WorkspacePermission.MESSAGES_VIEW)
+
   assignTeam(
     @Param('id', ParseUUIDPipe) id: string,
     @Body() body: AssignTeamBody,
     @Req() req: any,
   ) {
     return this.conversationsService.assignTeam(id, {
-      teamId:  body.teamId,
+      teamId: body.teamId,
       actorId: req.user?.id,
     });
   }
 
   @Delete(':id/assign/team')
+  @WorkspaceRoute(WorkspacePermission.MESSAGES_VIEW)
+
   @HttpCode(HttpStatus.OK)
   unassignTeam(@Param('id', ParseUUIDPipe) id: string, @Req() req: any) {
     return this.conversationsService.unassignTeam(id, { actorId: req.user?.id });
@@ -379,6 +389,8 @@ export class ConversationsController {
   // ══════════════════════════════════════════════════════════════
 
   @Post(':id/notes')
+  @WorkspaceRoute(WorkspacePermission.MESSAGES_VIEW)
+
   addNote(
     @Param('id', ParseUUIDPipe) id: string,
     @Body() body: AddNoteBody,
@@ -386,13 +398,15 @@ export class ConversationsController {
   ) {
     if (!req.user?.id) throw new Error('Authenticated user required for notes');
     return this.conversationsService.addNote(id, {
-      text:              body.text,
-      actorId:           req.user.id,
-      mentionedUserIds:  body.mentionedUserIds,
+      text: body.text,
+      actorId: req.user.id,
+      mentionedUserIds: body.mentionedUserIds,
     });
   }
 
   @Patch(':id/priority')
+  @WorkspaceRoute(WorkspacePermission.MESSAGES_VIEW)
+
   changePriority(
     @Param('id', ParseUUIDPipe) id: string,
     @Body() body: ChangePriorityBody,
@@ -400,12 +414,14 @@ export class ConversationsController {
   ) {
     return this.conversationsService.changePriority(id, {
       priority: body.priority,
-      actorId:  req.user?.id,
+      actorId: req.user?.id,
     });
   }
 
   @Post(':id/merge-contact')
   @HttpCode(HttpStatus.OK)
+  @WorkspaceRoute(WorkspacePermission.MESSAGES_VIEW)
+
   mergeContact(
     @Param('id', ParseUUIDPipe) id: string,
     @Body() body: MergeContactBody,
@@ -413,12 +429,14 @@ export class ConversationsController {
   ) {
     return this.conversationsService.mergeContact(id, {
       mergedContactId: body.mergedContactId,
-      actorId:         req.user?.id,
+      actorId: req.user?.id,
     });
   }
 
   /** POST /api/conversations/:id/read — zeroes unread counter */
   @Post(':id/read')
+  @WorkspaceRoute(WorkspacePermission.MESSAGES_VIEW)
+
   @HttpCode(HttpStatus.NO_CONTENT)
   markRead(@Param('id', ParseUUIDPipe) id: string, @Req() req: any) {
     return this.conversationsService.markRead(id, req.workspaceId);

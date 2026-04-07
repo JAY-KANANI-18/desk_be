@@ -46,7 +46,7 @@ export class JwtGuard implements CanActivate {
             throw new UnauthorizedException('Invalid token');
         }
         // console.log({ payload });
-
+        
         const userId = payload.sub;
         const email = payload.email;
 
@@ -57,7 +57,8 @@ export class JwtGuard implements CanActivate {
                 id: userId,
                 email,
                 firstName: email?.split('@')[0] ?? 'User',
-                status: 'ACTIVE' // Set to ACTIVE if password is already set, otherwise PENDING),
+                status: 'ACTIVE', // Set to ACTIVE if password is already set, otherwise PENDING),
+                avatarUrl:payload?.user_metadata?.avatar_url ?? ''
             },
 
             // get workspace

@@ -1,4 +1,4 @@
-import { Controller, Post, Body, UseGuards, Req, Get, Delete, Put } from '@nestjs/common';
+import { Controller, Post, Body, UseGuards, Req, Get, Delete, Put, Patch } from '@nestjs/common';
 import { WorkspaceService } from './workspace.service';
 import { SetupWorkspaceDto } from './dto/add-workspace.dto';
 import { JwtGuard } from '../../common/guards/jwt.guard';
@@ -16,16 +16,12 @@ export class InviteUserDto {
     @IsString()
     role: string;
 
-    @IsArray()
-    workspaceAccess?: {
-        workspaceId: string;
-        role: string;
-    }[];
+
+
 
 
 }
 
-@UseGuards(JwtGuard)
 @Controller('api/workspaces')
 export class WorkspaceController {
     constructor(private workspaceService: WorkspaceService) { }
@@ -48,16 +44,31 @@ export class WorkspaceController {
 
     //     return data;
     // }
+    @Patch('getstarted/dismiss')
+    @WorkspaceRoute()
+    dismissOnboarding(@Req() req: any) {
+        return this.workspaceService.dismissOnboarding(req.workspaceId);
+    }
 
+    @Get('getstarted/status')
+    @WorkspaceRoute()
+    getOnboardingStatus(@Req() req: any) {
+        return this.workspaceService.getOnboardingStatus(req.workspaceId);
+    }
+    @Patch('getstarted/complete')
+    @WorkspaceRoute()
+    completeOnboarding(@Req() req: any) {
+        return this.workspaceService.completeOnboarding(req.workspaceId);
+    }
 
- @Post('invite')
+    @Post('invite')
     @WorkspaceRoute(WorkspacePermission.TEAMS_MANAGE)
     inviteUser(
         @Req() req: any,
-        @Body() dto: InviteUserDto,
+        @Body() dto: any,
     ) {
 
-        return this.workspaceService.inviteUser(dto, req.workspaceId);
+        return this.workspaceService.inviteUser(dto, req.workspaceId, req.organizationId);
     }
     @Put('users')
     @WorkspaceRoute(WorkspacePermission.TEAMS_MANAGE)

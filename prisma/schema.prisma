@@ -80,6 +80,8 @@ model Workspace {
   dateFormat     String    @default("MM/DD/YYYY")
   timeFormat     String    @default("hh:mm A")
   createdAt      DateTime  @default(now())
+    onboardingDismissed  Boolean   @default(false)
+  onboardingCompleted  Boolean   @default(false)
   invoices       Invoice[]
 
   organization           Organization           @relation(fields: [organizationId], references: [id], onDelete: Cascade)
