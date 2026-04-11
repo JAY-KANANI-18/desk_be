@@ -6,6 +6,8 @@ import { MetaProvider } from './adapters/meta.adapter';
 import { WebchatProvider } from './adapters/webchat.adapter';
 import { WhatsAppProvider } from './adapters/whatsapp.adapter';
 import { ChannelProvider } from './channel-adapter.interface';
+import { Msg91Provider } from './adapters/msg91.adapter';
+import { ExotelProvider } from './adapters/exotel.adapter';
 
 
 @Injectable()
@@ -18,6 +20,8 @@ export class ChannelAdaptersRegistry implements OnModuleInit {
     private readonly meta: MetaProvider,
     private readonly mailgun: MailgunProvider,
     private readonly webchat: WebchatProvider,
+    private readonly msg91: Msg91Provider,
+    private readonly exotel: ExotelProvider,
   ) {}
 
   onModuleInit() {
@@ -27,6 +31,8 @@ export class ChannelAdaptersRegistry implements OnModuleInit {
     this.registerAs('messenger', this.meta);
     this.register(this.mailgun);
     this.registerAs('webchat', this.webchat);
+    this.register(this.msg91);
+    this.register(this.exotel);
 
 
     this.logger.log(

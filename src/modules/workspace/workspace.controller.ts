@@ -1,4 +1,4 @@
-import { Controller, Post, Body, UseGuards, Req, Get, Delete, Put, Patch } from '@nestjs/common';
+import { Controller, Post, Body, UseGuards, Req, Get, Delete, Put, Patch, Param } from '@nestjs/common';
 import { WorkspaceService } from './workspace.service';
 import { SetupWorkspaceDto } from './dto/add-workspace.dto';
 import { JwtGuard } from '../../common/guards/jwt.guard';
@@ -85,6 +85,18 @@ export class WorkspaceController {
     @WorkspaceRoute(WorkspacePermission.TEAMS_MANAGE)
     async getUsersInWorkspace(@Req() req: any) {
         return this.workspaceService.getWorkspaceusers(req.workspaceId);
+    }
+
+    @Get('integrations')
+    @WorkspaceRoute()
+    async getIntegrations(@Req() req: any) {
+        return this.workspaceService.getIntegrationsCatalog(req.workspaceId);
+    }
+
+    @Delete('integrations/:integrationId')
+    @WorkspaceRoute(WorkspacePermission.CHANNELS_MANAGE)
+    async disconnectIntegration(@Req() req: any, @Param('integrationId') integrationId: string) {
+        return this.workspaceService.disconnectIntegration(req.workspaceId, integrationId);
     }
 
     @Get('availability')

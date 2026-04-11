@@ -67,6 +67,9 @@ export interface MergeContactActivityMeta {
   mergedContactId: string;
   mergedContactName: string;
   survivorContactId: string;
+  survivorContactName?: string;
+  mergedConversationIds?: string[];
+  survivorConversationId?: string;
 }
 
 export interface ChannelAddedActivityMeta {

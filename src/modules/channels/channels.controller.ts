@@ -430,6 +430,88 @@ export class ChannelsController {
         return this.channelService.connectSMTPEmail(dto);
     }
 
+    @Post('sms/msg91/connect')
+    @WorkspaceRoute(WorkspacePermission.CHANNELS_MANAGE)
+    async connectMsg91(@Body() dto: {
+        workspaceId: string;
+        name?: string;
+        senderId: string;
+        authKey: string;
+        route?: string;
+        dltTemplateId?: string;
+        apiUrl?: string;
+    }) {
+        const existing = await this.prisma.channel.findFirst({
+            where: {
+                workspaceId: dto.workspaceId,
+                type: 'sms',
+                identifier: dto.senderId,
+            },
+        });
+        if (existing) return existing;
+
+        return this.prisma.channel.create({
+            data: {
+                workspaceId: dto.workspaceId,
+                type: 'sms',
+                name: dto.name || 'MSG91 SMS',
+                identifier: dto.senderId,
+                status: 'connected',
+                credentials: {
+                    authKey: dto.authKey,
+                },
+                config: {
+                    provider: 'msg91',
+                    senderId: dto.senderId,
+                    route: dto.route || '4',
+                    dltTemplateId: dto.dltTemplateId || null,
+                    apiUrl: dto.apiUrl || 'https://api.msg91.com/api/v2/sendsms',
+                },
+            },
+        });
+    }
+
+    @Post('calling/exotel/connect')
+    @WorkspaceRoute(WorkspacePermission.CHANNELS_MANAGE)
+    async connectExotel(@Body() dto: {
+        workspaceId: string;
+        name?: string;
+        callerId: string;
+        sid: string;
+        apiKey: string;
+        apiToken: string;
+        apiUrl?: string;
+    }) {
+        const existing = await this.prisma.channel.findFirst({
+            where: {
+                workspaceId: dto.workspaceId,
+                type: 'exotel_call',
+                identifier: dto.callerId,
+            },
+        });
+        if (existing) return existing;
+
+        return this.prisma.channel.create({
+            data: {
+                workspaceId: dto.workspaceId,
+                type: 'exotel_call',
+                name: dto.name || 'Exotel Calling',
+                identifier: dto.callerId,
+                status: 'connected',
+                credentials: {
+                    sid: dto.sid,
+                    apiKey: dto.apiKey,
+                    apiToken: dto.apiToken,
+                },
+                config: {
+                    provider: 'exotel',
+                    callerId: dto.callerId,
+                    apiUrl: dto.apiUrl || `https://api.exotel.com/v1/Accounts/${dto.sid}/Calls/connect`,
+                },
+            },
+        });
+    }
+
     @Get()
     @WorkspaceRoute()
     async getChannels(@Req() req: any) {

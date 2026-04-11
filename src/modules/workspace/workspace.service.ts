@@ -132,6 +132,12 @@ export class WorkspaceService {
         });
     }
     async getWorkspacesUserAvailability(workspaceId: string) {
+        const workspace = await this.prisma.workspace.findUnique({
+            where: { id: workspaceId },
+            select: { notificationInactivityTimeoutSec: true },
+        });
+        const timeoutSec = workspace?.notificationInactivityTimeoutSec ?? 300;
+        const now = Date.now();
 
         const members = await this.prisma.userActivity.findMany({
             where: {
@@ -140,7 +146,6 @@ export class WorkspaceService {
                         some: {
                             workspaceId: workspaceId,
                             status: 'active',
-
                         },
                     },
                 },
@@ -148,10 +153,32 @@ export class WorkspaceService {
             select: {
                 userId: true,
                 activityStatus: true,
+                lastActivityAt: true,
             }
         });
 
-        return members;
+        return members.map((member) => {
+            const explicit = member.activityStatus;
+            const lastActivityAt = member.lastActivityAt?.getTime() ?? 0;
+            const isManual =
+                explicit === 'AWAY' ||
+                explicit === 'BUSY' ||
+                explicit === 'DND';
+            const isOffline = !lastActivityAt || now - lastActivityAt > timeoutSec * 1000;
+
+            const effective = isManual
+                ? explicit
+                : isOffline
+                    ? 'OFFLINE'
+                    : explicit === 'ACTIVE'
+                        ? 'ACTIVE'
+                        : 'OFFLINE';
+
+            return {
+                userId: member.userId,
+                activityStatus: effective.toLowerCase() === 'active' ? 'online' : effective.toLowerCase(),
+            };
+        });
     }
     async inviteUser(
         dto: any,
@@ -300,5 +327,45 @@ export class WorkspaceService {
             },
         });
         return (users?.map((membership) => ({ role: membership.role, ...membership.user })));
+    }
+
+    async getIntegrationsCatalog(workspaceId: string) {
+        const metaRow = await this.prisma.channel.findFirst({
+            where: { workspaceId, type: 'meta_ads' },
+        });
+        const cfg = (metaRow?.config || {}) as Record<string, unknown>;
+
+        return {
+            integrations: [
+                {
+                    id: 'meta_ads',
+                    name: 'Meta Ads',
+                    desc: 'Connect a Facebook ad account to capture leads/clicks into the inbox, trigger workflows, and see account health in one place.',
+                    icon: '📣',
+                    category: 'Advertising',
+                    connected: !!metaRow,
+                    routingChannelId: metaRow?.id ?? null,
+                    summary: metaRow
+                        ? {
+                              accountName: cfg.accountName as string,
+                              accountId: cfg.accountId as string,
+                              accountStatus: cfg.accountStatus as string,
+                              currency: cfg.currency as string,
+                              campaignCount: cfg.campaignCount as number,
+                          }
+                        : null,
+                },
+            ],
+        };
+    }
+
+    async disconnectIntegration(workspaceId: string, integrationId: string) {
+        if (integrationId === 'meta_ads') {
+            await this.prisma.channel.deleteMany({
+                where: { workspaceId, type: 'meta_ads' },
+            });
+            return { disconnected: true };
+        }
+        throw new NotFoundException('Unknown integration');
     }
 }

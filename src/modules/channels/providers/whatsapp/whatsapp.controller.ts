@@ -181,6 +181,7 @@ export class WhatsAppController implements OnModuleInit {
                     workspaceId: channel.workspaceId,
                     channelType: 'whatsapp',
                     contactIdentifier: parsed.contactIdentifier,
+                    channelMsgId: parsed.externalId,
                     direction: parsed.direction,
                     messageType: parsed.messageType,
                     text: parsed.text,

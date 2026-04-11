@@ -438,22 +438,96 @@ export class ChannelService {
         });
     }
 
-    async exchangeCode(code: string) {
+    async exchangeCode(code: string, redirectUri?: string) {
+        const uri = redirectUri || process.env.META_REDIRECT_URI;
+        if (!uri) {
+            throw new Error('META_REDIRECT_URI or META_ADS_REDIRECT_URI is not configured');
+        }
+        const q = new URLSearchParams({
+            client_id: process.env.META_APP_ID || '',
+            redirect_uri: uri,
+            client_secret: process.env.META_APP_SECRET || '',
+            code,
+        });
         const res = await fetch(
-            `https://graph.facebook.com/v19.0/oauth/access_token
-           ?client_id=${process.env.META_APP_ID}
-           &redirect_uri=${process.env.META_REDIRECT_URI}
-           &client_secret=${process.env.META_APP_SECRET}
-           &code=${code}`
+            `https://graph.facebook.com/v19.0/oauth/access_token?${q.toString()}`,
         );
 
         const data = await res.json();
 
         if (!data.access_token) {
-            throw new Error('OAuth failed');
+            throw new Error(data?.error?.message || 'OAuth failed');
         }
 
-        return data.access_token;
+        return data.access_token as string;
+    }
+
+    /** Meta Ads (Marketing API) — one hidden channel row per workspace for webhooks & inbox routing; excluded from channel picker APIs. */
+    async connectMetaAdsOAuthCode(code: string, workspaceId: string) {
+        const redirectUri = process.env.META_ADS_REDIRECT_URI || process.env.META_REDIRECT_URI;
+        const userToken = await this.exchangeCode(code, redirectUri);
+
+        const adsRes = await fetch(
+            `https://graph.facebook.com/v19.0/me/adaccounts?fields=id,name,account_id,account_status,currency&access_token=${userToken}`,
+        );
+        const adsJson = await adsRes.json();
+        const acct = adsJson.data?.[0];
+        if (!acct) {
+            throw new Error(
+                'No ad accounts found. Ensure this Facebook user has access to an ad account and that ads_read is granted.',
+            );
+        }
+
+        let campaignCount: number | undefined;
+        try {
+            const cRes = await fetch(
+                `https://graph.facebook.com/v19.0/${acct.id}/campaigns?fields=id&limit=1&summary=true&access_token=${userToken}`,
+            );
+            const cJson = await cRes.json();
+            campaignCount = cJson.summary?.total_count;
+        } catch {
+            campaignCount = undefined;
+        }
+
+        const credentials = { accessToken: userToken };
+        const config = {
+            accountId: acct.id,
+            accountName: acct.name,
+            accountStatus: acct.account_status,
+            currency: acct.currency,
+            campaignCount,
+            provider: 'meta_ads',
+        };
+
+        const existing = await this.prisma.channel.findFirst({
+            where: { workspaceId, type: 'meta_ads' },
+        });
+
+        if (existing) {
+            const prev = (existing.config || {}) as Record<string, unknown>;
+            return this.prisma.channel.update({
+                where: { id: existing.id },
+                data: {
+                    identifier: acct.id,
+                    name: `Meta Ads — ${acct.name}`,
+                    credentials,
+                    config: { ...prev, ...config },
+                    status: 'connected',
+                },
+            });
+        }
+
+        return this.prisma.channel.create({
+            data: {
+                workspaceId,
+                type: 'meta_ads',
+                name: `Meta Ads — ${acct.name}`,
+                identifier: acct.id,
+                status: 'connected',
+                credentials,
+                config,
+            },
+        });
     }
 
     async createChannel(data: {
@@ -601,7 +675,10 @@ export class ChannelService {
 
     async getChannels(workspaceId: string) {
         return this.prisma.channel.findMany({
-            where: { workspaceId },
+            where: {
+                workspaceId,
+                type: { not: 'meta_ads' },
+            },
         });
     }
     async deleteChannels(workspaceId: string,channelId:string){

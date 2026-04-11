@@ -58,6 +58,7 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
 
             // attach user to socket
             client.data.user = user;
+            client.join(`user:${user.id}`);
 
             const activity = await this.prisma.userActivity.findUnique({
                 where: { userId: user.id },
@@ -67,17 +68,19 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
                 await this.prisma.userActivity.create({
                     data: {
                         userId: user.id,
-                        activityStatus: "online",
+                        activityStatus: "ACTIVE",
                         lastSeenAt: new Date(),
+                        lastActivityAt: new Date(),
                     },
                 });
             } else {
-                if (!["away", "busy", "dnd"].includes(activity.activityStatus)) {
+                if (!["AWAY", "BUSY", "DND"].includes(activity.activityStatus)) {
                     await this.prisma.userActivity.update({
                         where: { userId: user.id },
                         data: {
-                            activityStatus: "online",
+                            activityStatus: "ACTIVE",
                             lastSeenAt: new Date(),
+                            lastActivityAt: new Date(),
                         },
                     });
                 }

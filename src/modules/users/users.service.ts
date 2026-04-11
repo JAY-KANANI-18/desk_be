@@ -1,5 +1,5 @@
 import { Injectable, BadRequestException } from '@nestjs/common';
-import { User } from '@prisma/client';
+import { User, UserPresenceStatus } from '@prisma/client';
 import slugify from 'slugify';
 import { PrismaService } from '../../prisma/prisma.service';
 
@@ -143,11 +143,36 @@ async getMyOrganizations(userId: string) {
 
     }
     async updateAvailability(userId: string, available: string) {
+        const mappedStatus =
+            available === 'online'
+                ? UserPresenceStatus.ACTIVE
+                : available === 'away'
+                  ? UserPresenceStatus.AWAY
+                  : available === 'busy'
+                    ? UserPresenceStatus.BUSY
+                    : available === 'dnd'
+                      ? UserPresenceStatus.DND
+                      : UserPresenceStatus.OFFLINE;
 
-        return this.prisma.userActivity.update({
+        const now = new Date();
+
+        return this.prisma.userActivity.upsert({
             where: { userId: userId },
-            data: {
-                activityStatus: available,
+            create: {
+                userId,
+                activityStatus: mappedStatus,
+                lastSeenAt: now,
+                lastActivityAt: mappedStatus === UserPresenceStatus.OFFLINE ? undefined : now,
+            },
+            update: {
+                activityStatus: mappedStatus,
+                lastSeenAt: now,
+                ...(mappedStatus === UserPresenceStatus.ACTIVE
+                    ? { lastActivityAt: now }
+                    : {}),
+                ...(mappedStatus === UserPresenceStatus.OFFLINE
+                    ? { inactivitySessionId: crypto.randomUUID() }
+                    : {}),
             },
         });
     }

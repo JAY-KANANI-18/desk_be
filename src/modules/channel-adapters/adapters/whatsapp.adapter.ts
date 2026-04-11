@@ -37,6 +37,8 @@ export class WhatsAppProvider implements ChannelProvider {
             },
             { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' } },
         );
+        console.log({data});
+        
 
         return { externalId: data?.messages?.[0]?.id };
     }

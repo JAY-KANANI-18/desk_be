@@ -230,7 +230,9 @@ export class ActivityService {
 
       case 'merge_contact': {
         const m = meta as MergeContactActivityMeta;
-        return `Contact merged with ${m?.mergedContactName ?? 'another contact'}${by}`;
+        const mergedLabel = `${m?.mergedContactName ?? 'Unknown'}${m?.mergedContactId ? ` (#${m.mergedContactId})` : ''}`;
+        const survivorLabel = `${m?.survivorContactName ?? 'Unknown'}${m?.survivorContactId ? ` (#${m.survivorContactId})` : ''}`;
+        return `Contact ${mergedLabel} merged into ${survivorLabel}${by}`;
       }
 
       case 'channel_added': {
@@ -276,3 +278,4 @@ export class ActivityService {
     }
   }
 }
+

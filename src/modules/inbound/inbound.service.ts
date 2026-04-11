@@ -16,7 +16,7 @@ import { ParsedAttachment } from '../channel-adapters/channel-adapter.interface'
 export interface InboundDto {
   channelId: string;
   workspaceId: string;
-  channelType: string;           // 'whatsapp' | 'instagram' | 'messenger' | 'email'
+  channelType: string;           // 'whatsapp' | 'instagram' | 'messenger' | 'email' | 'sms' | 'exotel_call' | 'meta_ads'
 
   contactIdentifier: string;     // phone / PSID / email address
   direction: 'incoming' | 'outgoing'; // from provider's POV
@@ -31,6 +31,7 @@ export interface InboundDto {
 
   // For threaded replies
   replyToChannelMsgId?: string;
+  channelMsgId?: string;
 
   // reaction, order, location, interactive, etc.
   metadata?: Record<string, any>;
@@ -60,7 +61,7 @@ export class InboundService {
       channelId, workspaceId, channelType,
       contactIdentifier, direction,
       messageType, text, subject,
-      attachments = [], replyToChannelMsgId,
+      attachments = [], replyToChannelMsgId, channelMsgId,
       metadata, raw, profile,
     } = dto;
 
@@ -79,6 +80,16 @@ export class InboundService {
     const storedMedia = await this.media.processAttachments(
       channelId, workspaceId, attachments,
     );
+    const quotedMessage = await this.resolveQuotedMessagePreview({
+      workspaceId,
+      channelId,
+      replyToChannelMsgId,
+    });
+    const messageMetadata = this.buildMessageMetadata(
+      metadata,
+      contactChannel.identifier,
+      quotedMessage,
+    );
 
     // ── 4. Persist Message ─────────────────────────────────────────────────
     const message = await this.prisma.message.create({
@@ -92,8 +103,9 @@ export class InboundService {
         text,
         subject,
         status: 'delivered',
+        channelMsgId,
         replyToChannelMsgId,
-        metadata: metadata ? { ...metadata, contactIdentifier: contactChannel.identifier } : undefined,
+        metadata: messageMetadata,
         rawPayload: raw ?? undefined,
         sentAt: new Date(),
       },
@@ -177,6 +189,22 @@ export class InboundService {
         }
       }
 
+      // Keep phone/email backfilled for channels where identifier is the real customer phone/email.
+      if (channelType === 'sms' || channelType === 'exotel_call' || channelType === 'whatsapp') {
+        if (!contactChannel.contact.phone) {
+          await this.prisma.contact.update({
+            where: { id: contactChannel.contact.id },
+            data: { phone: contactIdentifier },
+          });
+        }
+      }
+      if (channelType === 'email' && !contactChannel.contact.email) {
+        await this.prisma.contact.update({
+          where: { id: contactChannel.contact.id },
+          data: { email: contactIdentifier },
+        });
+      }
+
       // ── Reopen contact if they were closed and sent a new message ──────
       if (contactChannel.contact.status === 'closed') {
         await this.prisma.contact.update({
@@ -210,7 +238,7 @@ export class InboundService {
         firstName: nameParts.firstName,
         lastName: nameParts.lastName,
         email: channelType === 'email' ? contactIdentifier : undefined,
-        phone: channelType === 'whatsapp' ? contactIdentifier : undefined,
+        phone: ['whatsapp', 'sms', 'exotel_call'].includes(channelType) ? contactIdentifier : undefined,
         avatarUrl: profile?.avatarUrl,
         status: 'open',   // ← new contact starts as open
       },
@@ -310,5 +338,103 @@ export class InboundService {
     if (att.stickerId) meta.stickerId = att.stickerId;
     if (att.thumbnailUrl) meta.thumbnailUrl = att.thumbnailUrl;
     return Object.keys(meta).length > 0 ? meta : undefined;
+  }
+
+  private async resolveQuotedMessagePreview(opts: {
+    workspaceId: string;
+    channelId: string;
+    replyToChannelMsgId?: string;
+  }) {
+    const { workspaceId, channelId, replyToChannelMsgId } = opts;
+    if (!replyToChannelMsgId) return undefined;
+
+    const target = await this.prisma.message.findFirst({
+      where: {
+        workspaceId,
+        channelId,
+        channelMsgId: replyToChannelMsgId,
+      },
+      include: {
+        author: { select: { firstName: true, lastName: true } },
+        conversation: {
+          select: {
+            contact: {
+              select: {
+                firstName: true,
+                lastName: true,
+                email: true,
+                phone: true,
+              },
+            },
+          },
+        },
+        messageAttachments: {
+          orderBy: { createdAt: 'asc' },
+          take: 1,
+        },
+      },
+    });
+
+    if (!target) return undefined;
+
+    const attachment = target.messageAttachments[0];
+    return {
+      id: target.id,
+      text: target.text ?? undefined,
+      author: this.getQuotedAuthorLabel(target),
+      attachmentType: this.normaliseQuotedAttachmentType(attachment?.type),
+      attachmentUrl: attachment?.url ?? undefined,
+    };
+  }
+
+  private buildMessageMetadata(
+    metadata: Record<string, any> | undefined,
+    contactIdentifier: string,
+    quotedMessage?: {
+      id: string;
+      text?: string;
+      author: string;
+      attachmentType?: string;
+      attachmentUrl?: string;
+    },
+  ) {
+    const next: Record<string, any> = {
+      ...(metadata ?? {}),
+      contactIdentifier,
+    };
+    if (quotedMessage) next.quotedMessage = quotedMessage;
+    return Object.keys(next).length > 0 ? next : undefined;
+  }
+
+  private getQuotedAuthorLabel(message: {
+    direction: string;
+    author?: { firstName?: string | null; lastName?: string | null } | null;
+    conversation?: {
+      contact?: {
+        firstName?: string | null;
+        lastName?: string | null;
+        email?: string | null;
+        phone?: string | null;
+      } | null;
+    } | null;
+  }) {
+    if (message.direction === 'outgoing') {
+      const fullName = [message.author?.firstName, message.author?.lastName]
+        .filter(Boolean)
+        .join(' ')
+        .trim();
+      return fullName || 'You';
+    }
+
+    const contact = message.conversation?.contact;
+    const fullName = [contact?.firstName, contact?.lastName].filter(Boolean).join(' ').trim();
+    return fullName || contact?.email || contact?.phone || 'Customer';
+  }
+
+  private normaliseQuotedAttachmentType(type?: string) {
+    if (!type) return undefined;
+    if (type === 'voice') return 'audio';
+    if (type === 'image' || type === 'video' || type === 'audio') return type;
+    return 'file';
   }
 }

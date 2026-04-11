@@ -161,6 +161,22 @@ export class WorkflowEngineService {
     });
   }
 
+  @OnEvent('meta_ads.click')
+  async onMetaAdClick(event: {
+    workspaceId: string;
+    contactId: string;
+    conversationId?: string | null;
+    triggerData: Record<string, any>;
+  }) {
+    await this.trigger({
+      workspaceId: event.workspaceId,
+      eventType: 'meta_ad_click',
+      contactId: event.contactId,
+      conversationId: event.conversationId ?? undefined,
+      triggerData: event.triggerData ?? {},
+    });
+  }
+
   // ── Trigger entry point ──────────────────────────────────────────────────
 
   async trigger(opts: {

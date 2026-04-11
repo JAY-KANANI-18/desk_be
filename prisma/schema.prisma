@@ -32,15 +32,23 @@ model User {
   messages                Message[]
   teamMembers             TeamMember[]
   notifications           Notification[]
+  notificationPreferences NotificationPreference[]
+  notificationDevices     NotificationDevice[]
+  notificationDeliveries  NotificationDelivery[]
+  notificationEmailHistory NotificationEmailHistory[]
   actorActivities         ConversationActivity[] @relation("ActivityActor")
   subjectActivities       ConversationActivity[] @relation("ActivitySubject")
   userActivity            UserActivity?
+  broadcastRuns           BroadcastRun[]
 }
 
 model UserActivity {
   userId         String    @id @db.Uuid
-  activityStatus String
+  activityStatus UserPresenceStatus @default(OFFLINE)
   lastSeenAt     DateTime?
+  lastActivityAt DateTime?
+  lastWorkspaceId String?  @db.Uuid
+  inactivitySessionId String @default(uuid()) @db.Uuid
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
@@ -79,6 +87,7 @@ model Workspace {
   language       String    @default("en")
   dateFormat     String    @default("MM/DD/YYYY")
   timeFormat     String    @default("hh:mm A")
+  notificationInactivityTimeoutSec Int @default(300)
   createdAt      DateTime  @default(now())
     onboardingDismissed  Boolean   @default(false)
   onboardingCompleted  Boolean   @default(false)
@@ -101,6 +110,56 @@ model Workspace {
   conversationActivities ConversationActivity[]
   lifecycleStages        LifecycleStage[]
   tags                   Tag[]
+  broadcastRuns          BroadcastRun[]
+  aiSettings             WorkspaceAiSettings?
+  aiPrompts              WorkspaceAiPrompt[]
+  notifications          Notification[]
+  notificationPreferences NotificationPreference[]
+  notificationDevices    NotificationDevice[]
+  notificationEmailHistory NotificationEmailHistory[]
+  contactMergeRuns       ContactMergeRun[]
+}
+
+model WorkspaceAiSettings {
+  id              String   @id @default(uuid()) @db.Uuid
+  workspaceId     String   @unique @db.Uuid
+  enabled         Boolean  @default(true)
+  provider        String   @default("cohere")
+  model           String   @default("command-a-03-2025")
+  autoSuggest     Boolean  @default(false)
+  smartReply      Boolean  @default(true)
+  summarize       Boolean  @default(true)
+  sentiment       Boolean  @default(false)
+  translate       Boolean  @default(true)
+  defaultLanguage String   @default("auto")
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId])
+}
+
+model WorkspaceAiPrompt {
+  id           String   @id @default(uuid()) @db.Uuid
+  workspaceId  String   @db.Uuid
+  key          String?
+  name         String
+  description  String?
+  kind         String
+  prompt       String
+  options      Json?
+  isDefault    Boolean  @default(false)
+  isEnabled    Boolean  @default(true)
+  isActive     Boolean  @default(false)
+  sortOrder    Int      @default(0)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId, kind, sortOrder])
+  @@unique([workspaceId, key])
 }
 
 model WorkspaceMember {
@@ -136,6 +195,11 @@ model Contact {
   updatedAt   DateTime @updatedAt
   status      String?
   lifecycleId String?  @db.Uuid
+  /// When true, contact is excluded from marketing broadcasts (opt-out / compliance).
+  marketingOptOut Boolean @default(false)
+  mergedIntoContactId String? @db.Uuid
+  mergedAt      DateTime?
+  mergedByUserId String? @db.Uuid
 
   assigneeId        String?          @db.Uuid
   assignee          User?            @relation("ContactToUser", fields: [assigneeId], references: [id])
@@ -146,11 +210,39 @@ model Contact {
 
   workspace       Workspace        @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   lifecycle       LifecycleStage?  @relation(fields: [lifecycleId], references: [id])
+  mergedIntoContact Contact?       @relation("ContactMergedInto", fields: [mergedIntoContactId], references: [id])
+  mergedContacts    Contact[]      @relation("ContactMergedInto")
   conversations   Conversation[]
   contactChannels ContactChannel[]
   tags            ContactTag[]
+  primaryMergeRuns ContactMergeRun[] @relation("PrimaryContactMergeRuns")
+  secondaryMergeRuns ContactMergeRun[] @relation("SecondaryContactMergeRuns")
 
   @@index([workspaceId])
+  @@index([workspaceId, mergedIntoContactId])
+}
+
+model ContactMergeRun {
+  id                 String   @id @default(uuid()) @db.Uuid
+  workspaceId        String   @db.Uuid
+  primaryContactId   String   @db.Uuid
+  secondaryContactId String   @db.Uuid
+  status             String   @default("completed")
+  source             String?  // inbox_sidebar | dashboard | api
+  confidenceScore    Int?
+  reasonCodes        Json?
+  resolution         Json?
+  summary            Json?
+  executedByUserId   String?  @db.Uuid
+  createdAt          DateTime @default(now())
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  primaryContact Contact @relation("PrimaryContactMergeRuns", fields: [primaryContactId], references: [id], onDelete: Cascade)
+  secondaryContact Contact @relation("SecondaryContactMergeRuns", fields: [secondaryContactId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId, createdAt])
+  @@index([primaryContactId])
+  @@index([secondaryContactId])
 }
 
 // ============================================================
@@ -162,7 +254,13 @@ model Tag {
   workspaceId String   @db.Uuid
   name        String
   createdAt   DateTime @default(now())
-  color       String   @default("#000000")
+  updatedAt   DateTime @updatedAt
+  color       String   @default("tag-indigo")
+  emoji       String   @default("🏷️")
+  description String?
+  createdBy   String   @default("user")
+  createdById String?  @db.Uuid
+  updatedById String?  @db.Uuid
 
   workspace Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   contacts  ContactTag[] // ✅ fix this
@@ -267,6 +365,9 @@ model Message {
   // email      → { htmlBody, headers, inReplyTo, references }
   metadata Json?
 
+  broadcastRunId String?       @db.Uuid
+  broadcastRun   BroadcastRun? @relation(fields: [broadcastRunId], references: [id], onDelete: SetNull)
+
   createdAt DateTime  @default(now())
   sentAt    DateTime?
 
@@ -284,6 +385,7 @@ model Message {
   @@index([channelId])
   @@index([channelMsgId])
   @@index([status])
+  @@index([broadcastRunId])
 }
 
 // ============================================================
@@ -313,6 +415,7 @@ model Channel {
   messages        Message[]
   contactChannels ContactChannel[]
   outboundQueue   OutboundQueue[]
+  broadcastRuns   BroadcastRun[]
 
   @@index([workspaceId])
   @@index([type, identifier])
@@ -575,6 +678,45 @@ model MessageTemplate {
 }
 
 // ============================================================
+// BROADCAST CAMPAIGNS (enterprise send batches + analytics)
+// ============================================================
+
+model BroadcastRun {
+  id               String   @id @default(uuid()) @db.Uuid
+  workspaceId      String   @db.Uuid
+  name             String
+  channelId        String   @db.Uuid
+  /// scheduled | running | completed | partial_failure
+  status           String   @default("completed")
+  /// Snapshot of audience filters: tagIds, lifecycleId, teamId, respectMarketingOptOut
+  audienceFilters  Json
+  /// text | template
+  contentMode      String
+  templateName     String?
+  templateLanguage String?
+  templateVariables Json?
+  messageText      String?
+  textPreview      String?
+  totalAudience    Int
+  queuedCount      Int
+  failedEnqueue    Int
+  scheduledAt      DateTime?
+  startedAt        DateTime?
+  completedAt      DateTime?
+  createdAt        DateTime @default(now())
+  createdById      String?  @db.Uuid
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  channel   Channel   @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  createdBy User?     @relation(fields: [createdById], references: [id], onDelete: SetNull)
+  messages  Message[]
+
+  @@index([workspaceId, createdAt])
+  @@index([status, scheduledAt])
+  @@index([channelId])
+}
+
+// ============================================================
 // ATTACHMENTS
 // ============================================================
 
@@ -627,39 +769,161 @@ model MessageAttachment {
 model Notification {
   id        String   @id @default(uuid()) @db.Uuid
   userId    String   @db.Uuid
-  type      String
+  workspaceId String? @db.Uuid
+  organizationId String? @db.Uuid
+  type      NotificationType
   title     String
   body      String?
-  isRead    Boolean  @default(false)
   metadata  Json?
+  sourceEntityType String?
+  sourceEntityId String?
+  dedupeKey String?
+  readAt DateTime?
+  archivedAt DateTime?
   createdAt DateTime @default(now())
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  workspace Workspace? @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  deliveries NotificationDelivery[]
+  emailHistory NotificationEmailHistory[]
 
-  @@index([userId, isRead])
+  @@index([userId, createdAt])
+  @@index([userId, readAt, archivedAt, createdAt])
+  @@index([workspaceId, createdAt])
+  @@index([dedupeKey])
 }
 
 enum NotificationType {
-  NEW_MESSAGE
-  NEW_CONVERSATION
-  MENTION
-  ASSIGNED
-  UNASSIGNED
-  IMPORT_STATUS
-  EXPORT_STATUS
-  WORKFLOW_UPDATE
-  BROADCAST_STATUS
+  NEW_INCOMING_MESSAGE
+  CONTACT_ASSIGNED
+  COMMENT_MENTION
+  CUSTOM_NOTIFICATION
+  CONTACTS_IMPORT_COMPLETED
+  DATA_EXPORT_READY
+  NEW_INCOMING_CALL
 }
 
 model NotificationPreference {
-  userId String @id
+  id String @id @default(uuid()) @db.Uuid
+  userId String @db.Uuid
+  workspaceId String @db.Uuid
+  soundScope SoundNotificationScope @default(ASSIGNED_AND_UNASSIGNED)
+  callSoundScope CallSoundNotificationScope @default(ASSIGNED_AND_UNASSIGNED)
+  desktopScope NotificationContactScope @default(ALL_CONTACTS)
+  mobileScope NotificationContactScope @default(ALL_CONTACTS)
+  emailScope NotificationContactScope @default(ALL_CONTACTS)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
-  emailNewMessage Boolean @default(true)
-  emailMention    Boolean @default(true)
-  emailAssignment Boolean @default(true)
-  emailWorkflow   Boolean @default(true)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 
-  inappNewMessage Boolean @default(true)
+  @@unique([userId, workspaceId])
+  @@index([workspaceId])
+}
+
+model NotificationDelivery {
+  id String @id @default(uuid()) @db.Uuid
+  notificationId String @db.Uuid
+  userId String @db.Uuid
+  channel NotificationChannel
+  status NotificationDeliveryStatus @default(PENDING)
+  attemptCount Int @default(0)
+  providerMessageId String?
+  lastError String?
+  lastAttemptAt DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  notification Notification @relation(fields: [notificationId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([notificationId, channel])
+  @@index([userId, channel, status])
+}
+
+model NotificationDevice {
+  id String @id @default(uuid()) @db.Uuid
+  userId String @db.Uuid
+  workspaceId String? @db.Uuid
+  platform String
+  token String @unique
+  deviceName String?
+  metadata Json?
+  lastSeenAt DateTime?
+  disabledAt DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  workspace Workspace? @relation(fields: [workspaceId], references: [id], onDelete: SetNull)
+
+  @@index([userId, disabledAt])
+}
+
+model NotificationEmailHistory {
+  id String @id @default(uuid()) @db.Uuid
+  notificationId String? @db.Uuid
+  userId String @db.Uuid
+  workspaceId String @db.Uuid
+  contactId String? @db.Uuid
+  type NotificationType
+  inactivitySessionId String @db.Uuid
+  sentAt DateTime @default(now())
+
+  notification Notification? @relation(fields: [notificationId], references: [id], onDelete: SetNull)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, contactId, type, inactivitySessionId])
+  @@index([contactId, userId, inactivitySessionId])
+  @@index([workspaceId, sentAt])
+}
+
+enum NotificationChannel {
+  IN_APP
+  DESKTOP
+  MOBILE_PUSH
+  EMAIL
+  SOUND
+  CALL_SOUND
+}
+
+enum NotificationDeliveryStatus {
+  PENDING
+  SENT
+  SKIPPED
+  FAILED
+  SUPPRESSED
+}
+
+enum NotificationContactScope {
+  ALL_CONTACTS
+  ASSIGNED_AND_UNASSIGNED
+  ASSIGNED_ONLY
+  MENTIONS_ONLY
+  NONE
+}
+
+enum SoundNotificationScope {
+  ASSIGNED_AND_UNASSIGNED
+  ASSIGNED_ONLY
+  NONE
+}
+
+enum CallSoundNotificationScope {
+  ASSIGNED_AND_UNASSIGNED
+  ASSIGNED_ONLY
+  ALL
+  MUTE_ALL
+}
+
+enum UserPresenceStatus {
+  ACTIVE
+  OFFLINE
+  AWAY
+  BUSY
+  DND
 }
 
 // ============================================================

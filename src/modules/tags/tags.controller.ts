@@ -15,6 +15,8 @@ import { JwtGuard } from 'src/common/guards/jwt.guard';
 import { TagsService } from './tags.service';
 import { WorkspaceRoute } from 'src/common/auth/route-access.decorator';
 import { WorkspacePermission } from 'src/common/constants/permissions';
+import { CreateTagDto } from './dto/create-tag.dto';
+import { UpdateTagDto } from './dto/update-tag.dto';
 
 @Controller('api/workspaces/tags')
 export class TagsController {
@@ -22,8 +24,8 @@ export class TagsController {
 
   @Post()
   @WorkspaceRoute(WorkspacePermission.SETTINGS_MANAGE)
-  create(@Req() req: any, @Body() body: { name: string; color?: string }) {
-    return this.tagsService.create(req.workspaceId, body);
+  create(@Req() req: any, @Body() body: CreateTagDto) {
+    return this.tagsService.create(req.workspaceId, body, req.user?.id);
   }
 
   @Get()
@@ -43,9 +45,9 @@ export class TagsController {
   update(
     @Req() req: any,
     @Param('id') id: string,
-    @Body() body: { name?: string; color?: string },
+    @Body() body: UpdateTagDto,
   ) {
-    return this.tagsService.update(req.workspaceId, id, body);
+    return this.tagsService.update(req.workspaceId, id, body, req.user?.id);
   }
 
   @Delete(':id')

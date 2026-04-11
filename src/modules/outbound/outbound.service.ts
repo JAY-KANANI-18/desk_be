@@ -25,6 +25,8 @@ export interface SendMessageDto {
     subject?: string;
     attachments?: SendAttachmentDto[];
     replyToMessageId?: string;
+    /** Links outbound rows to a broadcast batch for delivery analytics */
+    broadcastRunId?: string;
     metadata?: {
         template?: { name: string; language: string; variables?: Record<string, string> };
         htmlBody?: string;
@@ -95,6 +97,26 @@ export class OutboundService {
 
         const contact = conversation.contact;
         const workspaceId = params.workspaceId ?? conversation.workspaceId;
+        const [author, latestMessage] = await Promise.all([
+            params.authorId
+                ? this.prisma.user.findUnique({
+                    where: { id: params.authorId },
+                    select: { firstName: true, lastName: true },
+                })
+                : Promise.resolve(null),
+            this.prisma.message.findFirst({
+                where: { conversationId: conversation.id },
+                orderBy: { createdAt: 'desc' },
+                select: { text: true },
+            }),
+        ]);
+        const templateContext = this.buildTemplateContext(contact, author, latestMessage?.text ?? null);
+        const renderedText = this.renderVariables(params.text, templateContext, 'message text');
+        const renderedSubject = this.renderVariables(params.subject, templateContext, 'message subject');
+        const renderedHtmlBody = this.renderVariables(params.metadata?.htmlBody, templateContext, 'email html');
+        const replyTarget = params.replyToMessageId
+            ? await this.resolveReplyTarget(params.replyToMessageId, conversation.id)
+            : null;
 
         /* ── 2. Load channel ─────────────────────────────────────────────────── */
 
@@ -159,6 +181,10 @@ export class OutboundService {
                 channel,
             );
         }
+        const providerReplyToId = channel.type === 'email'
+            ? undefined
+            : replyTarget?.channelMsgId ?? undefined;
+        const quotedMessage = this.buildQuotedMessagePreview(replyTarget);
 
         /* ── 6. Create Message record (pending) ─────────────────────────────── */
 
@@ -173,14 +199,18 @@ export class OutboundService {
                 channelId: channel.id,
                 channelType: channel.type,
                 type: messageType,
-                text: params.text,
-                subject: emailThreadMeta?.subject ?? params.subject,
+                text: renderedText,
+                subject: emailThreadMeta?.subject ?? renderedSubject,
                 direction: 'outgoing',
                 status: 'pending',
                 authorId: params.authorId ?? null,
+                broadcastRunId: params.broadcastRunId ?? null,
+                replyToChannelMsgId: providerReplyToId ?? null,
                 metadata: {
                     contactIdentifier: contactChannel?.identifier ?? null,
                     ...(params.metadata ?? {}),
+                    ...(quotedMessage ? { quotedMessage } : {}),
+                    ...(renderedHtmlBody ? { htmlBody: renderedHtmlBody } : {}),
                     ...(emailThreadMeta ?? {}),
                 },
             },
@@ -222,12 +252,12 @@ export class OutboundService {
                 workspaceId,
                 conversationId: conversation.id,
                 to,
-                text: params.text,
-                subject: emailThreadMeta?.subject ?? params.subject,
-                htmlBody: params.metadata?.htmlBody,
+                text: renderedText,
+                subject: emailThreadMeta?.subject ?? renderedSubject,
+                htmlBody: renderedHtmlBody,
                 quickReplies: params.metadata?.quickReplies,
                 attachments: resolvedAttachments,
-                replyToMessageId: params.replyToMessageId,
+                replyToMessageId: providerReplyToId,
                 emailHeaders: emailThreadMeta?.headers ?? null,
             });
 
@@ -427,6 +457,8 @@ export class OutboundService {
             case 'messenger': return this.buildMetaMessaging(dto);
             case 'email': return this.buildEmailPayload(dto);
             case 'webchat': return this.buildWebchatPayload(dto);  // ← add
+            case 'sms': return this.buildSmsPayload(dto);
+            case 'exotel_call': return this.buildExotelCallPayload(dto);
 
             default: throw new Error(`No payload builder for ${channelType}`);
         }
@@ -483,6 +515,22 @@ export class OutboundService {
         return { to: dto.to, subject: dto.subject ?? '(no subject)', text: dto.text, html: dto.htmlBody, attachments: dto.attachments ?? [], headers: dto.emailHeaders ?? {} };
     }
 
+    private buildSmsPayload(dto: any): any {
+        return {
+            to: dto.to,
+            text: dto.text ?? '',
+            country: dto.country ?? '91',
+        };
+    }
+
+    private buildExotelCallPayload(dto: any): any {
+        return {
+            to: dto.to,
+            from: dto.from ?? null,
+            record: dto.record ?? false,
+        };
+    }
+
 
     // ─── Helpers ───────────────────────────────────────────────────────────────
 
@@ -507,6 +555,74 @@ export class OutboundService {
         if (mimeType.startsWith('video/')) return 'video';
         if (mimeType.startsWith('audio/')) return 'audio';
         return 'document';
+    }
+
+    private async resolveReplyTarget(replyToMessageId: string, conversationId: string) {
+        const target = await this.prisma.message.findUnique({
+            where: { id: replyToMessageId },
+            include: {
+                author: { select: { firstName: true, lastName: true } },
+                conversation: {
+                    select: {
+                        contact: {
+                            select: {
+                                firstName: true,
+                                lastName: true,
+                                email: true,
+                                phone: true,
+                            },
+                        },
+                    },
+                },
+                messageAttachments: {
+                    orderBy: { createdAt: 'asc' },
+                    take: 1,
+                },
+            },
+        });
+
+        if (!target) {
+            throw new BadRequestException('replyToMessageId was not found');
+        }
+
+        if (target.conversationId !== conversationId) {
+            throw new BadRequestException('replyToMessageId does not belong to this conversation');
+        }
+
+        return target;
+    }
+
+    private buildQuotedMessagePreview(target: any) {
+        if (!target) return undefined;
+        const attachment = target.messageAttachments?.[0];
+        return {
+            id: target.id,
+            text: target.text ?? undefined,
+            author: this.getQuotedAuthorLabel(target),
+            attachmentType: this.normaliseQuotedAttachmentType(attachment?.type),
+            attachmentUrl: attachment?.url ?? undefined,
+        };
+    }
+
+    private getQuotedAuthorLabel(message: any) {
+        if (message.direction === 'outgoing') {
+            const authorName = [message.author?.firstName, message.author?.lastName]
+                .filter(Boolean)
+                .join(' ')
+                .trim();
+            return authorName || 'You';
+        }
+
+        const contact = message.conversation?.contact;
+        const contactName = [contact?.firstName, contact?.lastName].filter(Boolean).join(' ').trim();
+        return contactName || contact?.email || contact?.phone || 'Customer';
+    }
+
+    private normaliseQuotedAttachmentType(type?: string) {
+        if (!type) return undefined;
+        if (type === 'voice') return 'audio';
+        if (type === 'image' || type === 'video' || type === 'audio') return type;
+        return 'file';
     }
 
     async processWhatsappStatusUpdate(params: {
@@ -645,12 +761,20 @@ export class OutboundService {
         });
 
         if (existing) {
+            const existingMessage = await this.prisma.message.findUnique({
+                where: { id: existing.id },
+                select: { metadata: true },
+            });
 
             let m = await this.prisma.message.update({
                 where: { id: existing.id },
                 data: {
                     sentAt: timestamp ? new Date(timestamp) : new Date(),
-                    metadata: { ...metadata, echoUpdatedAt: new Date() },
+                    metadata: {
+                        ...((existingMessage?.metadata as Record<string, any>) ?? {}),
+                        ...(metadata ?? {}),
+                        echoUpdatedAt: new Date(),
+                    },
                 },
             });
             console.log({ m });
@@ -888,6 +1012,42 @@ export class OutboundService {
             case 'sticker': return 'image/webp';
             default: return 'application/octet-stream';
         }
+    }
+
+    private buildTemplateContext(
+        contact: { firstName?: string | null; lastName?: string | null; email?: string | null; phone?: string | null },
+        author: { firstName?: string | null; lastName?: string | null } | null,
+        lastMessage: string | null,
+    ) {
+        const contactName = [contact.firstName, contact.lastName].filter(Boolean).join(' ').trim()
+            || contact.email
+            || contact.phone
+            || 'there';
+        const agentName = author
+            ? [author.firstName, author.lastName].filter(Boolean).join(' ').trim()
+            : '';
+
+        return {
+            contact_name: contactName,
+            agent_name: agentName || 'Agent',
+            last_message: lastMessage?.trim() || '',
+        };
+    }
+
+    private renderVariables(value: string | null | undefined, context: Record<string, string>, fieldName: string) {
+        if (!value) {
+            return value ?? undefined;
+        }
+
+        const allowedKeys = new Set(Object.keys(context));
+        const usedKeys = Array.from(value.matchAll(/{{\s*([a-zA-Z0-9_]+)\s*}}/g)).map((match) => match[1]);
+        const invalidKeys = usedKeys.filter((key) => !allowedKeys.has(key));
+
+        if (invalidKeys.length > 0) {
+            throw new BadRequestException(`Unsupported variables in ${fieldName}: ${Array.from(new Set(invalidKeys)).join(', ')}`);
+        }
+
+        return value.replace(/{{\s*([a-zA-Z0-9_]+)\s*}}/g, (_match, key: string) => context[key] ?? '');
     }
 
 

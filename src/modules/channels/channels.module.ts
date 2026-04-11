@@ -35,6 +35,9 @@ import { MessengerMenuController } from './providers/meta/messenger/messenger-me
 
 // ── Mailgun ────────────────────────────────────────────────────────────────
 import { MailgunController } from './providers/email/mailgun.controller';
+import { Msg91Controller } from './providers/sms/msg91.controller';
+import { ExotelController } from './providers/calling/exotel.controller';
+import { MetaAdsController } from './providers/meta/meta-ads.controller';
 
 
 // ── Shared modules ─────────────────────────────────────────────────────────
@@ -92,6 +95,9 @@ import { MediaModule } from '../media/media.module';
         InstagramController,         // POST/GET webhooks/instagram
         MessengerController,         // POST/GET webhooks/messenger
         MailgunController,           // POST      webhooks/mailgun
+        Msg91Controller,             // POST      channels/sms/msg91/webhook/:channelId
+        ExotelController,            // POST      channels/calling/exotel/webhook/:channelId
+        MetaAdsController,           // GET/POST  integrations/meta-ads/* + public webhook
 
         // ── Feature endpoints (auth-guarded, called by agents) ────────────────
         WhatsAppTemplatesController, // GET/POST  channels/:channelId/whatsapp/templates

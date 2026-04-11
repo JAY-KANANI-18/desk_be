@@ -1,4 +1,4 @@
-import { IsOptional, IsString, IsEmail } from 'class-validator';
+import { IsOptional, IsString, IsEmail, IsBoolean } from 'class-validator';
 
 export class CreateContactDto {
     @IsString()
@@ -21,4 +21,8 @@ export class CreateContactDto {
     @IsOptional()
     @IsString()
     lifecycleId?: string;
+
+    @IsOptional()
+    @IsBoolean()
+    marketingOptOut?: boolean;
 }

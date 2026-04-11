@@ -9,9 +9,46 @@ import { PrismaService } from '../../prisma/prisma.service';
 export class TagsService {
   constructor(private readonly prisma: PrismaService) {}
 
+  private toTagResponse(tag: {
+    id: string;
+    name: string;
+    workspaceId: string;
+    createdAt: Date;
+    updatedAt: Date;
+    color: string;
+    emoji: string;
+    description: string | null;
+    createdBy: string;
+    createdById: string | null;
+    updatedById: string | null;
+    _count: { contacts: number };
+  }) {
+    return {
+      id: tag.id,
+      name: tag.name,
+      workspaceId: tag.workspaceId,
+      spaceId: tag.workspaceId,
+      createdAt: tag.createdAt,
+      updatedAt: tag.updatedAt,
+      createdBy: tag.createdBy,
+      createdById: tag.createdById,
+      updatedById: tag.updatedById,
+      color: tag.color,
+      emoji: tag.emoji,
+      description: tag.description,
+      bundle: {
+        color: tag.color,
+        emoji: tag.emoji,
+        description: tag.description,
+      },
+      count: tag._count.contacts,
+    };
+  }
+
   async create(
     workspaceId: string,
-    body: { name: string; color?: string },
+    body: { name: string; color?: string; emoji?: string; description?: string },
+    actorId?: string,
   ) {
     const name = body.name?.trim();
 
@@ -37,12 +74,23 @@ export class TagsService {
       data: {
         workspaceId,
         name,
-        color: body.color || '#000000',
+        color: body.color || 'tag-indigo',
+        emoji: body.emoji?.trim() || '🏷️',
+        description: body.description?.trim() || null,
+        createdBy: 'user',
+        createdById: actorId ?? null,
       },
       select: {
         id: true,
         name: true,
+        workspaceId: true,
+        updatedAt: true,
         color: true,
+        emoji: true,
+        description: true,
+        createdBy: true,
+        createdById: true,
+        updatedById: true,
         createdAt: true,
         _count: {
           select: {
@@ -52,7 +100,7 @@ export class TagsService {
       },
     });
 
-    return tag
+    return this.toTagResponse(tag);
   
   }
 
@@ -75,8 +123,15 @@ export class TagsService {
       select: {
         id: true,
         name: true,
+        workspaceId: true,
         color: true,
+        emoji: true,
+        description: true,
+        createdBy: true,
+        createdById: true,
+        updatedById: true,
         createdAt: true,
+        updatedAt: true,
         _count: {
           select: {
             contacts: true,
@@ -85,7 +140,7 @@ export class TagsService {
       },
     });
 
-    return tags;
+    return tags.map((tag) => this.toTagResponse(tag));
   }
 
   async findOne(workspaceId: string, id: string) {
@@ -97,8 +152,15 @@ export class TagsService {
       select: {
         id: true,
         name: true,
+        workspaceId: true,
         color: true,
+        emoji: true,
+        description: true,
+        createdBy: true,
+        createdById: true,
+        updatedById: true,
         createdAt: true,
+        updatedAt: true,
         _count: {
           select: {
             contacts: true,
@@ -111,13 +173,14 @@ export class TagsService {
       throw new NotFoundException('Tag not found');
     }
 
-    return tag;
+    return this.toTagResponse(tag);
   }
 
   async update(
     workspaceId: string,
     id: string,
-    body: { name?: string; color?: string },
+    body: { name?: string; color?: string; emoji?: string; description?: string },
+    actorId?: string,
   ) {
     const existingTag = await this.prisma.tag.findFirst({
       where: {
@@ -158,8 +221,18 @@ export class TagsService {
     }
 
     if (body.color !== undefined) {
-      updateData.color = body.color || '#000000';
+      updateData.color = body.color || 'tag-indigo';
     }
+
+    if (body.emoji !== undefined) {
+      updateData.emoji = body.emoji?.trim() || '🏷️';
+    }
+
+    if (body.description !== undefined) {
+      updateData.description = body.description?.trim() || null;
+    }
+
+    updateData.updatedById = actorId ?? null;
 
     const updated = await this.prisma.tag.update({
       where: { id },
@@ -167,8 +240,15 @@ export class TagsService {
       select: {
         id: true,
         name: true,
+        workspaceId: true,
         color: true,
+        emoji: true,
+        description: true,
+        createdBy: true,
+        createdById: true,
+        updatedById: true,
         createdAt: true,
+        updatedAt: true,
         _count: {
           select: {
             contacts: true,
@@ -177,7 +257,7 @@ export class TagsService {
       },
     });
 
-    return updated;
+    return this.toTagResponse(updated);
   }
 
   async remove(workspaceId: string, id: string) {

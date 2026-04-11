@@ -24,6 +24,7 @@ import {
   BadRequestException,
   Logger,
 } from '@nestjs/common';
+import { NotificationType } from '@prisma/client';
 import { ActivityService } from '../activity/activity.service';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import {
@@ -38,6 +39,8 @@ import {
 } from '../activity/activity.types';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
+import { NotificationsService } from '../notifications/notifications.service';
+import { MentionParserService } from './mention-parser.service';
 
 // ─── DTOs ─────────────────────────────────────────────────────────────────────
 
@@ -163,6 +166,8 @@ export class ConversationsService {
     private readonly prisma: PrismaService,
     private readonly activity: ActivityService,
     private readonly emitter: EventEmitter2,
+    private readonly notifications: NotificationsService,
+    private readonly mentionParser: MentionParserService,
   ) { }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -409,10 +414,11 @@ export class ConversationsService {
         },
       }),
     ]);
+    const enrichedMessages = await this.enrichMessagesWithReplyContext(messages);
 
     // Merge + sort newest-first, take + 1 to detect more
     const allItems: Array<{ timestamp: Date; raw: any; type: 'message' | 'activity' }> = [
-      ...messages.map(m => ({
+      ...enrichedMessages.map(m => ({
         type: 'message' as const,
         timestamp: m.sentAt ?? m.createdAt,
         raw: m,
@@ -485,9 +491,10 @@ export class ConversationsService {
         messageAttachments: true,
       },
     });
+    const enrichedMessages = await this.enrichMessagesWithReplyContext(messages);
 
-    const hasMore = messages.length > take;
-    const data = messages.slice(0, take).map(m => this.formatMessage(m));
+    const hasMore = enrichedMessages.length > take;
+    const data = enrichedMessages.slice(0, take).map(m => this.formatMessage(m));
     const nextCursor = hasMore
       ? Buffer.from(messages[take - 1].createdAt.toISOString()).toString('base64')
       : undefined;
@@ -720,6 +727,30 @@ export class ConversationsService {
       });
     }
 
+    if (dto.userId !== dto.actorId) {
+      const contactName = this.getContactDisplayName(conv.contact);
+      await this.notifications.ingest({
+        userId: dto.userId,
+        workspaceId: conv.workspaceId,
+        type: NotificationType.CONTACT_ASSIGNED,
+        title: 'Contact assigned to you',
+        body: `${contactName} was assigned to you.`,
+        metadata: {
+          contactId: conv.contactId,
+          conversationId: conv.id,
+          assignedByUserId: dto.actorId ?? null,
+        },
+        sourceEntityType: 'contact',
+        sourceEntityId: conv.contactId,
+        dedupeKey: `contact-assigned:${conv.contactId}:${dto.userId}`,
+        target: {
+          assigneeId: dto.userId,
+          contactId: conv.contactId,
+          conversationId: conv.id,
+        },
+      });
+    }
+
     const updated = await this.findOne(conv.id, conv.workspaceId);
     this.emitter.emit('conversation.updated', updated);
     return updated;
@@ -839,7 +870,22 @@ export class ConversationsService {
 
   async addNote(conversationId: string, dto: AddNoteDto) {
     const conv = await this.findOrFail(conversationId);
-    return this.activity.record({
+    const parsedMentionIds = this.mentionParser.extractUserIds(dto.text);
+    const candidateMentionIds = Array.from(
+      new Set([...(parsedMentionIds ?? []), ...(dto.mentionedUserIds ?? [])]),
+    ).filter((id) => id && id !== dto.actorId);
+
+    const validMentionIds = candidateMentionIds.length > 0
+      ? (await this.prisma.workspaceMember.findMany({
+        where: {
+          workspaceId: conv.workspaceId,
+          userId: { in: candidateMentionIds },
+        },
+        select: { userId: true },
+      })).map((member) => member.userId)
+      : [];
+
+    const noteActivity = await this.activity.record({
       workspaceId: conv.workspaceId,
       conversationId: conv.id,
       eventType: 'note',
@@ -847,9 +893,51 @@ export class ConversationsService {
       actorType: 'user',
       metadata: {
         text: dto.text,
-        mentionedUserIds: dto.mentionedUserIds ?? [],
+        mentionedUserIds: validMentionIds,
       },
     });
+
+    if (validMentionIds.length > 0) {
+      const actor = await this.prisma.user.findUnique({
+        where: { id: dto.actorId },
+        select: { firstName: true, lastName: true },
+      });
+      const actorName = [actor?.firstName, actor?.lastName].filter(Boolean).join(' ').trim() || 'A teammate';
+      const contactName = this.getContactDisplayName(conv.contact);
+      const notePreview = this.mentionParser.toPlainText(dto.text).trim();
+      const body = notePreview
+        ? `${actorName} mentioned you in a note on ${contactName}: ${notePreview.slice(0, 180)}`
+        : `${actorName} mentioned you in a note on ${contactName}.`;
+
+      await Promise.all(
+        validMentionIds.map((userId) =>
+          this.notifications.ingest({
+            userId,
+            workspaceId: conv.workspaceId,
+            type: NotificationType.COMMENT_MENTION,
+            title: 'You were mentioned in a note',
+            body,
+            metadata: {
+              contactId: conv.contactId,
+              conversationId: conv.id,
+              noteId: noteActivity.id,
+              mentionedByUserId: dto.actorId,
+              mentionedUserIds: validMentionIds,
+            },
+            sourceEntityType: 'conversation_activity',
+            sourceEntityId: noteActivity.id,
+            dedupeKey: `note-mention:${noteActivity.id}:${userId}`,
+            target: {
+              contactId: conv.contactId,
+              conversationId: conv.id,
+              mentionedUserIds: validMentionIds,
+            },
+          }),
+        ),
+      );
+    }
+
+    return noteActivity;
   }
 
   async mergeContact(conversationId: string, dto: MergeContactDto) {
@@ -960,6 +1048,7 @@ export class ConversationsService {
       status: m.status,
       createdAt: m.createdAt.toISOString(),
       sentAt: m.sentAt?.toISOString() ?? null,
+      replyToChannelMsgId: m.replyToChannelMsgId ?? null,
       metadata: m.metadata,
       author: m.author
         ? {
@@ -977,6 +1066,95 @@ export class ConversationsService {
         size: a.size,
       })),
     };
+  }
+
+  private async enrichMessagesWithReplyContext(messages: any[]) {
+    const replyIds = Array.from(
+      new Set(
+        messages
+          .map((message) => message.replyToChannelMsgId)
+          .filter((value): value is string => Boolean(value)),
+      ),
+    );
+
+    if (replyIds.length === 0) return messages;
+
+    const replyTargets = await this.prisma.message.findMany({
+      where: {
+        channelMsgId: { in: replyIds },
+      },
+      include: {
+        author: { select: { firstName: true, lastName: true } },
+        conversation: {
+          select: {
+            contact: {
+              select: {
+                firstName: true,
+                lastName: true,
+                email: true,
+                phone: true,
+              },
+            },
+          },
+        },
+        messageAttachments: {
+          orderBy: { createdAt: 'asc' },
+          take: 1,
+        },
+      },
+    });
+
+    const replyMap = new Map(replyTargets.map((message) => [message.channelMsgId, message]));
+
+    return messages.map((message) => {
+      const metadata = (message.metadata as Record<string, any> | null) ?? null;
+      if (metadata?.quotedMessage || !message.replyToChannelMsgId) {
+        return message;
+      }
+
+      const target = replyMap.get(message.replyToChannelMsgId);
+      if (!target) return message;
+
+      return {
+        ...message,
+        metadata: {
+          ...(metadata ?? {}),
+          quotedMessage: this.buildQuotedMessagePreview(target),
+        },
+      };
+    });
+  }
+
+  private buildQuotedMessagePreview(message: any) {
+    const attachment = message.messageAttachments?.[0];
+    return {
+      id: message.id,
+      text: message.text ?? undefined,
+      author: this.getQuotedMessageAuthor(message),
+      attachmentType: this.normaliseQuotedAttachmentType(attachment?.type),
+      attachmentUrl: attachment?.url ?? undefined,
+    };
+  }
+
+  private getQuotedMessageAuthor(message: any) {
+    if (message.direction === 'outgoing') {
+      const name = [message.author?.firstName, message.author?.lastName]
+        .filter(Boolean)
+        .join(' ')
+        .trim();
+      return name || 'You';
+    }
+
+    const contact = message.conversation?.contact;
+    const name = [contact?.firstName, contact?.lastName].filter(Boolean).join(' ').trim();
+    return name || contact?.email || contact?.phone || 'Customer';
+  }
+
+  private normaliseQuotedAttachmentType(type?: string) {
+    if (!type) return undefined;
+    if (type === 'voice') return 'audio';
+    if (type === 'image' || type === 'video' || type === 'audio') return type;
+    return 'file';
   }
 
   private buildSnippet(text: string, q: string, radius = 80): string {
@@ -1027,5 +1205,15 @@ export class ConversationsService {
     if (next === 'closed' || next === 'resolved') return 'close';
     if (next === 'pending') return 'pending';
     return 'open' as const;
+  }
+
+  private getContactDisplayName(contact?: {
+    firstName?: string | null;
+    lastName?: string | null;
+    email?: string | null;
+    phone?: string | null;
+  } | null) {
+    const fullName = [contact?.firstName, contact?.lastName].filter(Boolean).join(' ').trim();
+    return fullName || contact?.email || contact?.phone || 'this contact';
   }
 }
