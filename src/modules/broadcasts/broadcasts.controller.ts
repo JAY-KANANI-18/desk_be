@@ -9,10 +9,25 @@ export class BroadcastsController {
 
   @Get()
   @WorkspaceRoute(WorkspacePermission.BROADCASTS_VIEW)
-  async list(@Req() req: any, @Query('take') take?: string) {
+  async list(
+    @Req() req: any,
+    @Query('take') take?: string,
+    @Query('cursor') cursor?: string,
+    @Query('search') search?: string,
+    @Query('status') status?: string,
+    @Query('sortBy') sortBy?: string,
+    @Query('sortOrder') sortOrder?: string,
+  ) {
     const workspaceId = req.workspaceId || req.headers['x-workspace-id'];
     const n = take ? parseInt(take, 10) : 50;
-    return this.broadcasts.listRuns(workspaceId, Number.isFinite(n) ? n : 50);
+    return this.broadcasts.listRuns(workspaceId, {
+      take: Number.isFinite(n) ? n : 50,
+      cursor,
+      search,
+      status,
+      sortBy,
+      sortOrder,
+    });
   }
 
   /** Approved WhatsApp templates for the selected channel (send permission). */
@@ -32,7 +47,6 @@ export class BroadcastsController {
       channelId: string;
       tagIds?: string[];
       lifecycleId?: string;
-      teamId?: string;
       respectMarketingOptOut?: boolean;
       limit?: number;
     },
@@ -44,7 +58,6 @@ export class BroadcastsController {
       filters: {
         tagIds: dto.tagIds,
         lifecycleId: dto.lifecycleId,
-        teamId: dto.teamId,
         respectMarketingOptOut: dto.respectMarketingOptOut,
       },
       limit: dto.limit,
@@ -63,7 +76,6 @@ export class BroadcastsController {
       template?: { name: string; language: string; variables?: Record<string, string> };
       tagIds?: string[];
       lifecycleId?: string;
-      teamId?: string;
       respectMarketingOptOut?: boolean;
       limit?: number;
       scheduledAt?: string;
@@ -79,7 +91,6 @@ export class BroadcastsController {
       filters: {
         tagIds: dto.tagIds || [],
         lifecycleId: dto.lifecycleId,
-        teamId: dto.teamId,
         respectMarketingOptOut: dto.respectMarketingOptOut,
       },
       limit: dto.limit || 200,

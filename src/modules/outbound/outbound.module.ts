@@ -6,11 +6,15 @@ import { MediaService } from '../media/media.service';
 import { MediaModule } from '../media/media.module';
 import { ChannelAdaptersModule } from '../channel-adapters/channel-adapters.module';
 import { ChannelAdaptersRegistry } from '../channel-adapters/channel-adapters.registry';
-import { OutboundListener } from './outbound.listener';
+import { MessageProcessingModule } from './message-processing.module';
 
 @Module({
-  imports: [MediaModule,ChannelAdaptersModule],
-  providers: [OutboundService,PrismaService,MediaService,OutboundListener],
+  imports: [MediaModule, ChannelAdaptersModule, MessageProcessingModule],
+  providers: [
+    OutboundService,
+    PrismaService,
+    MediaService,
+  ],
   exports: [OutboundService],
 })
 export class OutboundModule {}

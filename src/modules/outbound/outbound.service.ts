@@ -144,8 +144,15 @@ export class OutboundService {
          * For Email:     ContactChannel.identifier = email address
         ──────────────────────────────────────────────────────────────────────── */
 
-        const contactChannel = await this.prisma.contactChannel.findFirst({
+        
+        let contactChannel = await this.prisma.contactChannel.findFirst({
             where: { contactId: contact.id, channelId: channel.id },
+        });
+        contactChannel = await this.ensureSendableContactChannel({
+            workspaceId,
+            channel,
+            contact,
+            contactChannel,
         });
         this.logger.debug("Resolved contactChannel", { contactChannel });
 
@@ -165,6 +172,7 @@ export class OutboundService {
                 contactChannel,
                 contactPhone: contact.phone,
                 contactEmail: contact.email,
+                hasTemplate: !!params.metadata?.template,
             });
         }
 
@@ -231,6 +239,12 @@ export class OutboundService {
                     workspaceId,
                 });
                 await this.finalise(message.id, result?.id, conversation.id, workspaceId, channel.id);
+                await this.updateContactChannelWindowForOutbound({
+                    contactChannelId: contactChannel?.id,
+                    channelType: channel.type,
+                    eventTimestamp: Date.now(),
+                    metadata: params.metadata,
+                });
                  this.events.emit('message.outbound', {
                 workspaceId, channelId: channel.id,
                 conversationId: conversation.id,
@@ -306,6 +320,13 @@ export class OutboundService {
                 data: { lastMessageId: message.id, lastMessageAt: new Date() },
             });
 
+            await this.updateContactChannelWindowForOutbound({
+                contactChannelId: contactChannel?.id,
+                channelType: channel.type,
+                eventTimestamp: Date.now(),
+                metadata: updatedMeta,
+            });
+
             this.events.emit('message.status_updated', {
                 workspaceId: message.workspaceId,
                 conversationId: message.conversationId,
@@ -334,6 +355,139 @@ export class OutboundService {
     }
 
     // ─── Template ──────────────────────────────────────────────────────────────
+
+    async processQueueEntry(queueEntryId: string, attempt = 1, maxRetries = 1) {
+        const queueEntry = await this.prisma.outboundQueue.findUnique({
+            where: { id: queueEntryId },
+            include: {
+                channel: true,
+                message: {
+                    include: {
+                        conversation: {
+                            include: { contact: true },
+                        },
+                        messageAttachments: true,
+                    },
+                },
+            },
+        });
+
+        if (!queueEntry?.message || !queueEntry.channel) {
+            this.logger.warn(`Outbound queue entry not found: ${queueEntryId}`);
+            return;
+        }
+
+        if (queueEntry.status === 'sent') {
+            return;
+        }
+
+        await this.prisma.outboundQueue.update({
+            where: { id: queueEntryId },
+            data: {
+                status: 'sending',
+                attempts: attempt,
+                maxRetries,
+                lastError: null,
+            },
+        });
+
+        const { channel, message } = queueEntry;
+        const provider = this.registry.getProviderByType(channel.type);
+        if (!provider.sendMessage) {
+            throw new BadRequestException(`Provider ${channel.type} does not support sending`);
+        }
+
+        const payload = { ...(queueEntry.payload as Record<string, any>) };
+        if (!payload.text && message.text) payload.text = message.text;
+        if (!payload.subject && message.subject) payload.subject = message.subject;
+        if (!payload.html && (message.metadata as any)?.htmlBody) {
+            payload.html = (message.metadata as any).htmlBody;
+        }
+        if (!payload.attachments && message.messageAttachments.length > 0) {
+            payload.attachments = message.messageAttachments.map((attachment) => ({
+                type: attachment.type,
+                url: attachment.url,
+                mimeType: attachment.mimeType,
+                filename: attachment.name,
+            }));
+        }
+
+        try {
+            const result: any = await provider.sendMessage(channel, payload);
+            const metadata = {
+                ...((message.metadata as Record<string, any>) ?? {}),
+                ...(channel.type === 'email' && result?.id ? { messageId: result.id } : {}),
+            };
+
+            await this.prisma.$transaction([
+                this.prisma.message.update({
+                    where: { id: message.id },
+                    data: {
+                        status: 'sent',
+                        channelMsgId: result?.externalId ?? result?.id ?? null,
+                        metadata,
+                    },
+                }),
+                this.prisma.outboundQueue.update({
+                    where: { id: queueEntryId },
+                    data: {
+                        status: 'sent',
+                        sentAt: new Date(),
+                        lastError: null,
+                    },
+                }),
+                this.prisma.conversation.update({
+                    where: { id: message.conversationId },
+                    data: {
+                        lastMessageId: message.id,
+                        lastMessageAt: new Date(),
+                    },
+                }),
+            ]);
+
+            this.events.emit('message.outbound', {
+                workspaceId: message.workspaceId,
+                conversationId: message.conversationId,
+                message: {
+                    ...message,
+                    status: 'sent',
+                    channelMsgId: result?.externalId ?? result?.id ?? null,
+                    metadata,
+                },
+            });
+            this.events.emit('message.status_updated', {
+                workspaceId: message.workspaceId,
+                conversationId: message.conversationId,
+                messageId: message.id,
+                status: 'sent',
+            });
+        } catch (err: any) {
+            await this.prisma.outboundQueue.update({
+                where: { id: queueEntryId },
+                data: {
+                    status: 'failed',
+                    lastError: err.message,
+                },
+            });
+            await this.prisma.message.update({
+                where: { id: message.id },
+                data: {
+                    status: 'failed',
+                    metadata: {
+                        ...((message.metadata as Record<string, any>) ?? {}),
+                        error: err.message,
+                    },
+                },
+            });
+            this.events.emit('message.status_updated', {
+                workspaceId: message.workspaceId,
+                conversationId: message.conversationId,
+                messageId: message.id,
+                status: 'failed',
+            });
+            throw err;
+        }
+    }
 
     private async sendTemplate(opts: {
         channel: any;
@@ -538,6 +692,69 @@ export class OutboundService {
         await this.prisma.message.update({ where: { id: messageId }, data: { status: 'sent', channelMsgId: externalId ?? null }, include: { channel: true } });
         await this.prisma.conversation.update({ where: { id: conversationId }, data: { lastMessageId: messageId, lastMessageAt: new Date() } });
         this.events.emit('message.outbound', { workspaceId, channelId, conversationId, messageId, externalId });
+    }
+
+    private async updateContactChannelWindowForOutbound(opts: {
+        contactChannelId?: string | null;
+        channelType: string;
+        eventTimestamp?: string | number | null;
+        metadata?: Record<string, any> | null;
+    }) {
+        if (!opts.contactChannelId) return;
+
+        const eventTimeMs = this.toEpochMs(opts.eventTimestamp) ?? Date.now();
+        const nextWindowCategory = this.extractConversationWindowCategory(opts.metadata);
+        const nextCallPermission = this.extractNullableBoolean(opts.metadata?.call_permission);
+        const nextPermanentCallPermission = this.extractBoolean(opts.metadata?.hasPermanentCallPermission);
+        const explicitExpiry = this.toEpochMs(opts.metadata?.messageWindowExpiry);
+
+        await this.prisma.contactChannel.update({
+            where: { id: opts.contactChannelId },
+            data: {
+                lastMessageTime: BigInt(Math.trunc(eventTimeMs)),
+                ...(explicitExpiry ? { messageWindowExpiry: BigInt(Math.trunc(explicitExpiry)) } : {}),
+                ...(nextWindowCategory !== undefined
+                    ? { conversationWindowCategory: nextWindowCategory as any }
+                    : {}),
+                ...(nextCallPermission !== undefined ? { call_permission: nextCallPermission } : {}),
+                ...(nextPermanentCallPermission !== undefined
+                    ? { hasPermanentCallPermission: nextPermanentCallPermission }
+                    : {}),
+            },
+        });
+    }
+
+    private extractConversationWindowCategory(metadata: any): Record<string, any> | undefined {
+        if (!metadata) return undefined;
+        if (metadata.conversationWindowCategory && typeof metadata.conversationWindowCategory === 'object') {
+            return metadata.conversationWindowCategory;
+        }
+        if (metadata.conversation?.category) {
+            return { category: metadata.conversation.category };
+        }
+        return undefined;
+    }
+
+    private extractNullableBoolean(value: unknown): boolean | null | undefined {
+        if (value === null) return null;
+        if (typeof value === 'boolean') return value;
+        return undefined;
+    }
+
+    private extractBoolean(value: unknown): boolean | undefined {
+        if (typeof value === 'boolean') return value;
+        return undefined;
+    }
+
+    private toEpochMs(value: string | number | null | undefined): number | null {
+        if (value === null || value === undefined) return null;
+        if (typeof value === 'string' && Number.isNaN(Number(value))) {
+            const parsed = Date.parse(value);
+            return Number.isFinite(parsed) ? parsed : null;
+        }
+        const numeric = typeof value === 'number' ? value : Number(value);
+        if (!Number.isFinite(numeric)) return null;
+        return numeric < 1_000_000_000_000 ? numeric * 1000 : numeric;
     }
 
     private waMediaType(mimeType: string): string {
@@ -789,7 +1006,7 @@ export class OutboundService {
         // Same logic as InboundService.upsertContact() but we use recipientIdentifier.
         // The "contact" here is the customer the agent was talking to.
 
-        const { contact } = await this.upsertContactForExternal({
+        const { contact, contactChannel } = await this.upsertContactForExternal({
             workspaceId,
             channelId,
             channelType,
@@ -880,6 +1097,13 @@ export class OutboundService {
         });
 
         // ── 8. Emit for WebSocket gateway ─────────────────────────────────────
+
+        await this.updateContactChannelWindowForOutbound({
+            contactChannelId: contactChannel?.id,
+            channelType,
+            eventTimestamp: timestamp ?? Date.now(),
+            metadata,
+        });
 
         this.events.emit('message.outbound', {
             workspaceId,
@@ -1048,6 +1272,64 @@ export class OutboundService {
         }
 
         return value.replace(/{{\s*([a-zA-Z0-9_]+)\s*}}/g, (_match, key: string) => context[key] ?? '');
+    }
+
+    private async ensureSendableContactChannel(opts: {
+        workspaceId: string;
+        channel: { id: string; type: string };
+        contact: { id: string; email?: string | null; phone?: string | null; firstName?: string | null; lastName?: string | null };
+        contactChannel: any | null;
+    }) {
+        const { workspaceId, channel, contact } = opts;
+        if (opts.contactChannel?.identifier) {
+            return opts.contactChannel;
+        }
+
+        let identifier: string | null = null;
+        if (channel.type === 'whatsapp') {
+            identifier = contact.phone?.trim() || null;
+        } else if (channel.type === 'email') {
+            identifier = contact.email?.trim() || null;
+        } else {
+            return opts.contactChannel;
+        }
+
+        if (!identifier) {
+            return opts.contactChannel;
+        }
+
+        const existing = await this.prisma.contactChannel.findFirst({
+            where: {
+                channelId: channel.id,
+                identifier,
+            },
+            include: { contact: true },
+        });
+
+        if (existing) {
+            if (existing.contactId !== contact.id) {
+                this.logger.warn(
+                    `Send fallback found existing contactChannel on another contact. channelId=${channel.id} identifier=${identifier} existingContactId=${existing.contactId} requestedContactId=${contact.id}`,
+                );
+                return opts.contactChannel;
+            }
+            return existing;
+        }
+
+        this.logger.log(
+            `Creating missing contactChannel for outbound send. channelType=${channel.type} channelId=${channel.id} contactId=${contact.id} identifier=${identifier}`,
+        );
+
+        return this.prisma.contactChannel.create({
+            data: {
+                workspaceId,
+                contactId: contact.id,
+                channelId: channel.id,
+                channelType: channel.type,
+                identifier,
+                displayName: [contact.firstName, contact.lastName].filter(Boolean).join(' ').trim() || null,
+            },
+        });
     }
 
 

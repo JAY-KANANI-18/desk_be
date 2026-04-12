@@ -41,6 +41,7 @@ import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { MentionParserService } from './mention-parser.service';
+import { MessageProcessingQueueService } from '../outbound/message-processing-queue.service';
 
 // ─── DTOs ─────────────────────────────────────────────────────────────────────
 
@@ -70,12 +71,14 @@ export interface SendMessageDto {
   channelId: string;
   actorId: string;
   text?: string;
+  subject?: string;
   attachments?: Array<{
     type: string;
     url: string;
     name: string;
     mimeType?: string;
   }>;
+  replyToMessageId?: string;
   metadata?: Record<string, any>;
 }
 
@@ -135,8 +138,21 @@ const CONV_INCLUDE = {
       lifecycleId: true,
       contactChannels: {
         select: {
+          id: true,
           channelId: true,
-          channelType: true
+          channelType: true,
+          identifier: true,
+          displayName: true,
+          avatarUrl: true,
+          createdAt: true,
+          updatedAt: true,
+          lastMessageTime: true,
+          lastIncomingMessageTime: true,
+          lastCallInteractionTime: true,
+          messageWindowExpiry: true,
+          conversationWindowCategory: true,
+          call_permission: true,
+          hasPermanentCallPermission: true,
         }
       }
     },
@@ -168,6 +184,7 @@ export class ConversationsService {
     private readonly emitter: EventEmitter2,
     private readonly notifications: NotificationsService,
     private readonly mentionParser: MentionParserService,
+    private readonly processingQueue: MessageProcessingQueueService,
   ) { }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -513,6 +530,13 @@ export class ConversationsService {
   async sendMessage(dto: SendMessageDto) {
     const conv = await this.findOrFail(dto.conversationId, dto.workspaceId);
 
+    if (dto.actorId && conv.contact?.assigneeId !== dto.actorId) {
+      await this.assignUser(dto.conversationId, {
+        userId: dto.actorId,
+        actorId: dto.actorId,
+      });
+    }
+
     const channel = await this.prisma.channel.findFirst({
       where: { id: dto.channelId, workspaceId: dto.workspaceId },
     });
@@ -542,8 +566,10 @@ export class ConversationsService {
           : 'text',
         direction: 'outgoing',
         text: dto.text ?? null,
+        subject: dto.subject ?? null,
         status: 'pending',
         authorId: dto.actorId,
+        replyToChannelMsgId: dto.replyToMessageId ?? dto.metadata?.replyToMessageId ?? null,
         metadata: dto.metadata ? (dto.metadata as any) : undefined,
         sentAt: new Date(),
       },
@@ -578,7 +604,7 @@ export class ConversationsService {
 
     // Enqueue for delivery
     const payload = this.buildQueuePayload(channel.type, to, dto);
-    await this.prisma.outboundQueue.create({
+    const queueEntry = await this.prisma.outboundQueue.create({
       data: {
         workspaceId: dto.workspaceId,
         channelId: dto.channelId,
@@ -588,6 +614,7 @@ export class ConversationsService {
         status: 'pending',
       },
     });
+    await this.processingQueue.enqueueQueueEntry(queueEntry.id);
 
     // Emit for real-time FE delivery
     this.emitter.emit('message.outbound', {
@@ -1173,29 +1200,88 @@ export class ConversationsService {
   ): Record<string, any> {
     switch (channelType) {
       case 'whatsapp':
+        if (dto.metadata?.template) {
+          return {
+            messaging_product: 'whatsapp',
+            to,
+            type: 'template',
+            template: {
+              name: dto.metadata.template.name,
+              language: { code: dto.metadata.template.language },
+              components: dto.metadata.template.components ?? [],
+            },
+          };
+        }
         return {
           messaging_product: 'whatsapp',
           to,
-          type: dto.attachments?.length ? dto.attachments[0].type : 'text',
-          text: dto.text ? { body: dto.text } : undefined,
+          ...(dto.attachments?.length
+            ? {
+                type: dto.attachments[0].type === 'document' ? 'document' : dto.attachments[0].type,
+                [dto.attachments[0].type === 'document' ? 'document' : dto.attachments[0].type]: {
+                  link: dto.attachments[0].url,
+                  ...(dto.attachments[0].name ? { filename: dto.attachments[0].name } : {}),
+                  ...(dto.text ? { caption: dto.text } : {}),
+                },
+              }
+            : {
+                type: 'text',
+                text: dto.text ? { body: dto.text } : undefined,
+              }),
+          ...(dto.replyToMessageId ? { context: { message_id: dto.replyToMessageId } } : {}),
         };
       case 'instagram':
       case 'messenger':
         return {
           recipient: { id: to },
-          message: { text: dto.text },
+          message: {
+            ...(dto.text ? { text: dto.text } : {}),
+            ...(dto.attachments?.length
+              ? {
+                  attachment: {
+                    type: dto.attachments[0].mimeType?.startsWith('image/')
+                      ? 'image'
+                      : dto.attachments[0].mimeType?.startsWith('video/')
+                        ? 'video'
+                        : dto.attachments[0].mimeType?.startsWith('audio/')
+                          ? 'audio'
+                          : 'file',
+                    payload: {
+                      url: dto.attachments[0].url,
+                      is_reusable: true,
+                    },
+                  },
+                }
+              : {}),
+            ...(dto.metadata?.quickReplies?.length
+              ? {
+                  quick_replies: dto.metadata.quickReplies.map((qr: any) => ({
+                    content_type: 'text',
+                    title: qr.title,
+                    payload: qr.payload,
+                  })),
+                }
+              : {}),
+          },
         };
       case 'email':
         return {
           to,
-          subject: dto.metadata?.email?.subject ?? '',
+          subject: dto.subject ?? dto.metadata?.email?.subject ?? '',
           text: dto.text,
-          html: dto.metadata?.email?.htmlBody,
-          inReplyTo: dto.metadata?.email?.inReplyTo,
-          references: dto.metadata?.email?.references,
+          html: dto.metadata?.htmlBody ?? dto.metadata?.email?.htmlBody,
+          headers: {
+            ...(dto.metadata?.email?.inReplyTo
+              ? { 'In-Reply-To': dto.metadata.email.inReplyTo }
+              : {}),
+            ...(dto.metadata?.email?.references
+              ? { References: dto.metadata.email.references }
+              : {}),
+          },
+          attachments: dto.attachments ?? [],
         };
       default:
-        return { to, text: dto.text };
+        return { to, text: dto.text, attachments: dto.attachments ?? [] };
     }
   }
 

@@ -6,10 +6,10 @@ import { OutboundService } from '../outbound/outbound.service';
 import { ChannelsModule } from '../channels/channels.module';
 import { R2Service } from 'src/common/storage/r2.service';
 import { PrismaModule } from '../../prisma/prisma.module';
-import { OutboundModule } from '../outbound/outbound.module';
+import { ConversationsModule } from '../conversations/conversations.module';
 
 @Module({
-    imports: [PrismaModule ,OutboundModule],
+    imports: [PrismaModule, ConversationsModule],
     controllers: [MessagesController],
     providers: [MessagesService],
     exports: [MessagesService],

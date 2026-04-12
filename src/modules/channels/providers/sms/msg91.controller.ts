@@ -3,6 +3,7 @@ import { Public } from 'src/common/auth/route-access.decorator';
 import { ChannelAdaptersRegistry } from 'src/modules/channel-adapters/channel-adapters.registry';
 import { InboundService } from 'src/modules/inbound/inbound.service';
 import { OutboundService } from 'src/modules/outbound/outbound.service';
+import { MessageProcessingQueueService } from 'src/modules/outbound/message-processing-queue.service';
 import { PrismaService } from 'src/prisma/prisma.service';
 
 @Controller('api/channels/sms/msg91')
@@ -14,6 +15,7 @@ export class Msg91Controller {
     private readonly registry: ChannelAdaptersRegistry,
     private readonly inbound: InboundService,
     private readonly outbound: OutboundService,
+    private readonly processingQueue: MessageProcessingQueueService,
   ) {}
 
   @Post('webhook/:channelId')
@@ -30,7 +32,7 @@ export class Msg91Controller {
       if (parsed.direction === 'outgoing') {
         const status = parsed.metadata?.status;
         if (status === 'delivered' || status === 'read' || status === 'failed') {
-          await this.outbound.processWhatsappStatusUpdate({
+          await this.processingQueue.enqueueWhatsappStatusUpdate({
             channelId: channel.id,
             channelType: 'sms',
             externalId: parsed.externalId,
@@ -40,7 +42,7 @@ export class Msg91Controller {
         continue;
       }
 
-      await this.inbound.process({
+      await this.processingQueue.enqueueInboundProcess({
         channelId: channel.id,
         workspaceId: channel.workspaceId,
         channelType: 'sms',

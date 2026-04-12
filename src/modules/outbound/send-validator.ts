@@ -28,6 +28,7 @@ export type SendErrorCode =
   // Contact / channel compatibility
   | 'CONTACT_NO_IDENTIFIER'      // contact has no identifier for this channel
   | 'CONTACT_NOT_ON_CHANNEL'     // ContactChannel row missing
+  | 'CONTACT_CHANNEL_NOT_REACHABLE'
   | 'CHANNEL_DISCONNECTED'       // channel.status !== 'connected'
   | 'CHANNEL_MISSING_CREDENTIAL' // access token / SMTP password missing
   // WhatsApp-specific
@@ -66,9 +67,14 @@ export class SendValidator {
     channelType: string;
     channelStatus: string;
     credentials: any;
-    contactChannel: { identifier: string } | null;
+    contactChannel: {
+      identifier: string;
+      messageWindowExpiry?: string | number | bigint | null;
+      hasPermanentCallPermission?: boolean | null;
+    } | null;
     contactPhone?: string | null;
     contactEmail?: string | null;
+    hasTemplate?: boolean;
   }): void {
     const { channelType, channelStatus, credentials, contactChannel } = opts;
 
@@ -99,6 +105,11 @@ export class SendValidator {
             retryable: false,
           });
         }
+        this.validateMessagingWindow({
+          channelType,
+          messageWindowExpiry: contactChannel?.messageWindowExpiry,
+          hasTemplate: !!opts.hasTemplate,
+        });
         break;
 
       case 'instagram':
@@ -109,6 +120,11 @@ export class SendValidator {
             retryable: false,
           });
         }
+        this.validateMessagingWindow({
+          channelType,
+          messageWindowExpiry: contactChannel?.messageWindowExpiry,
+          hasTemplate: !!opts.hasTemplate,
+        });
         break;
 
       case 'messenger':
@@ -119,6 +135,11 @@ export class SendValidator {
             retryable: false,
           });
         }
+        this.validateMessagingWindow({
+          channelType,
+          messageWindowExpiry: contactChannel?.messageWindowExpiry,
+          hasTemplate: !!opts.hasTemplate,
+        });
         break;
 
       case 'email':
@@ -131,6 +152,49 @@ export class SendValidator {
         }
         break;
     }
+  }
+
+  private static validateMessagingWindow(opts: {
+    channelType: string;
+    messageWindowExpiry?: string | number | bigint | null;
+    hasTemplate: boolean;
+  }) {
+    const expiryMs = this.toEpochMs(opts.messageWindowExpiry);
+    if (expiryMs && expiryMs > Date.now()) return;
+
+    if (opts.channelType === 'whatsapp') {
+      if (opts.hasTemplate) return;
+      throw this.error({
+        code: 'WA_TEMPLATE_REQUIRED',
+        message: 'This WhatsApp contact channel is not open for free-form messaging. Send an approved template to message the contact.',
+        retryable: false,
+      });
+    }
+
+    if (opts.channelType === 'messenger' || opts.channelType === 'instagram') {
+      const label = opts.channelType === 'instagram' ? 'Instagram' : 'Messenger';
+      throw this.error({
+        code: 'CONTACT_CHANNEL_NOT_REACHABLE',
+        message: `This ${label} contact channel is not open for outbound replies. Wait for the contact to send a new message.`,
+        retryable: false,
+      });
+    }
+  }
+
+  private static toEpochMs(value: string | number | bigint | null | undefined): number | null {
+    if (value === null || value === undefined) return null;
+    if (typeof value === 'bigint') {
+      const numeric = Number(value);
+      if (!Number.isFinite(numeric)) return null;
+      return numeric < 1_000_000_000_000 ? numeric * 1000 : numeric;
+    }
+    if (typeof value === 'string' && Number.isNaN(Number(value))) {
+      const parsed = Date.parse(value);
+      return Number.isFinite(parsed) ? parsed : null;
+    }
+    const numeric = typeof value === 'number' ? value : Number(value);
+    if (!Number.isFinite(numeric)) return null;
+    return numeric < 1_000_000_000_000 ? numeric * 1000 : numeric;
   }
 
   // ── Credential presence per channel type ───────────────────────────────────

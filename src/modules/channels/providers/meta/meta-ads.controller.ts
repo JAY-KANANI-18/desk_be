@@ -14,6 +14,7 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Public, WorkspaceRoute } from 'src/common/auth/route-access.decorator';
 import { WorkspacePermission } from 'src/common/constants/permissions';
 import { InboundService } from 'src/modules/inbound/inbound.service';
+import { MessageProcessingQueueService } from 'src/modules/outbound/message-processing-queue.service';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { ChannelService } from '../../channel.service';
 
@@ -26,6 +27,7 @@ export class MetaAdsController {
     private readonly inbound: InboundService,
     private readonly events: EventEmitter2,
     private readonly channelService: ChannelService,
+    private readonly processingQueue: MessageProcessingQueueService,
   ) {}
 
   @Get('oauth/url')
@@ -128,7 +130,7 @@ export class MetaAdsController {
     const adId = String(body?.ad_id || body?.adId || '');
     const campaignId = String(body?.campaign_id || body?.campaignId || '');
 
-    await this.inbound.process({
+    await this.processingQueue.enqueueInboundProcess({
       channelId: channel.id,
       workspaceId: channel.workspaceId,
       channelType: 'meta_ads',

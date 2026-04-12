@@ -16,6 +16,7 @@ import { IsString } from 'class-validator';
 import { ChannelAdaptersRegistry } from 'src/modules/channel-adapters/channel-adapters.registry';
 import { Public, WorkspaceRoute } from 'src/common/auth/route-access.decorator';
 import { WorkspacePermission } from 'src/common/constants/permissions';
+import { MessageProcessingQueueService } from 'src/modules/outbound/message-processing-queue.service';
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -63,6 +64,7 @@ export class InstagramController {
     private readonly registry: ChannelAdaptersRegistry,
     private readonly inbound: InboundService,
     private readonly outbound: OutboundService,
+    private readonly processingQueue: MessageProcessingQueueService,
   ) { }
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -123,7 +125,7 @@ export class InstagramController {
       console.log({ parsed });
 
       if (parsed.contactIdentifier === channel.identifier) {
-        let m = await this.outbound.processExternalOutbound({
+        await this.processingQueue.enqueueExternalOutbound({
           workspaceId: channel.workspaceId,
 
           channelId: channel.id,
@@ -141,13 +143,13 @@ export class InstagramController {
 
       if (parsed.direction === 'outgoing') {
         if (parsed.messageType === "status") {
-          await this.outbound.processMessengerDelivery({
+          await this.processingQueue.enqueueMessengerDelivery({
             channelId: channel.id,
             externalId: parsed.externalId,
           })
         }
         if (parsed.messageType === "status_read") {
-          await this.outbound.processMessengerRead({
+          await this.processingQueue.enqueueMessengerRead({
             channelId: channel.id,
             contactIdentifier: parsed.contactIdentifier,
             watermark: parsed.watermark || parsed.timestamp, // Instagram doesn't have watermark but we can use timestamp to mark as read
@@ -168,7 +170,7 @@ export class InstagramController {
         catch { /* non-fatal */ }
       }
 
-      await this.inbound.process({
+      await this.processingQueue.enqueueInboundProcess({
         channelId: channel.id,
         workspaceId: channel.workspaceId,
         channelType: 'instagram',

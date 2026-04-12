@@ -105,6 +105,7 @@ export class WhatsAppProvider implements ChannelProvider {
             contactIdentifier: from,
             direction: 'incoming' as const,
             replyToChannelMsgId: msg.context?.id,
+            timestamp: msg.timestamp,
             raw: { msg, metadata: val?.metadata },
         };
 

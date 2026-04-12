@@ -231,6 +231,8 @@ export class ChannelsController {
             displayname: string
             emailaddress: string
             encryption: string
+            forwardingEmail?: string
+            forwardingConfirmed?: boolean
             imapEncryption: string
             imapFolder: string
             imapPassword: string
@@ -242,6 +244,8 @@ export class ChannelsController {
             smtpserver: string
             userId: string
             name: string
+            signatureHtml?: string
+            signatureEnabled?: boolean
         },
     ) {
 
@@ -250,20 +254,29 @@ export class ChannelsController {
         });
 
         const existingConfig: any = channel?.config || {};
+        const forwardingEmail =
+            channel?.workspaceId
+                ? `support-${channel.workspaceId}@inbound.yourapp.com`
+                : existingConfig.forwardingEmail ?? '';
 
         return this.prisma.channel.update({
             where: { id: channelId },
             data: {
                 name: dto.name,
+                identifier: dto.userId || dto.emailaddress,
 
                 config: {
                     ...existingConfig,
 
                     displayname: dto.displayname,
                     emailaddress: dto.emailaddress,
+                    fromEmail: dto.emailaddress,
+                    fromName: dto.displayname,
 
                     userId: dto.userId,
+                    smtpUser: dto.userId,
                     password: dto.password,
+                    smtpPass: dto.password,
 
                     imapserver: dto.imapserver,
                     imapport: dto.imapport,
@@ -274,7 +287,13 @@ export class ChannelsController {
 
                     smtpserver: dto.smtpserver,
                     smtpport: dto.smtpport,
+                    smtpHost: dto.smtpserver,
+                    smtpPort: dto.smtpport,
                     encryption: dto.encryption,
+                    forwardingEmail,
+                    forwardingConfirmed: dto.forwardingConfirmed ?? existingConfig.forwardingConfirmed ?? false,
+                    signatureHtml: dto.signatureHtml ?? existingConfig.signatureHtml,
+                    signatureEnabled: dto.signatureEnabled ?? existingConfig.signatureEnabled ?? true,
 
                     connectionStatus: 'connected',
                     updatedAt: new Date(),
@@ -421,13 +440,32 @@ export class ChannelsController {
 
     async connectSMTP(@Body() dto: {
         workspaceId: string;
+        name?: string;
         smtpHost: string;
         smtpPort: number;
         smtpUser: string;
         smtpPass: string;
         fromEmail: string;
+        fromName?: string;
+        displayname?: string;
+        emailaddress?: string;
+        userId?: string;
+        password?: string;
+        smtpserver?: string;
+        smtpport?: number;
+        encryption?: string;
+        forwardingEmail?: string;
+        forwardingConfirmed?: boolean;
+        signatureHtml?: string;
+        signatureEnabled?: boolean;
     }) {
         return this.channelService.connectSMTPEmail(dto);
+    }
+
+    @Post('email/:channelId/test')
+    @WorkspaceRoute(WorkspacePermission.CHANNELS_MANAGE)
+    async testSMTPConnection(@Param('channelId') channelId: string) {
+        return this.channelService.testSMTPConnection(channelId);
     }
 
     @Post('sms/msg91/connect')

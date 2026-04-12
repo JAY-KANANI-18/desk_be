@@ -6,6 +6,7 @@ import * as crypto from 'crypto';
 import { PrismaService } from '../../../../prisma/prisma.service';
 import { InboundService } from '../../../inbound/inbound.service';
 import { ChannelAdaptersRegistry } from 'src/modules/channel-adapters/channel-adapters.registry';
+import { MessageProcessingQueueService } from 'src/modules/outbound/message-processing-queue.service';
 
 @Controller('webhooks/mailgun')
 export class MailgunController {
@@ -13,6 +14,7 @@ export class MailgunController {
     private readonly prisma: PrismaService,
     private readonly registry: ChannelAdaptersRegistry,
     private readonly inbound: InboundService,
+    private readonly processingQueue: MessageProcessingQueueService,
   ) {}
 
   @Post()
@@ -43,7 +45,7 @@ export class MailgunController {
     const parsedList = await provider.parseWebhook({ ...body, files });
 
     for (const parsed of parsedList) {
-      await this.inbound.process({
+      await this.processingQueue.enqueueInboundProcess({
         channelId:         channel.id,
         workspaceId:       channel.workspaceId,
         channelType:       channel.type,

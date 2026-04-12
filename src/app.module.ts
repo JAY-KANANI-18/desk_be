@@ -30,6 +30,7 @@ import { JwtGuard } from './common/guards/jwt.guard';
 import { BroadcastsModule } from './modules/broadcasts/broadcasts.module';
 import { ScheduleModule } from '@nestjs/schedule';
 import { AiAssistModule } from './modules/ai-assist/ai-assist.module';
+import { MessageProcessingRuntimeModule } from './modules/outbound/message-processing-runtime.module';
 
 import { RouteGuard } from './common/auth/route.guard';
 
@@ -56,7 +57,8 @@ import { RouteGuard } from './common/auth/route.guard';
     AnalyticsModule,
     BillingModule,
     BroadcastsModule,
-    AiAssistModule
+    AiAssistModule,
+    MessageProcessingRuntimeModule
 
 
   ],

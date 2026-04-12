@@ -36,8 +36,23 @@ export class ContactsController {
     
     @Get()
     @WorkspaceRoute(WorkspacePermission.CONTACTS_VIEW)
-    findAll(@Req() req: any) {
-        return this.contactsService.findAll(req.workspaceId);
+    findAll(
+        @Req() req: any,
+        @Query('search') search?: string,
+        @Query('lifecycle') lifecycle?: string,
+        @Query('sortField') sortField?: string,
+        @Query('sortDir') sortDir?: string,
+        @Query('page') page?: string,
+        @Query('limit') limit?: string,
+    ) {
+        return this.contactsService.findAll(req.workspaceId, {
+            search,
+            lifecycle,
+            sortField,
+            sortDir,
+            page: page ? parseInt(page, 10) : undefined,
+            limit: limit ? parseInt(limit, 10) : undefined,
+        });
     }
 
     

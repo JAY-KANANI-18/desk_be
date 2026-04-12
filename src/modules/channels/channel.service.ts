@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { validateTemplateVariables, buildTemplateComponents, extractTemplateVariables } from './utils/template-validator';
 import { SendMessageDto } from './dto/send-message.dto';
+import * as nodemailer from 'nodemailer';
 
 
 @Injectable()
@@ -629,21 +630,22 @@ export class ChannelService {
 
         const user = await userRes.json();
 
-        const inboundEmail =
-            `support-${workspaceId}@inbound.yourapp.com`;
-
         return this.prisma.channel.create({
             data: {
                 workspaceId,
                 type: 'email',
                 name: 'Gmail',
-                identifier: inboundEmail,
+                identifier: user.email,
                 status: 'connected',
                 config: {
                     provider: 'gmail',
                     accessToken,
                     refreshToken,
                     fromEmail: user.email,
+                    emailaddress: user.email,
+                    userId: user.email,
+                    forwardingEmail: `support-${workspaceId}@inbound.yourapp.com`,
+                    forwardingConfirmed: false,
                 },
             },
         });
@@ -654,23 +656,76 @@ export class ChannelService {
         const inboundEmail =
             `support-${dto.workspaceId}@inbound.yourapp.com`;
 
+        const emailAddress = dto.emailaddress ?? dto.fromEmail ?? dto.smtpUser ?? dto.userId ?? '';
+        const displayName = dto.displayname ?? dto.fromName ?? dto.name ?? emailAddress;
+        const smtpServer = dto.smtpserver ?? dto.smtpHost ?? '';
+        const smtpPort = Number(dto.smtpport ?? dto.smtpPort ?? 587);
+        const username = dto.userId ?? dto.smtpUser ?? emailAddress;
+        const password = dto.password ?? dto.smtpPass ?? '';
+        const encryption = dto.encryption ?? 'STARTTLS';
+
         return this.prisma.channel.create({
             data: {
                 workspaceId: dto.workspaceId,
                 type: 'email',
-                name: 'SMTP Email',
-                identifier: inboundEmail,
+                name: dto.name || displayName || 'SMTP Email',
+                identifier: username,
                 status: 'connected',
                 config: {
                     provider: 'smtp',
-                    smtpHost: dto.smtpHost,
-                    smtpPort: dto.smtpPort,
-                    smtpUser: dto.smtpUser,
-                    smtpPass: dto.smtpPass,
-                    fromEmail: dto.fromEmail,
+                    smtpHost: smtpServer,
+                    smtpPort,
+                    smtpUser: username,
+                    smtpPass: password,
+                    fromEmail: emailAddress,
+                    fromName: displayName,
+                    smtpserver: smtpServer,
+                    smtpport: smtpPort,
+                    userId: username,
+                    password,
+                    emailaddress: emailAddress,
+                    displayname: displayName,
+                    encryption,
+                    forwardingEmail: inboundEmail,
+                    forwardingConfirmed: Boolean(dto.forwardingConfirmed),
+                    signatureHtml: dto.signatureHtml ?? '<p>Regards,<br />{{agent_name}}</p>',
+                    signatureEnabled: dto.signatureEnabled !== false,
                 },
             },
         });
+    }
+
+    async testSMTPConnection(channelId: string) {
+        const channel = await this.prisma.channel.findUnique({
+            where: { id: channelId },
+        });
+
+        if (!channel) {
+            return { success: false, error: 'Channel not found' };
+        }
+
+        const config: any = channel.config ?? {};
+        const host = config.smtpserver ?? config.smtpHost;
+        const port = Number(config.smtpport ?? config.smtpPort ?? 587);
+        const user = config.userId ?? config.smtpUser ?? config.emailaddress;
+        const pass = config.password ?? config.smtpPass;
+
+        if (!host || !port || !user || !pass) {
+            return { success: false, error: 'SMTP credentials are incomplete' };
+        }
+
+        try {
+            const transporter = nodemailer.createTransport({
+                host,
+                port,
+                secure: String(config.encryption ?? '').toLowerCase() === 'ssl/tls',
+                auth: { user, pass },
+            });
+            await transporter.verify();
+            return { success: true };
+        } catch (error: any) {
+            return { success: false, error: error?.message ?? 'SMTP verification failed' };
+        }
     }
 
     async getChannels(workspaceId: string) {

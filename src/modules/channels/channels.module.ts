@@ -49,6 +49,7 @@ import { WebchatSessionService } from './providers/webchat/webchat-session.servi
 import { WebchatManageController } from './providers/webchat/webchat-manage.controller';
 import { WebchatController } from './providers/webchat/webchat.controller';
 import { OutboundModule } from '../outbound/outbound.module';
+import { MessageProcessingModule } from '../outbound/message-processing.module';
 import { ChannelAdaptersModule } from '../channel-adapters/channel-adapters.module';
 import { MediaModule } from '../media/media.module';
 
@@ -57,6 +58,7 @@ import { MediaModule } from '../media/media.module';
         PrismaModule,
         InboundModule,
         OutboundModule,
+        MessageProcessingModule,
         ChannelAdaptersModule,
         MediaModule,
         

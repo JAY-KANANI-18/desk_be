@@ -13,12 +13,13 @@ import { JwtGuard } from '../../common/guards/jwt.guard';
 import { CreateMessageDto } from './dto/create-message.dto';
 import { User } from '@prisma/client';
 import { CurrentUser } from 'src/common/decorators/current-user.decorator';
-import { OutboundService, SendMessageDto } from '../outbound/outbound.service';
+import { SendMessageDto } from '../outbound/outbound.service';
 import { IsIn, IsString, IsUUID } from 'class-validator';
 import { v4 as uuid } from 'uuid';
 import { R2Service } from 'src/common/storage/r2.service';
 import { JwtOnly, WorkspaceRoute } from 'src/common/auth/route-access.decorator';
 import { WorkspacePermission } from 'src/common/constants/permissions';
+import { ConversationsService } from '../conversations/conversations.service';
 
 
 
@@ -42,7 +43,7 @@ class PresignDto {
 export class MessagesController {
     private readonly logger = new Logger(MessagesController.name);
     constructor(private service: MessagesService,
-        private outbound: OutboundService,
+        private conversations: ConversationsService,
         // private r2: R2Service,
 
 
@@ -126,10 +127,21 @@ export class MessagesController {
         // @CurrentUser() user: User,
     ) {
         this.logger.log(`Sending message to conversation ${conversationId} with body: ${JSON.stringify(body)}`);
-        return this.outbound.sendMessage({
-            ...body,
+        return this.conversations.sendMessage({
+            workspaceId: req.workspaceId,
             conversationId,
-            authorId: req.user.id,
+            channelId: body.channelId,
+            actorId: req.user.id,
+            text: body.text,
+            subject: body.subject,
+            attachments: body.attachments?.map((attachment) => ({
+                type: attachment.type,
+                url: attachment.url,
+                name: attachment.filename ?? attachment.type,
+                mimeType: attachment.mimeType,
+            })),
+            replyToMessageId: body.replyToMessageId,
+            metadata: body.metadata,
         });
     }
 }

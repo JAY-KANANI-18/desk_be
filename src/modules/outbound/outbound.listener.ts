@@ -4,9 +4,9 @@ import {
   OnApplicationShutdown,
 } from '@nestjs/common';
 import IORedis from 'ioredis';
-import { OutboundService } from './outbound.service';
 import { RedisService } from '../../redis/redis.service';
 import { OutboundJob } from '../../queues/outbound.queue';
+import { MessageProcessingQueueService } from './message-processing-queue.service';
 
 @Injectable()
 export class OutboundListener implements OnApplicationBootstrap, OnApplicationShutdown {
@@ -14,7 +14,7 @@ export class OutboundListener implements OnApplicationBootstrap, OnApplicationSh
   private subscriber: IORedis;
 
   constructor(
-    private readonly outbound: OutboundService,
+    private readonly processingQueue: MessageProcessingQueueService,
     private readonly redis: RedisService,
   ) {}
 
@@ -40,9 +40,9 @@ export class OutboundListener implements OnApplicationBootstrap, OnApplicationSh
 
       try {
         this.logger.log(
-          `Sending wf message conv=${job.conversationId} channel=${job.channelId}`,
+          `Queueing wf message conv=${job.conversationId} channel=${job.channelId}`,
         );
-        await this.outbound.sendMessage({
+        await this.processingQueue.enqueueSendMessage({
           conversationId: job.conversationId,
           workspaceId:    job.workspaceId,
           channelId:      job.channelId,
@@ -53,7 +53,7 @@ export class OutboundListener implements OnApplicationBootstrap, OnApplicationSh
         });
       } catch (err: any) {
         this.logger.error(
-          `Failed to send wf message conv=${job.conversationId}: ${err.message}`,
+          `Failed to queue wf message conv=${job.conversationId}: ${err.message}`,
         );
       }
     });

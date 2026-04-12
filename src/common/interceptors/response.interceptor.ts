@@ -5,6 +5,7 @@ import {
     NestInterceptor,
 } from '@nestjs/common';
 import { map } from 'rxjs/operators';
+import { toJsonSafe } from '../utils/json-safe';
 
 @Injectable()
 export class ResponseInterceptor implements NestInterceptor {
@@ -14,7 +15,7 @@ export class ResponseInterceptor implements NestInterceptor {
         return next.handle().pipe(
             map((data) => ({
                 success: true,
-                data: data,
+                data: toJsonSafe(data),
                 meta: {
                     requestId: req.id || null,
                     timestamp: new Date().toISOString(),

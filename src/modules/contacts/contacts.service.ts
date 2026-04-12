@@ -29,6 +29,14 @@ const CONTACT_INCLUDE = {
       displayName: true,
       avatarUrl: true,
       createdAt: true,
+      updatedAt: true,
+      lastMessageTime: true,
+      lastIncomingMessageTime: true,
+      lastCallInteractionTime: true,
+      messageWindowExpiry: true,
+      conversationWindowCategory: true,
+      call_permission: true,
+      hasPermanentCallPermission: true,
     },
   },
   mergedIntoContact: {
@@ -52,6 +60,62 @@ export class ContactsService {
     private events: EventEmitter2,
     private activity: ActivityService,
   ) {}
+
+  private listContactsWhere(
+    workspaceId: string,
+    opts: { search?: string; lifecycle?: string },
+  ): Prisma.ContactWhereInput {
+    const where: Prisma.ContactWhereInput = {
+      workspaceId,
+      mergedIntoContactId: null,
+    };
+
+    if (opts.search?.trim()) {
+      const q = opts.search.trim();
+      where.OR = [
+        { firstName: { contains: q, mode: 'insensitive' } },
+        { lastName: { contains: q, mode: 'insensitive' } },
+        { email: { contains: q, mode: 'insensitive' } },
+        { phone: { contains: q, mode: 'insensitive' } },
+      ];
+    }
+
+    if (opts.lifecycle?.trim()) {
+      where.lifecycle = {
+        name: {
+          equals: opts.lifecycle.trim(),
+          mode: 'insensitive',
+        },
+      };
+    }
+
+    return where;
+  }
+
+  private listContactsOrderBy(
+    sortField?: string,
+    sortDir?: string,
+  ): Prisma.ContactOrderByWithRelationInput[] {
+    const dir: Prisma.SortOrder = sortDir === 'desc' ? 'desc' : 'asc';
+
+    if (sortField === 'name') {
+      return [{ firstName: dir }, { lastName: dir }, { id: dir }];
+    }
+
+    if (sortField === 'email') {
+      return [{ email: dir }, { id: dir }];
+    }
+
+    if (sortField === 'phone') {
+      return [{ phone: dir }, { id: dir }];
+    }
+
+    if (sortField === 'lifecycle') {
+      return [{ lifecycle: { name: dir } }, { id: dir }];
+    }
+
+    return [{ createdAt: 'desc' }, { id: 'desc' }];
+  }
 
   async create(workspaceId: string, dto: CreateContactDto) {
     const contact = await this.prisma.contact.create({
@@ -261,14 +325,42 @@ async removeTag(workspaceId: string, contactId: string, tagId: string) {
     return this.toContactResponse(updated);
   }
 
-  async findAll(workspaceId: string) {
-    const contacts = await this.prisma.contact.findMany({
-      where: { workspaceId, mergedIntoContactId: null },
-      orderBy: { createdAt: 'desc' },
-      include: CONTACT_INCLUDE,
+  async findAll(
+    workspaceId: string,
+    opts: {
+      search?: string;
+      lifecycle?: string;
+      sortField?: string;
+      sortDir?: string;
+      page?: number;
+      limit?: number;
+    } = {},
+  ) {
+    const page = Math.max(1, opts.page ?? 1);
+    const limit = Math.min(Math.max(1, opts.limit ?? 10), 100);
+    const where = this.listContactsWhere(workspaceId, {
+      search: opts.search,
+      lifecycle: opts.lifecycle,
     });
+    const orderBy = this.listContactsOrderBy(opts.sortField, opts.sortDir);
 
-    return contacts.map((contact) => this.toContactResponse(contact));
+    const [total, contacts] = await Promise.all([
+      this.prisma.contact.count({ where }),
+      this.prisma.contact.findMany({
+        where,
+        orderBy,
+        skip: (page - 1) * limit,
+        take: limit,
+        include: CONTACT_INCLUDE,
+      }),
+    ]);
+
+    return {
+      data: contacts.map((contact) => this.toContactResponse(contact)),
+      total,
+      page,
+      limit,
+    };
   }
 
   async findOne(workspaceId: string, id: string) {
@@ -767,8 +859,21 @@ async removeTag(workspaceId: string, contactId: string, tagId: string) {
                   lifecycleId: true,
                   contactChannels: {
                     select: {
+                      id: true,
                       channelId: true,
                       channelType: true,
+                      identifier: true,
+                      displayName: true,
+                      avatarUrl: true,
+                      createdAt: true,
+                      updatedAt: true,
+                      lastMessageTime: true,
+                      lastIncomingMessageTime: true,
+                      lastCallInteractionTime: true,
+                      messageWindowExpiry: true,
+                      conversationWindowCategory: true,
+                      call_permission: true,
+                      hasPermanentCallPermission: true,
                     },
                   },
                 },

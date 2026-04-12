@@ -21,6 +21,7 @@ import { PrismaService } from '../../../../prisma/prisma.service';
 import { WebchatSessionService } from './webchat-session.service';
 import { MediaService } from 'src/modules/media/media.service';
 import { Public } from 'src/common/auth/route-access.decorator';
+import { MessageProcessingQueueService } from 'src/modules/outbound/message-processing-queue.service';
 
 // ─── Event types the widget can send ─────────────────────────────────────────
 type WebchatEvent =
@@ -42,6 +43,7 @@ export class WebchatController {
         private readonly mediaService: MediaService,
         private readonly prisma: PrismaService,
         private readonly events: EventEmitter2,
+        private readonly processingQueue: MessageProcessingQueueService,
     ) { }
 
     // ── Unified webhook — all widget events come here ─────────────────────────
@@ -85,7 +87,7 @@ export class WebchatController {
                 this.validateSession(sessionId);
                 if (!body.text?.trim()) throw new BadRequestException('text is required');
                 const contact = await this.session.getOrCreateContact(channel, sessionId);
-                await this.inbound.process({
+                await this.processingQueue.enqueueInboundProcess({
                     channelId: channel.id,
                     workspaceId: channel.workspaceId,
                     channelType: 'webchat',
@@ -124,7 +126,7 @@ export class WebchatController {
                     }),
                 );
 
-                await this.inbound.process({
+                await this.processingQueue.enqueueInboundProcess({
                     channelId: channel.id,
                     workspaceId: channel.workspaceId,
                     channelType: 'webchat',

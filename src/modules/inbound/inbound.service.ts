@@ -32,6 +32,7 @@ export interface InboundDto {
   // For threaded replies
   replyToChannelMsgId?: string;
   channelMsgId?: string;
+  timestamp?: string | number | null;
 
   // reaction, order, location, interactive, etc.
   metadata?: Record<string, any>;
@@ -62,7 +63,7 @@ export class InboundService {
       contactIdentifier, direction,
       messageType, text, subject,
       attachments = [], replyToChannelMsgId, channelMsgId,
-      metadata, raw, profile,
+      metadata, raw, profile, timestamp,
     } = dto;
 
     // ── 1. Upsert Contact + ContactChannel ─────────────────────────────────
@@ -134,6 +135,14 @@ export class InboundService {
     }
 
     // ── 6. Update Conversation lastMessage + unreadCount ───────────────────
+    await this.updateContactChannelWindow({
+      contactChannelId: contactChannel.id,
+      channelType,
+      eventTimestamp: timestamp,
+      metadata,
+      raw,
+    });
+
     await this.prisma.conversation.update({
       where: { id: conversation.id },
       data: {
@@ -436,5 +445,98 @@ export class InboundService {
     if (type === 'voice') return 'audio';
     if (type === 'image' || type === 'video' || type === 'audio') return type;
     return 'file';
+  }
+
+  private async updateContactChannelWindow(opts: {
+    contactChannelId: string;
+    channelType: string;
+    eventTimestamp?: string | number | null;
+    metadata?: Record<string, any>;
+    raw?: any;
+  }) {
+    const eventTimeMs = this.toEpochMs(opts.eventTimestamp) ?? Date.now();
+    const explicitExpiry =
+      this.toEpochMs(opts.metadata?.messageWindowExpiry) ??
+      this.toEpochMs(opts.metadata?.conversation?.expiration_timestamp) ??
+      this.toEpochMs(opts.raw?.status?.conversation?.expiration_timestamp);
+    const inferredExpiry = this.inferWindowExpiry(opts.channelType, eventTimeMs);
+    const nextWindowCategory =
+      this.extractConversationWindowCategory(opts.metadata) ??
+      this.extractConversationWindowCategory(opts.raw?.status);
+    const nextCallPermission = this.extractNullableBoolean(
+      opts.metadata?.call_permission ?? opts.raw?.call_permission,
+    );
+    const nextPermanentCallPermission = this.extractBoolean(
+      opts.metadata?.hasPermanentCallPermission ?? opts.raw?.hasPermanentCallPermission,
+    );
+
+    await this.prisma.contactChannel.update({
+      where: { id: opts.contactChannelId },
+      data: {
+        lastMessageTime: BigInt(Math.trunc(eventTimeMs)),
+        lastIncomingMessageTime: BigInt(Math.trunc(eventTimeMs)),
+        ...(explicitExpiry || inferredExpiry
+          ? { messageWindowExpiry: BigInt(Math.trunc(explicitExpiry ?? inferredExpiry!)) }
+          : {}),
+        ...(nextWindowCategory !== undefined
+          ? { conversationWindowCategory: nextWindowCategory as any }
+          : {}),
+        ...(nextCallPermission !== undefined ? { call_permission: nextCallPermission } : {}),
+        ...(nextPermanentCallPermission !== undefined
+          ? { hasPermanentCallPermission: nextPermanentCallPermission }
+          : {}),
+      },
+    });
+  }
+
+  private inferWindowExpiry(channelType: string, eventTimeMs: number): number | null {
+    const duration = this.windowDurationMs(channelType);
+    if (!duration) return null;
+    return eventTimeMs + duration;
+  }
+
+  private windowDurationMs(channelType: string): number | null {
+    switch (channelType) {
+      case 'whatsapp':
+      case 'messenger':
+        return 24 * 60 * 60 * 1000;
+      case 'instagram':
+        return 7 * 24 * 60 * 60 * 1000;
+      default:
+        return null;
+    }
+  }
+
+  private extractConversationWindowCategory(metadata: any): Record<string, any> | undefined {
+    if (!metadata) return undefined;
+    if (metadata.conversationWindowCategory && typeof metadata.conversationWindowCategory === 'object') {
+      return metadata.conversationWindowCategory;
+    }
+    if (metadata.conversation?.category) {
+      return { category: metadata.conversation.category };
+    }
+    return undefined;
+  }
+
+  private extractNullableBoolean(value: unknown): boolean | null | undefined {
+    if (value === null) return null;
+    if (typeof value === 'boolean') return value;
+    return undefined;
+  }
+
+  private extractBoolean(value: unknown): boolean | undefined {
+    if (typeof value === 'boolean') return value;
+    return undefined;
+  }
+
+  private toEpochMs(value: string | number | null | undefined): number | null {
+    if (value === null || value === undefined) return null;
+    if (typeof value === 'string' && Number.isNaN(Number(value))) {
+      const parsed = Date.parse(value);
+      return Number.isFinite(parsed) ? parsed : null;
+    }
+    const numeric = typeof value === 'number' ? value : Number(value);
+    if (!Number.isFinite(numeric)) return null;
+    return numeric < 1_000_000_000_000 ? numeric * 1000 : numeric;
   }
 }

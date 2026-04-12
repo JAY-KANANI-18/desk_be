@@ -1,13 +1,12 @@
 import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
-import { OutboundService } from '../outbound/outbound.service';
+import { MessageProcessingQueueService } from '../outbound/message-processing-queue.service';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { Prisma } from '@prisma/client';
 
 export type BroadcastAudienceFilters = {
   tagIds?: string[];
   lifecycleId?: string;
-  teamId?: string;
   /** Default true: skip contacts with marketingOptOut */
   respectMarketingOptOut?: boolean;
 };
@@ -18,7 +17,7 @@ export class BroadcastsService {
 
   constructor(
     private readonly prisma: PrismaService,
-    private readonly outbound: OutboundService,
+    private readonly processingQueue: MessageProcessingQueueService,
   ) {}
 
   private contactWhereFromFilters(
@@ -30,7 +29,6 @@ export class BroadcastsService {
       workspaceId,
       ...(respectOptOut ? { marketingOptOut: false } : {}),
       ...(filters.lifecycleId ? { lifecycleId: filters.lifecycleId } : {}),
-      ...(filters.teamId ? { teamId: filters.teamId } : {}),
       ...(filters.tagIds?.length
         ? { tags: { some: { tagId: { in: filters.tagIds } } } }
         : {}),
@@ -56,6 +54,52 @@ export class BroadcastsService {
         'Only scheduled broadcasts can be edited, rescheduled, or sent now. Running and completed broadcasts are locked for audit safety.',
       );
     }
+  }
+
+  private listRunsWhere(opts: {
+    workspaceId: string;
+    search?: string;
+    status?: string;
+  }): Prisma.BroadcastRunWhereInput {
+    const where: Prisma.BroadcastRunWhereInput = {
+      workspaceId: opts.workspaceId,
+    };
+
+    if (opts.status?.trim()) {
+      where.status = opts.status.trim();
+    }
+
+    if (opts.search?.trim()) {
+      const q = opts.search.trim();
+      where.OR = [
+        { name: { contains: q, mode: 'insensitive' } },
+        { textPreview: { contains: q, mode: 'insensitive' } },
+        { templateName: { contains: q, mode: 'insensitive' } },
+      ];
+    }
+
+    return where;
+  }
+
+  private listRunsOrderBy(opts: {
+    sortBy?: string;
+    sortOrder?: string;
+  }): Prisma.BroadcastRunOrderByWithRelationInput[] {
+    const sortOrder: Prisma.SortOrder = opts.sortOrder === 'asc' ? 'asc' : 'desc';
+
+    if (opts.sortBy === 'name') {
+      return [{ name: sortOrder }, { id: sortOrder }];
+    }
+
+    if (opts.sortBy === 'status') {
+      return [{ status: sortOrder }, { id: sortOrder }];
+    }
+
+    if (opts.sortBy === 'scheduledAt') {
+      return [{ scheduledAt: sortOrder }, { id: sortOrder }];
+    }
+
+    return [{ createdAt: 'desc' }, { id: 'desc' }];
   }
 
   async listApprovedWhatsAppTemplates(workspaceId: string, channelId: string) {
@@ -123,15 +167,46 @@ export class BroadcastsService {
     };
   }
 
-  async listRuns(workspaceId: string, take = 50) {
-    return this.prisma.broadcastRun.findMany({
-      where: { workspaceId },
-      orderBy: { createdAt: 'desc' },
-      take: Math.min(take, 100),
-      include: {
-        channel: { select: { id: true, name: true, type: true, identifier: true } },
-      },
+  async listRuns(
+    workspaceId: string,
+    opts: {
+      take?: number;
+      cursor?: string;
+      search?: string;
+      status?: string;
+      sortBy?: string;
+      sortOrder?: string;
+    } = {},
+  ) {
+    const take = Math.min(Math.max(1, opts.take ?? 50), 100);
+    const where = this.listRunsWhere({
+      workspaceId,
+      search: opts.search,
+      status: opts.status,
     });
+    const orderBy = this.listRunsOrderBy({
+      sortBy: opts.sortBy,
+      sortOrder: opts.sortOrder,
+    });
+
+    const [total, rows] = await Promise.all([
+      this.prisma.broadcastRun.count({ where }),
+      this.prisma.broadcastRun.findMany({
+        where,
+        orderBy,
+        take: take + 1,
+        ...(opts.cursor ? { cursor: { id: opts.cursor }, skip: 1 } : {}),
+        include: {
+          channel: { select: { id: true, name: true, type: true, identifier: true } },
+        },
+      }),
+    ]);
+
+    const hasMore = rows.length > take;
+    const data = hasMore ? rows.slice(0, take) : rows;
+    const nextCursor = hasMore ? data[data.length - 1].id : undefined;
+
+    return { data, nextCursor, total };
   }
 
   async getRun(workspaceId: string, id: string) {
@@ -370,7 +445,7 @@ export class BroadcastsService {
             },
           }));
 
-        await this.outbound.sendMessage({
+        await this.processingQueue.enqueueSendMessage({
           workspaceId,
           conversationId: conversation.id,
           channelId: run.channelId,
@@ -462,7 +537,6 @@ export class BroadcastsService {
     const audienceFilters: Prisma.InputJsonValue = {
       tagIds: filters.tagIds ?? [],
       lifecycleId: filters.lifecycleId ?? null,
-      teamId: filters.teamId ?? null,
       respectMarketingOptOut: filters.respectMarketingOptOut !== false,
     };
 
@@ -533,7 +607,7 @@ export class BroadcastsService {
             },
           }));
 
-        await this.outbound.sendMessage({
+        await this.processingQueue.enqueueSendMessage({
           workspaceId,
           conversationId: conversation.id,
           channelId,

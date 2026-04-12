@@ -16,6 +16,7 @@ import { IsString } from 'class-validator';
 import { ChannelAdaptersRegistry } from 'src/modules/channel-adapters/channel-adapters.registry';
 import { Public, WorkspaceRoute } from 'src/common/auth/route-access.decorator';
 import { WorkspacePermission } from 'src/common/constants/permissions';
+import { MessageProcessingQueueService } from 'src/modules/outbound/message-processing-queue.service';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -74,6 +75,7 @@ export class MessengerController {
         private readonly registry: ChannelAdaptersRegistry,
         private readonly inbound: InboundService,
         private readonly outbound: OutboundService,
+        private readonly processingQueue: MessageProcessingQueueService,
     ) { }
 
 
@@ -133,7 +135,7 @@ export class MessengerController {
         for (const parsed of parsedList) {
             // ── Outgoing echo ──
             if (parsed.contactIdentifier === channel.identifier) {
-                await this.outbound.processExternalOutbound({
+                await this.processingQueue.enqueueExternalOutbound({
                     workspaceId: channel.workspaceId,
                     channelId: channel.id,
                     channelType: 'messenger',
@@ -151,13 +153,13 @@ export class MessengerController {
             // ── Delivery / Read receipts ──
             if (parsed.direction === 'outgoing') {
                 if (parsed.messageType === 'status') {
-                    await this.outbound.processMessengerDelivery({
+                    await this.processingQueue.enqueueMessengerDelivery({
                         channelId: channel.id,
                         externalId: parsed.externalId,
                     });
                 }
                 if (parsed.messageType === 'status_read') {
-                    await this.outbound.processMessengerRead({
+                    await this.processingQueue.enqueueMessengerRead({
                         channelId: channel.id,
                         contactIdentifier: parsed.contactIdentifier,
                         watermark: parsed.watermark,
@@ -182,7 +184,7 @@ export class MessengerController {
             }
 
             // ── Process inbound ──
-            await this.inbound.process({
+            await this.processingQueue.enqueueInboundProcess({
                 channelId: channel.id,
                 workspaceId: channel.workspaceId,
                 channelType: 'messenger',

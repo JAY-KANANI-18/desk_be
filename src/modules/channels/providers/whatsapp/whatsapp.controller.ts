@@ -17,6 +17,7 @@ import { IsString } from 'class-validator';
 import { ChannelAdaptersRegistry } from 'src/modules/channel-adapters/channel-adapters.registry';
 import { Public, WorkspaceRoute } from 'src/common/auth/route-access.decorator';
 import { WorkspacePermission } from 'src/common/constants/permissions';
+import { MessageProcessingQueueService } from 'src/modules/outbound/message-processing-queue.service';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -103,6 +104,7 @@ export class WhatsAppController implements OnModuleInit {
         private readonly registry: ChannelAdaptersRegistry,
         private readonly inbound: InboundService,
         private readonly outbound: OutboundService,
+        private readonly processingQueue: MessageProcessingQueueService,
     ) { }
 
     async onModuleInit() {
@@ -169,14 +171,14 @@ export class WhatsAppController implements OnModuleInit {
 
         for (const parsed of parsedList) {
             if (parsed.direction === 'outgoing') {
-                await this.outbound.processWhatsappStatusUpdate({
+                await this.processingQueue.enqueueWhatsappStatusUpdate({
                     channelId: channel.id,
                     channelType: 'whatsapp',
                     externalId: parsed.externalId,
                     status: parsed.metadata?.status,
                 });
             } else {
-                await this.inbound.process({
+                await this.processingQueue.enqueueInboundProcess({
                     channelId: channel.id,
                     workspaceId: channel.workspaceId,
                     channelType: 'whatsapp',
