@@ -1,7 +1,6 @@
-import { Injectable, BadRequestException } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { SetupOrganizationDto } from './dto/setup-organization.dto';
 import { User } from '@prisma/client';
-import slugify from 'slugify';
 import { PrismaService } from '../../prisma/prisma.service';
 import { InviteUserDto } from './dto/invite-user.dto';
 import { SupabaseService } from 'src/supdabse/supabase.service';
@@ -120,6 +119,97 @@ export class OrganizationService {
                 joinedAt: wm.joinedAt,
             })),
         }));
+    }
+    async getUsersInOrganizationPaginated(
+        organizationId: string,
+        opts?: { search?: string; page?: number; limit?: number },
+    ) {
+        const where: any = {
+            organizationId,
+            ...(opts?.search?.trim()
+                ? {
+                    OR: [
+                        { role: { contains: opts.search.trim(), mode: 'insensitive' } },
+                        { status: { contains: opts.search.trim(), mode: 'insensitive' } },
+                        { user: { email: { contains: opts.search.trim(), mode: 'insensitive' } } },
+                        { user: { firstName: { contains: opts.search.trim(), mode: 'insensitive' } } },
+                        { user: { lastName: { contains: opts.search.trim(), mode: 'insensitive' } } },
+                        {
+                            user: {
+                                workspaceMemberships: {
+                                    some: {
+                                        workspace: {
+                                            organizationId,
+                                            name: { contains: opts.search.trim(), mode: 'insensitive' },
+                                        },
+                                    },
+                                },
+                            },
+                        },
+                    ],
+                }
+                : {}),
+        };
+
+        const page = Math.max(1, opts?.page ?? 1);
+        const limit = Math.min(Math.max(1, opts?.limit ?? 10), 100);
+        const [users, total] = await this.prisma.$transaction([
+            this.prisma.organizationMember.findMany({
+                where,
+                include: {
+                    user: {
+                        include: {
+                            workspaceMemberships: {
+                                where: {
+                                    workspace: {
+                                        organizationId,
+                                    },
+                                },
+                                include: {
+                                    workspace: true,
+                                },
+                            },
+                        },
+                    },
+                },
+                orderBy: [
+                    { user: { firstName: 'asc' } },
+                    { user: { email: 'asc' } },
+                ],
+                skip: (page - 1) * limit,
+                take: limit,
+            }),
+            this.prisma.organizationMember.count({ where }),
+        ]);
+
+        return {
+            items: users.map((membership) => ({
+                id: membership.user.id,
+                email: membership.user.email,
+                firstName: membership.user.firstName,
+                lastName: membership.user.lastName,
+                avatarUrl: membership.user.avatarUrl,
+                role: membership.role,
+                status: membership.status,
+                workspaces: membership.user.workspaceMemberships.map((wm) => ({
+                    id: wm.workspace.id,
+                    name: wm.workspace.name,
+                    organizationId: wm.workspace.organizationId,
+                    role: wm.role,
+                    status: wm.status,
+                    availability: wm.availability,
+                    joinedAt: wm.joinedAt,
+                })),
+            })),
+            pagination: {
+                total,
+                page,
+                limit,
+                totalPages: Math.ceil(total / limit),
+                hasNextPage: page * limit < total,
+                hasPrevPage: page > 1,
+            },
+        };
     }
     async inviteUser(
         dto: InviteUserDto,

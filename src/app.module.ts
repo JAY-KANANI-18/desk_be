@@ -31,6 +31,7 @@ import { BroadcastsModule } from './modules/broadcasts/broadcasts.module';
 import { ScheduleModule } from '@nestjs/schedule';
 import { AiAssistModule } from './modules/ai-assist/ai-assist.module';
 import { MessageProcessingRuntimeModule } from './modules/outbound/message-processing-runtime.module';
+import { ImportExportModule } from './modules/import-export/import-export.module';
 
 import { RouteGuard } from './common/auth/route.guard';
 
@@ -58,7 +59,8 @@ import { RouteGuard } from './common/auth/route.guard';
     BillingModule,
     BroadcastsModule,
     AiAssistModule,
-    MessageProcessingRuntimeModule
+    MessageProcessingRuntimeModule,
+    ImportExportModule
 
 
   ],

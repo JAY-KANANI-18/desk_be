@@ -119,6 +119,16 @@ export interface UpdateStatusDto {
   actorType?: 'user' | 'system' | 'automation';
 }
 
+export interface GetTimelineOptions {
+  cursor?: string;
+  limit?: number;
+  anchorMessageId?: string;
+  aroundMessageId?: string;
+  direction?: 'older' | 'newer';
+  before?: number;
+  after?: number;
+}
+
 // ─── Prisma select for conversation list items ────────────────────────────────
 // Shared across findAll / findOne so shapes are consistent.
 
@@ -383,98 +393,31 @@ export class ConversationsService {
   async getTimeline(
     conversationId: string,
     workspaceId: string,
-    cursor?: string,
-    limit = 30,
+    opts: GetTimelineOptions = {},
   ) {
-    const take = Math.min(limit, 100);
-    
+    const limit = Math.min(opts.limit ?? 30, 100);
 
-    // Resolve cursor timestamp if provided
-    let cursorDate: Date | undefined;
-    if (cursor) {
-      // Cursor encodes ISO timestamp; we fetch items BEFORE it
-      try {
-        cursorDate = new Date(Buffer.from(cursor, 'base64').toString('utf8'));
-      } catch {
-        cursorDate = undefined;
-      }
+    if (opts.aroundMessageId) {
+      return this.getTimelineAroundMessage(conversationId, workspaceId, {
+        aroundMessageId: opts.aroundMessageId,
+        before: opts.before,
+        after: opts.after,
+        limit,
+      });
     }
 
-    const dateFilter = cursorDate ? { lt: cursorDate } : undefined;
+    if (opts.anchorMessageId) {
+      return this.getTimelineFromAnchor(conversationId, workspaceId, {
+        anchorMessageId: opts.anchorMessageId,
+        direction: opts.direction ?? 'older',
+        limit,
+      });
+    }
 
-    const [messages, activities] = await Promise.all([
-      this.prisma.message.findMany({
-        where: {
-          conversationId,
-          workspaceId,
-          ...(dateFilter ? { createdAt: dateFilter } : {}),
-        },
-        orderBy: { createdAt: 'desc' },
-        take: take + 1,
-        include: {
-          author: { select: { id: true, firstName: true, lastName: true, avatarUrl: true } },
-          messageAttachments: true,
-        },
-      }),
-      this.prisma.conversationActivity.findMany({
-        where: {
-          conversationId,
-          workspaceId,
-          ...(dateFilter ? { createdAt: dateFilter } : {}),
-        },
-        orderBy: { createdAt: 'desc' },
-        take: take + 1,
-        include: {
-          actor: { select: { id: true, firstName: true, lastName: true, avatarUrl: true } },
-          subjectUser: { select: { id: true, firstName: true, lastName: true, avatarUrl: true } },
-          subjectTeam: { select: { id: true, name: true } },
-        },
-      }),
-    ]);
-    const enrichedMessages = await this.enrichMessagesWithReplyContext(messages);
-
-    // Merge + sort newest-first, take + 1 to detect more
-    const allItems: Array<{ timestamp: Date; raw: any; type: 'message' | 'activity' }> = [
-      ...enrichedMessages.map(m => ({
-        type: 'message' as const,
-        timestamp: m.sentAt ?? m.createdAt,
-        raw: m,
-      })),
-      ...activities.map(a => ({
-        type: 'activity' as const,
-        timestamp: a.createdAt,
-        raw: a,
-      })),
-    ].sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime());
-
-    const hasMore = allItems.length > take;
-    const page = allItems.slice(0, take);
-
-    // Build timeline items
-    const data = page.map(item => {
-      if (item.type === 'message') {
-        const m = item.raw;
-        return {
-          id: m.id,
-          type: 'message' as const,
-          timestamp: item.timestamp.toISOString(),
-          message: this.formatMessage(m),
-        };
-      } else {
-        return {
-          id: item.raw.id,
-          type: 'activity' as const,
-          timestamp: item.timestamp.toISOString(),
-          activity: this.activity.toResponsePublic(item.raw),
-        };
-      }
+    return this.getLatestTimeline(conversationId, workspaceId, {
+      cursor: opts.cursor,
+      limit,
     });
-
-    const nextCursor = hasMore
-      ? Buffer.from(page[page.length - 1].timestamp.toISOString()).toString('base64')
-      : undefined;
-
-    return { data, nextCursor };
   }
 
   /**
@@ -1301,5 +1244,283 @@ export class ConversationsService {
   } | null) {
     const fullName = [contact?.firstName, contact?.lastName].filter(Boolean).join(' ').trim();
     return fullName || contact?.email || contact?.phone || 'this contact';
+  }
+
+  private async getLatestTimeline(
+    conversationId: string,
+    workspaceId: string,
+    opts: { cursor?: string; limit: number },
+  ) {
+    let cursorDate: Date | undefined;
+    if (opts.cursor) {
+      try {
+        cursorDate = new Date(Buffer.from(opts.cursor, 'base64').toString('utf8'));
+      } catch {
+        cursorDate = undefined;
+      }
+    }
+
+    const page = await this.fetchTimelineSlice({
+      conversationId,
+      workspaceId,
+      olderThan: cursorDate,
+      limit: opts.limit,
+      order: 'desc',
+    });
+
+    return {
+      data: page.items.map((item) => this.toTimelineItem(item)).reverse(),
+      nextCursor: page.hasMore
+        ? Buffer.from(page.items[page.items.length - 1].timestamp.toISOString()).toString('base64')
+        : undefined,
+      hasMoreOlder: page.hasMore,
+      hasMoreNewer: false,
+      targetFound: true,
+      targetMessageId: null,
+    };
+  }
+
+  private async getTimelineAroundMessage(
+    conversationId: string,
+    workspaceId: string,
+    opts: { aroundMessageId: string; before?: number; after?: number; limit: number },
+  ) {
+    const targetMessage = await this.prisma.message.findFirst({
+      where: {
+        id: opts.aroundMessageId,
+        conversationId,
+        workspaceId,
+      },
+      include: {
+        author: { select: { id: true, firstName: true, lastName: true, avatarUrl: true } },
+        messageAttachments: true,
+      },
+    });
+
+    if (!targetMessage) {
+      return this.getLatestTimeline(conversationId, workspaceId, {
+        limit: opts.limit,
+      }).then((result) => ({
+        ...result,
+        targetFound: false,
+        targetMessageId: opts.aroundMessageId,
+      }));
+    }
+
+    const beforeCount = Math.min(opts.before ?? Math.floor(opts.limit / 2), 100);
+    const afterCount = Math.min(opts.after ?? Math.floor(opts.limit / 2), 100);
+
+    const [olderPage, newerPage, olderExists, newerExists] = await Promise.all([
+      this.fetchTimelineSlice({
+        conversationId,
+        workspaceId,
+        olderThan: targetMessage.createdAt,
+        limit: beforeCount,
+        order: 'desc',
+      }),
+      this.fetchTimelineSlice({
+        conversationId,
+        workspaceId,
+        newerThan: targetMessage.createdAt,
+        limit: afterCount,
+        order: 'asc',
+      }),
+      this.timelineItemExists({
+        conversationId,
+        workspaceId,
+        olderThan: targetMessage.createdAt,
+      }),
+      this.timelineItemExists({
+        conversationId,
+        workspaceId,
+        newerThan: targetMessage.createdAt,
+      }),
+    ]);
+
+    const enrichedTarget = await this.enrichMessagesWithReplyContext([targetMessage]);
+    const items = [
+      ...olderPage.items.reverse(),
+      {
+        type: 'message' as const,
+        timestamp: enrichedTarget[0].sentAt ?? enrichedTarget[0].createdAt,
+        raw: enrichedTarget[0],
+      },
+      ...newerPage.items,
+    ];
+
+    return {
+      data: items.map((item) => this.toTimelineItem(item)),
+      hasMoreOlder: olderExists,
+      hasMoreNewer: newerExists,
+      targetFound: true,
+      targetMessageId: targetMessage.id,
+    };
+  }
+
+  private async getTimelineFromAnchor(
+    conversationId: string,
+    workspaceId: string,
+    opts: { anchorMessageId: string; direction: 'older' | 'newer'; limit: number },
+  ) {
+    const anchorMessage = await this.prisma.message.findFirst({
+      where: {
+        id: opts.anchorMessageId,
+        conversationId,
+        workspaceId,
+      },
+      select: { id: true, createdAt: true },
+    });
+
+    if (!anchorMessage) {
+      return {
+        data: [],
+        hasMoreOlder: false,
+        hasMoreNewer: false,
+        targetFound: false,
+        targetMessageId: opts.anchorMessageId,
+      };
+    }
+
+    const page = await this.fetchTimelineSlice({
+      conversationId,
+      workspaceId,
+      olderThan: opts.direction === 'older' ? anchorMessage.createdAt : undefined,
+      newerThan: opts.direction === 'newer' ? anchorMessage.createdAt : undefined,
+      limit: opts.limit,
+      order: opts.direction === 'older' ? 'desc' : 'asc',
+    });
+
+    return {
+      data: (opts.direction === 'older' ? page.items.reverse() : page.items).map((item) =>
+        this.toTimelineItem(item),
+      ),
+      hasMoreOlder: opts.direction === 'older' ? page.hasMore : undefined,
+      hasMoreNewer: opts.direction === 'newer' ? page.hasMore : undefined,
+      targetFound: true,
+      targetMessageId: null,
+    };
+  }
+
+  private async fetchTimelineSlice(params: {
+    conversationId: string;
+    workspaceId: string;
+    limit: number;
+    order: 'asc' | 'desc';
+    olderThan?: Date;
+    newerThan?: Date;
+  }) {
+    const comparator =
+      params.olderThan
+        ? { lt: params.olderThan }
+        : params.newerThan
+          ? { gt: params.newerThan }
+          : undefined;
+
+    const [messages, activities] = await Promise.all([
+      this.prisma.message.findMany({
+        where: {
+          conversationId: params.conversationId,
+          workspaceId: params.workspaceId,
+          ...(comparator ? { createdAt: comparator } : {}),
+        },
+        orderBy: { createdAt: params.order },
+        take: params.limit + 1,
+        include: {
+          author: { select: { id: true, firstName: true, lastName: true, avatarUrl: true } },
+          messageAttachments: true,
+        },
+      }),
+      this.prisma.conversationActivity.findMany({
+        where: {
+          conversationId: params.conversationId,
+          workspaceId: params.workspaceId,
+          ...(comparator ? { createdAt: comparator } : {}),
+        },
+        orderBy: { createdAt: params.order },
+        take: params.limit + 1,
+        include: {
+          actor: { select: { id: true, firstName: true, lastName: true, avatarUrl: true } },
+          subjectUser: { select: { id: true, firstName: true, lastName: true, avatarUrl: true } },
+          subjectTeam: { select: { id: true, name: true } },
+        },
+      }),
+    ]);
+
+    const enrichedMessages = await this.enrichMessagesWithReplyContext(messages);
+
+    const items: Array<{ timestamp: Date; raw: any; type: 'message' | 'activity' }> = [
+      ...enrichedMessages.map((message) => ({
+        type: 'message' as const,
+        timestamp: message.sentAt ?? message.createdAt,
+        raw: message,
+      })),
+      ...activities.map((activity) => ({
+        type: 'activity' as const,
+        timestamp: activity.createdAt,
+        raw: activity,
+      })),
+    ].sort((a, b) =>
+      params.order === 'asc'
+        ? a.timestamp.getTime() - b.timestamp.getTime()
+        : b.timestamp.getTime() - a.timestamp.getTime(),
+    );
+
+    return {
+      items: items.slice(0, params.limit),
+      hasMore: items.length > params.limit,
+    };
+  }
+
+  private async timelineItemExists(params: {
+    conversationId: string;
+    workspaceId: string;
+    olderThan?: Date;
+    newerThan?: Date;
+  }) {
+    const comparator =
+      params.olderThan
+        ? { lt: params.olderThan }
+        : params.newerThan
+          ? { gt: params.newerThan }
+          : undefined;
+
+    const [message, activity] = await Promise.all([
+      this.prisma.message.findFirst({
+        where: {
+          conversationId: params.conversationId,
+          workspaceId: params.workspaceId,
+          ...(comparator ? { createdAt: comparator } : {}),
+        },
+        select: { id: true },
+      }),
+      this.prisma.conversationActivity.findFirst({
+        where: {
+          conversationId: params.conversationId,
+          workspaceId: params.workspaceId,
+          ...(comparator ? { createdAt: comparator } : {}),
+        },
+        select: { id: true },
+      }),
+    ]);
+
+    return !!message || !!activity;
+  }
+
+  private toTimelineItem(item: { timestamp: Date; raw: any; type: 'message' | 'activity' }) {
+    if (item.type === 'message') {
+      return {
+        id: item.raw.id,
+        type: 'message' as const,
+        timestamp: item.timestamp.toISOString(),
+        message: this.formatMessage(item.raw),
+      };
+    }
+
+    return {
+      id: item.raw.id,
+      type: 'activity' as const,
+      timestamp: item.timestamp.toISOString(),
+      activity: this.activity.toResponsePublic(item.raw),
+    };
   }
 }

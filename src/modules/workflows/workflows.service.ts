@@ -109,11 +109,56 @@ export class WorkflowsService {
         });
     }
 
-    async list(workspaceId: string) {
-        return this.prisma.workflow.findMany({
-            where: { workspaceId },
-            orderBy: { createdAt: 'desc' },
-        });
+    async list(
+        workspaceId: string,
+        opts?: { search?: string; status?: string; page?: number; limit?: number },
+    ) {
+        const where: any = {
+            workspaceId,
+            ...(opts?.status && opts.status !== 'all' ? { status: opts.status } : {}),
+            ...(opts?.search?.trim()
+                ? {
+                    OR: [
+                        { name: { contains: opts.search.trim(), mode: 'insensitive' } },
+                        { description: { contains: opts.search.trim(), mode: 'insensitive' } },
+                    ],
+                }
+                : {}),
+        };
+
+        const hasPagination =
+            typeof opts?.page === 'number' || typeof opts?.limit === 'number';
+
+        if (!hasPagination) {
+            return this.prisma.workflow.findMany({
+                where,
+                orderBy: { createdAt: 'desc' },
+            });
+        }
+
+        const page = Math.max(1, opts?.page ?? 1);
+        const limit = Math.min(Math.max(1, opts?.limit ?? 10), 100);
+        const [items, total] = await this.prisma.$transaction([
+            this.prisma.workflow.findMany({
+                where,
+                orderBy: { createdAt: 'desc' },
+                skip: (page - 1) * limit,
+                take: limit,
+            }),
+            this.prisma.workflow.count({ where }),
+        ]);
+
+        return {
+            items,
+            pagination: {
+                total,
+                page,
+                limit,
+                totalPages: Math.ceil(total / limit),
+                hasNextPage: page * limit < total,
+                hasPrevPage: page > 1,
+            },
+        };
     }
     async get(workspaceId: string, id: string) {
         const workflow = await this.prisma.workflow.findFirst({

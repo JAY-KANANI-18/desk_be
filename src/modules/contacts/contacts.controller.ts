@@ -55,6 +55,23 @@ export class ContactsController {
         });
     }
 
+    @Get('export')
+    @WorkspaceRoute(WorkspacePermission.CONTACTS_VIEW)
+    exportContacts(
+        @Req() req: any,
+        @Query('search') search?: string,
+        @Query('lifecycle') lifecycle?: string,
+        @Query('sortField') sortField?: string,
+        @Query('sortDir') sortDir?: string,
+    ) {
+        return this.contactsService.exportContacts(req.workspaceId, {
+            search,
+            lifecycle,
+            sortField,
+            sortDir,
+        });
+    }
+
     
     @Get(':id')
     @WorkspaceRoute(WorkspacePermission.CONTACTS_VIEW)

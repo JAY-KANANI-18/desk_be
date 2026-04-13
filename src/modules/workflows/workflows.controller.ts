@@ -8,6 +8,7 @@ import {
     Body,
     Req,
     UseGuards,
+    Query,
 } from '@nestjs/common';
 import { WorkflowsService } from './workflows.service';
 import { JwtGuard } from '../../common/guards/jwt.guard';
@@ -21,8 +22,19 @@ export class WorkflowsController {
 
     @Get()
     @WorkspaceRoute(WorkspacePermission.WORKFLOWS_VIEW)
-    list(@Req() req: any) {
-        return this.service.list(req.workspaceId);
+    list(
+        @Req() req: any,
+        @Query('search') search?: string,
+        @Query('status') status?: string,
+        @Query('page') page?: string,
+        @Query('limit') limit?: string,
+    ) {
+        return this.service.list(req.workspaceId, {
+            search,
+            status,
+            page: page ? parseInt(page, 10) : undefined,
+            limit: limit ? parseInt(limit, 10) : undefined,
+        });
     }
 
     @Get(':id')

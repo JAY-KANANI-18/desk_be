@@ -292,14 +292,77 @@ export class WorkspaceService {
         return user;
     }
 
-    async getWorkspaceusers(workspaceId: string) {
-        let users = await this.prisma.workspaceMember.findMany({
-            where: { workspaceId },
-            include: {
-                user: true,
-            },
+    async getWorkspaceusers(
+        workspaceId: string,
+        opts?: { search?: string; page?: number; limit?: number },
+    ) {
+        const where: any = {
+            workspaceId,
+            ...(opts?.search?.trim()
+                ? {
+                    OR: [
+                        { role: { contains: opts.search.trim(), mode: 'insensitive' } },
+                        { status: { contains: opts.search.trim(), mode: 'insensitive' } },
+                        { user: { email: { contains: opts.search.trim(), mode: 'insensitive' } } },
+                        { user: { firstName: { contains: opts.search.trim(), mode: 'insensitive' } } },
+                        { user: { lastName: { contains: opts.search.trim(), mode: 'insensitive' } } },
+                    ],
+                }
+                : {}),
+        };
+
+        const mapUser = (membership: any) => ({
+            role: membership.role,
+            status: membership.status,
+            ...membership.user,
         });
-        return (users?.map((membership) => ({ role: membership.role, ...membership.user })));
+
+        const hasPagination =
+            typeof opts?.page === 'number' || typeof opts?.limit === 'number';
+
+        if (!hasPagination) {
+            const users = await this.prisma.workspaceMember.findMany({
+                where,
+                include: {
+                    user: true,
+                },
+                orderBy: [
+                    { user: { firstName: 'asc' } },
+                    { user: { email: 'asc' } },
+                ],
+            });
+            return users.map(mapUser);
+        }
+
+        const page = Math.max(1, opts?.page ?? 1);
+        const limit = Math.min(Math.max(1, opts?.limit ?? 10), 100);
+        const [users, total] = await this.prisma.$transaction([
+            this.prisma.workspaceMember.findMany({
+                where,
+                include: {
+                    user: true,
+                },
+                orderBy: [
+                    { user: { firstName: 'asc' } },
+                    { user: { email: 'asc' } },
+                ],
+                skip: (page - 1) * limit,
+                take: limit,
+            }),
+            this.prisma.workspaceMember.count({ where }),
+        ]);
+
+        return {
+            items: users.map(mapUser),
+            pagination: {
+                total,
+                page,
+                limit,
+                totalPages: Math.ceil(total / limit),
+                hasNextPage: page * limit < total,
+                hasPrevPage: page > 1,
+            },
+        };
     }
 
     async updateWorkspace(id: string, dto: SetupWorkspaceDto) {

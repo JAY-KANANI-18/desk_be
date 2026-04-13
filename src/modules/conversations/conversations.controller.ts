@@ -122,6 +122,32 @@ export class ListConversationsQuery {
   lifecycleId?: string;
 }
 
+export class TimelineQuery {
+  @IsOptional() @IsString()
+  cursor?: string;
+
+  @IsOptional()
+  @Transform(({ value }) => parseInt(value, 10))
+  limit?: number;
+
+  @IsOptional() @IsString()
+  anchorMessageId?: string;
+
+  @IsOptional() @IsString()
+  aroundMessageId?: string;
+
+  @IsOptional() @IsIn(['older', 'newer'])
+  direction?: 'older' | 'newer';
+
+  @IsOptional()
+  @Transform(({ value }) => parseInt(value, 10))
+  before?: number;
+
+  @IsOptional()
+  @Transform(({ value }) => parseInt(value, 10))
+  after?: number;
+}
+
 // ─── Controller ───────────────────────────────────────────────────────────────
 
 @Controller('api/conversations')
@@ -261,11 +287,20 @@ export class ConversationsController {
   getTimeline(
     @Param('id', ParseUUIDPipe) id: string,
     @Req() req: any,
-    @Query('cursor') cursor?: string,
-    @Query('limit', new DefaultValuePipe(30), ParseIntPipe) limit?: number,
+    @Query() query: TimelineQuery,
   ) {
     return this.conversationsService.getTimeline(
-      id, req.workspaceId, cursor, limit,
+      id,
+      req.workspaceId,
+      {
+        cursor: query.cursor,
+        limit: query.limit,
+        anchorMessageId: query.anchorMessageId,
+        aroundMessageId: query.aroundMessageId,
+        direction: query.direction,
+        before: query.before,
+        after: query.after,
+      },
     );
   }
 

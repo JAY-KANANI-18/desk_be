@@ -30,8 +30,17 @@ export class TagsController {
 
   @Get()
   @WorkspaceRoute(WorkspacePermission.SETTINGS_MANAGE)
-  findAll(@Req() req: any, @Query('search') search?: string) {
-    return this.tagsService.findAll(req.workspaceId, search);
+  findAll(
+    @Req() req: any,
+    @Query('search') search?: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    return this.tagsService.findAll(req.workspaceId, {
+      search,
+      page: page ? parseInt(page, 10) : undefined,
+      limit: limit ? parseInt(limit, 10) : undefined,
+    });
   }
 
   @Get(':id')

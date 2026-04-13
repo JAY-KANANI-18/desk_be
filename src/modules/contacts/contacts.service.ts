@@ -382,6 +382,25 @@ async removeTag(workspaceId: string, contactId: string, tagId: string) {
     };
   }
 
+  async exportContacts(
+    workspaceId: string,
+    opts: { search?: string; lifecycle?: string; sortField?: string; sortDir?: string },
+  ) {
+    const where = this.listContactsWhere(workspaceId, {
+      search: opts.search,
+      lifecycle: opts.lifecycle,
+    });
+    const orderBy = this.listContactsOrderBy(opts.sortField, opts.sortDir);
+
+    const contacts = await this.prisma.contact.findMany({
+      where,
+      orderBy,
+      include: CONTACT_INCLUDE,
+    });
+
+    return contacts.map((contact) => this.toContactResponse(contact));
+  }
+
   async update(workspaceId: string, id: string, dto: UpdateContactDto) {
     await this.getEditableContact(workspaceId, id);
 

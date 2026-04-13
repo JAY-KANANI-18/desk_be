@@ -728,13 +728,58 @@ export class ChannelService {
         }
     }
 
-    async getChannels(workspaceId: string) {
-        return this.prisma.channel.findMany({
-            where: {
-                workspaceId,
-                type: { not: 'meta_ads' },
+    async getChannels(
+        workspaceId: string,
+        opts?: { search?: string; page?: number; limit?: number },
+    ) {
+        const where: any = {
+            workspaceId,
+            type: { not: 'meta_ads' },
+            ...(opts?.search?.trim()
+                ? {
+                    OR: [
+                        { name: { contains: opts.search.trim(), mode: 'insensitive' } },
+                        { identifier: { contains: opts.search.trim(), mode: 'insensitive' } },
+                        { type: { contains: opts.search.trim(), mode: 'insensitive' } },
+                        { status: { contains: opts.search.trim(), mode: 'insensitive' } },
+                    ],
+                }
+                : {}),
+        };
+
+        const hasPagination =
+            typeof opts?.page === 'number' || typeof opts?.limit === 'number';
+
+        if (!hasPagination) {
+            return this.prisma.channel.findMany({
+                where,
+                orderBy: { createdAt: 'desc' },
+            });
+        }
+
+        const page = Math.max(1, opts?.page ?? 1);
+        const limit = Math.min(Math.max(1, opts?.limit ?? 10), 100);
+        const [items, total] = await this.prisma.$transaction([
+            this.prisma.channel.findMany({
+                where,
+                orderBy: { createdAt: 'desc' },
+                skip: (page - 1) * limit,
+                take: limit,
+            }),
+            this.prisma.channel.count({ where }),
+        ]);
+
+        return {
+            items,
+            pagination: {
+                total,
+                page,
+                limit,
+                totalPages: Math.ceil(total / limit),
+                hasNextPage: page * limit < total,
+                hasPrevPage: page > 1,
             },
-        });
+        };
     }
     async deleteChannels(workspaceId: string,channelId:string){
         return await this.prisma.channel.delete({

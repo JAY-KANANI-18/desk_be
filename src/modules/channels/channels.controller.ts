@@ -552,8 +552,17 @@ export class ChannelsController {
 
     @Get()
     @WorkspaceRoute()
-    async getChannels(@Req() req: any) {
-        return this.channelService.getChannels(req.workspaceId);
+    async getChannels(
+        @Req() req: any,
+        @Query('search') search?: string,
+        @Query('page') page?: string,
+        @Query('limit') limit?: string,
+    ) {
+        return this.channelService.getChannels(req.workspaceId, {
+            search,
+            page: page ? parseInt(page, 10) : undefined,
+            limit: limit ? parseInt(limit, 10) : undefined,
+        });
     }
 
     @Delete(":id")

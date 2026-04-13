@@ -104,43 +104,92 @@ export class TagsService {
   
   }
 
-  async findAll(workspaceId: string, search?: string) {
-    const tags = await this.prisma.tag.findMany({
-      where: {
-        workspaceId,
-        ...(search?.trim()
-          ? {
-              name: {
-                contains: search.trim(),
-                mode: 'insensitive',
+  async findAll(
+    workspaceId: string,
+    opts?: { search?: string; page?: number; limit?: number },
+  ) {
+    const where: any = {
+      workspaceId,
+      ...(opts?.search?.trim()
+        ? {
+            OR: [
+              {
+                name: {
+                  contains: opts.search.trim(),
+                  mode: 'insensitive',
+                },
               },
-            }
-          : {}),
-      },
-      orderBy: {
-        createdAt: 'desc',
-      },
-      select: {
-        id: true,
-        name: true,
-        workspaceId: true,
-        color: true,
-        emoji: true,
-        description: true,
-        createdBy: true,
-        createdById: true,
-        updatedById: true,
-        createdAt: true,
-        updatedAt: true,
-        _count: {
-          select: {
-            contacts: true,
-          },
+              {
+                description: {
+                  contains: opts.search.trim(),
+                  mode: 'insensitive',
+                },
+              },
+            ],
+          }
+        : {}),
+    };
+
+    const select = {
+      id: true,
+      name: true,
+      workspaceId: true,
+      color: true,
+      emoji: true,
+      description: true,
+      createdBy: true,
+      createdById: true,
+      updatedById: true,
+      createdAt: true,
+      updatedAt: true,
+      _count: {
+        select: {
+          contacts: true,
         },
       },
-    });
+    } as const;
 
-    return tags.map((tag) => this.toTagResponse(tag));
+    const hasPagination =
+      typeof opts?.page === 'number' || typeof opts?.limit === 'number';
+
+    if (!hasPagination) {
+      const tags = await this.prisma.tag.findMany({
+        where,
+        orderBy: {
+          createdAt: 'desc',
+        },
+        select,
+      });
+
+      return tags.map((tag) => this.toTagResponse(tag));
+    }
+
+    const page = Math.max(1, opts?.page ?? 1);
+    const limit = Math.min(Math.max(1, opts?.limit ?? 10), 100);
+    const [tags, total] = await this.prisma.$transaction([
+      this.prisma.tag.findMany({
+        where,
+        orderBy: {
+          createdAt: 'desc',
+        },
+        skip: (page - 1) * limit,
+        take: limit,
+        select,
+      }),
+      this.prisma.tag.count({ where }),
+    ]);
+
+    return {
+      items: tags.map((tag) => this.toTagResponse(tag)),
+      pagination: {
+        total,
+        page,
+        limit,
+        totalPages: Math.ceil(total / limit),
+        hasNextPage: page * limit < total,
+        hasPrevPage: page > 1,
+      },
+    };
   }
 
   async findOne(workspaceId: string, id: string) {

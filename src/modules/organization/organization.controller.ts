@@ -5,7 +5,7 @@ import { InviteUserDto } from './dto/invite-user.dto';
 import { get } from 'http';
 import { OrgPermission } from 'src/common/constants/permissions';
 import { JwtOnly, OrgRoute } from 'src/common/auth/route-access.decorator';
-import { Controller, Post, Body, Req, Get, Put, Delete } from '@nestjs/common';
+import { Controller, Post, Body, Req, Get, Put, Delete, Query } from '@nestjs/common';
 
 import { IsEmail, IsString, IsArray } from 'class-validator';
 
@@ -68,10 +68,18 @@ export class OrganizationController {
 
     @Get('users')
     @OrgRoute(OrgPermission.USERS_VIEW) 
-    async getUsersInWorkspace(@Req() req: any) {
-        const workspaceId = req.headers['x-workspace-id'] as string;
+    async getUsersInWorkspace(
+        @Req() req: any,
+        @Query('search') search?: string,
+        @Query('page') page?: string,
+        @Query('limit') limit?: string,
+    ) {
         const organizationId = req.headers['x-organization-id'] as string;
-        return this.organizationService.getUsersInOrganization(organizationId);
+        return this.organizationService.getUsersInOrganizationPaginated(organizationId, {
+            search,
+            page: page ? parseInt(page, 10) : undefined,
+            limit: limit ? parseInt(limit, 10) : undefined,
+        });
     }   
 
 

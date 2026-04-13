@@ -40,6 +40,7 @@ model User {
   subjectActivities       ConversationActivity[] @relation("ActivitySubject")
   userActivity            UserActivity?
   broadcastRuns           BroadcastRun[]
+  importExportJobs        ImportExportJob[]      @relation("ImportExportJobCreatedBy")
 }
 
 model UserActivity {
@@ -118,6 +119,7 @@ model Workspace {
   notificationDevices    NotificationDevice[]
   notificationEmailHistory NotificationEmailHistory[]
   contactMergeRuns       ContactMergeRun[]
+  importExportJobs       ImportExportJob[]
 }
 
 model WorkspaceAiSettings {
@@ -193,8 +195,8 @@ model Contact {
   avatarUrl   String?
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
-  status      String?
   lifecycleId String?  @db.Uuid
+  status      String?
   /// When true, contact is excluded from marketing broadcasts (opt-out / compliance).
   marketingOptOut Boolean @default(false)
   mergedIntoContactId String? @db.Uuid
@@ -529,6 +531,39 @@ model OutboundQueue {
 
   @@index([status, scheduledAt])
   @@index([workspaceId, channelId])
+}
+
+model ImportExportJob {
+  id               String                @id @default(uuid()) @db.Uuid
+  type             String
+  entity           String
+  status           ImportExportJobStatus @default(PENDING)
+  tenantId         String                @db.Uuid
+  fileUrl          String?
+  resultUrl        String?
+  totalRecords     Int                   @default(0)
+  processedRecords Int                   @default(0)
+  successCount     Int                   @default(0)
+  failureCount     Int                   @default(0)
+  errorLog         Json?
+  metadata         Json?
+  createdBy        String                @db.Uuid
+  createdAt        DateTime              @default(now())
+  updatedAt        DateTime              @updatedAt
+
+  tenant         Workspace @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  createdByUser  User      @relation("ImportExportJobCreatedBy", fields: [createdBy], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, entity, status, createdAt])
+  @@index([createdBy, createdAt])
+  @@index([type, status])
+}
+
+enum ImportExportJobStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
 }
 
 // ============================================================
