@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { SetupOrganizationDto } from './dto/setup-organization.dto';
-import { User } from '@prisma/client';
+import { Prisma, User } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { InviteUserDto } from './dto/invite-user.dto';
 import { SupabaseService } from 'src/supdabse/supabase.service';
@@ -15,13 +15,15 @@ export class OrganizationService {
     ) { }
 
     async setup(dto: SetupOrganizationDto, user: User) {
-
-
-
+        const onboardingData = dto.onboardingData
+            ? (dto.onboardingData as unknown as Prisma.InputJsonValue)
+            : undefined;
 
         const organization = await this.prisma.organization.create({
             data: {
                 name: dto.organizationName,
+                onboardingData,
+                onboardingCompletedAt: onboardingData ? new Date() : undefined,
                 members: {
                     create: {
                         userId: user.id,
@@ -32,6 +34,7 @@ export class OrganizationService {
                 workspaces: {
                     create: {
                         name: dto.workspaceName,
+                        onboardingCompleted: Boolean(onboardingData),
                         members: {
                             create: {
                                 userId: user.id,

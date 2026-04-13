@@ -58,6 +58,8 @@ model Organization {
   id        String   @id @default(uuid()) @db.Uuid
   name      String
   website  String?
+  onboardingData Json?
+  onboardingCompletedAt DateTime?
 
   plan      String   @default("free")
   createdAt DateTime @default(now())

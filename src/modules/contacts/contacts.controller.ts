@@ -74,7 +74,7 @@ export class ContactsController {
 
     
     @Get(':id')
-    @WorkspaceRoute(WorkspacePermission.CONTACTS_VIEW)
+    @WorkspaceRoute(WorkspacePermission.MESSAGES_VIEW)
     findOne(@Req() req: any, @Param('id') id: string) {
         return this.contactsService.findOne(req.workspaceId, id);
     }
