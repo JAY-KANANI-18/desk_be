@@ -18,6 +18,7 @@ import { ChannelAdaptersRegistry } from 'src/modules/channel-adapters/channel-ad
 import { Public, WorkspaceRoute } from 'src/common/auth/route-access.decorator';
 import { WorkspacePermission } from 'src/common/constants/permissions';
 import { MessageProcessingQueueService } from 'src/modules/outbound/message-processing-queue.service';
+import { WhatsAppOAuthService } from './whatsapp-oauth.service';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -28,8 +29,6 @@ const FB_BASE = 'https://graph.facebook.com/v22.0';
 class ConnectWhatsAppDto {
     @IsString()
     code: string;
-    @IsString()
-    workspaceId: string;
     @IsString()
     redirectUri: string;
 }
@@ -105,6 +104,7 @@ export class WhatsAppController implements OnModuleInit {
         private readonly inbound: InboundService,
         private readonly outbound: OutboundService,
         private readonly processingQueue: MessageProcessingQueueService,
+        private readonly oauthService: WhatsAppOAuthService,
     ) { }
 
     async onModuleInit() {
@@ -211,29 +211,16 @@ export class WhatsAppController implements OnModuleInit {
       @WorkspaceRoute(WorkspacePermission.CHANNELS_MANAGE)
     
     getAuthUrl(
-        @Query('workspaceId') workspaceId: string,
-        @Query('redirectUri') redirectUri: string,
+
+        @Req() req: any,
     ) {
-        if (!workspaceId || !redirectUri) {
-            throw new BadRequestException('workspaceId and redirectUri are required');
-        }
 
-        const state = Buffer.from(JSON.stringify({ workspaceId })).toString('base64');
-
-        const params = new URLSearchParams({
-            client_id: process.env.WHATSAPP_APP_ID!,
-            redirect_uri: redirectUri,
-            response_type: 'code',
-            scope: [
-                'whatsapp_business_management',
-                'whatsapp_business_messaging',
-                'business_management',
-            ].join(','),
-            state,
-        });
-
-        const url = `https://www.facebook.com/dialog/oauth?${params.toString()}`;
-        return { url };
+        return {
+            url: this.oauthService.buildAuthUrl({
+                workspaceId:req.workspaceId,
+                userId: req.user.id,
+            }),
+        };
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -241,14 +228,43 @@ export class WhatsAppController implements OnModuleInit {
     // POST /webhooks/whatsapp/auth/callback
     // ─────────────────────────────────────────────────────────────────────────
 
+    @Get('auth/callback')
+      @Public()
+    async handleOAuthCallback(
+        @Query('code') code: string,
+        @Query('error') error: string,
+        @Query('error_description') errorDescription: string,
+        @Query('state') state: string,
+        @Req() req: any,
+        @Res() res: Response,
+    ) {
+        const result = await this.oauthService.handleBrowserCallback({
+            code,
+            error,
+            errorDescription,
+            state,
+            requestOrigin: this.getRequestOrigin(req),
+        });
+
+         res.type('html').send(result.html);
+    }
+
     @Post('auth/callback')
       @WorkspaceRoute(WorkspacePermission.CHANNELS_MANAGE)
 
-    async handleCallback(@Body() dto: ConnectWhatsAppDto) {
-        const { code, workspaceId, redirectUri } = dto;
-        if (!code || !workspaceId || !redirectUri) {
+    async handleCallback(@Body() dto: ConnectWhatsAppDto,@Req() req: any) {
+        const { code, redirectUri } = dto;
+        if (!code  || !redirectUri) {
             throw new BadRequestException('code, workspaceId, redirectUri are required');
         }
+
+        const channels = await this.oauthService.connectWithCode({
+            code,
+            redirectUri,
+            workspaceId: req.workspaceId,
+        });
+
+        return { success: true, channels };
 
         // Step 1: Exchange code for user token
         const userToken = await this.exchangeCodeForToken(code, redirectUri);
@@ -275,7 +291,7 @@ export class WhatsAppController implements OnModuleInit {
                     // Step 5: Upsert channel per phone number
                     const channel = await this.prisma.channel.upsert({
                         where: {
-                            workspaceId,
+        workspaceId: req.workspaceId,
                             type: 'whatsapp',
                             identifier: phone.id, // phone_number_id
                         },
@@ -298,7 +314,7 @@ export class WhatsAppController implements OnModuleInit {
                             },
                         },
                         create: {
-                            workspaceId,
+        workspaceId: req.workspaceId,
                             type: 'whatsapp',
                             identifier: phone.id,
                             name: phone.display_phone_number ?? phone.verified_name,
@@ -794,5 +810,16 @@ export class WhatsAppController implements OnModuleInit {
             { params: { access_token: token } },
         );
         this.logger.log(`WABA ${wabaId} subscribed to webhook`);
+    }
+
+    private getRequestOrigin(req: any) {
+        const proto =
+            req.headers['x-forwarded-proto']?.split(',')?.[0] ?? req.protocol;
+        const host =
+            req.headers['x-forwarded-host']?.split(',')?.[0] ??
+            req.headers.host ??
+            req.get?.('host');
+
+        return host ? `${proto}://${host}` : undefined;
     }
 }

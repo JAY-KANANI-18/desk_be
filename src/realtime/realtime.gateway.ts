@@ -12,6 +12,8 @@ import { PrismaService } from '../prisma/prisma.service';
 import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { verifySupabaseToken } from 'src/common/guards/supabase-jwt';
 import { OnEvent } from '@nestjs/event-emitter';
+import { RedisService } from 'src/redis/redis.service';
+import { getPendingChannelOAuthEventsKey } from 'src/modules/channels/oauth/channel-oauth-events.shared';
 @WebSocketGateway({
     namespace: '/inbox',
 
@@ -24,7 +26,10 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     @WebSocketServer()
     server: Server;
 
-    constructor(private prisma: PrismaService) { }
+    constructor(
+        private prisma: PrismaService,
+        private redis: RedisService,
+    ) { }
 
 
 
@@ -139,6 +144,74 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
             `User ${user.email} joined workspace:${data.workspaceId}`,
         );
         return { success: true, message: `Joined workspace ${data.workspaceId}` };
+    }
+    @SubscribeMessage('user:join')
+    async handleUserJoin(
+        @MessageBody() data: { userId: string },
+        @ConnectedSocket() client: Socket,
+    ) {
+        const user = client.data.user;
+        console.log("TEST SOCKET USer", { data, user });
+
+
+        if (!user) {
+            client.disconnect();
+            return;
+        }
+
+        const userD = await this.prisma.user.findFirst({
+            where: {
+                id: user.id,
+                status: 'ACTIVE',
+            },
+        });
+        console.log({userD});
+        
+
+        if (!userD) {
+            return; // silently ignore
+        }
+
+        client.join(`user:${userD.id}`);
+
+        console.log(
+            `User ${user.email} joined user:${userD.id}`,
+        );
+        return { success: true, message: `Joined user ${userD.id}` };
+    }
+
+    @SubscribeMessage('oauth:pending:flush')
+    async handlePendingOauthFlush(@ConnectedSocket() client: Socket) {
+        const user = client.data.user;
+                console.log("TEST SOCKET oauth", {  user });
+
+        if (!user?.id) {
+            client.disconnect();
+            return;
+        }
+
+        const key = getPendingChannelOAuthEventsKey(user.id);
+        const events = await this.redis.client.lrange(key, 0, -1);
+
+        if (!events.length) {
+            return { success: true, count: 0 };
+        }
+
+        await this.redis.client.del(key);
+
+        for (const entry of events) {
+            try {
+                const parsed = JSON.parse(entry) as {
+                    event: string;
+                    payload: Record<string, unknown>;
+                };
+                client.emit(parsed.event, parsed.payload);
+            } catch (error) {
+                console.error('Failed to flush pending oauth event', error);
+            }
+        }
+
+        return { success: true, count: events.length };
     }
 
 

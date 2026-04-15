@@ -6,6 +6,14 @@ import { toJsonSafe } from '../common/utils/json-safe';
 export class RealtimeService {
     constructor(private gateway: RealtimeGateway) { }
 
+   async hasUserConnection(userId: string) {
+  const sockets =  await this.gateway.server
+    .in(`user:${userId}`)
+    .fetchSockets();
+
+  return sockets.length > 0;
+}
+
     emitToUser(userId: string, event: string, payload: any) {
         this.gateway.server
             .to(`user:${userId}`)

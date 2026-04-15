@@ -52,6 +52,12 @@ import { OutboundModule } from '../outbound/outbound.module';
 import { MessageProcessingModule } from '../outbound/message-processing.module';
 import { ChannelAdaptersModule } from '../channel-adapters/channel-adapters.module';
 import { MediaModule } from '../media/media.module';
+import { RealtimeModule } from '../../realtime/realtime.module';
+import { ChannelOAuthStateService } from './oauth/channel-oauth-state.service';
+import { ChannelOAuthEventsService } from './oauth/channel-oauth-events.service';
+import { InstagramOAuthService } from './providers/meta/instagram/instagram-oauth.service';
+import { MessengerOAuthService } from './providers/meta/messenger/messenger-oauth.service';
+import { WhatsAppOAuthService } from './providers/whatsapp/whatsapp-oauth.service';
 
 @Module({
     imports: [
@@ -61,6 +67,7 @@ import { MediaModule } from '../media/media.module';
         MessageProcessingModule,
         ChannelAdaptersModule,
         MediaModule,
+        RealtimeModule,
         
         ScheduleModule.forRoot()
     ],
@@ -71,6 +78,12 @@ import { MediaModule } from '../media/media.module';
 
         // Channel management
         ChannelService,
+
+        ChannelOAuthStateService,
+        ChannelOAuthEventsService,
+        InstagramOAuthService,
+        MessengerOAuthService,
+        WhatsAppOAuthService,
 
         // WhatsApp
       

@@ -17,6 +17,7 @@ import { ChannelAdaptersRegistry } from 'src/modules/channel-adapters/channel-ad
 import { Public, WorkspaceRoute } from 'src/common/auth/route-access.decorator';
 import { WorkspacePermission } from 'src/common/constants/permissions';
 import { MessageProcessingQueueService } from 'src/modules/outbound/message-processing-queue.service';
+import { InstagramOAuthService } from './instagram-oauth.service';
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -31,8 +32,7 @@ class ConnectInstagramDto {
   @IsString()
   code: string;
 
-  @IsString()
-  workspaceId: string;
+
   @IsString()
   redirectUri: string;
 }
@@ -65,6 +65,7 @@ export class InstagramController {
     private readonly inbound: InboundService,
     private readonly outbound: OutboundService,
     private readonly processingQueue: MessageProcessingQueueService,
+    private readonly oauthService: InstagramOAuthService,
   ) { }
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -94,7 +95,7 @@ export class InstagramController {
   // ─────────────────────────────────────────────────────────────────────────
 
   @Post('webhook')
-    @Public()
+  @Public()
 
   @HttpCode(200)
   async handle(
@@ -235,31 +236,17 @@ export class InstagramController {
   @WorkspaceRoute(WorkspacePermission.CHANNELS_MANAGE)
 
   getAuthUrl(
-    @Query('workspaceId') workspaceId: string,
-    @Query('redirectUri') redirectUri: string,
+   
+    @Req() req: any,
   ) {
-    if (!workspaceId || !redirectUri) {
-      throw new BadRequestException('workspaceId and redirectUri are required');
-    }
+   
 
-    // State encodes workspaceId so we recover it in callback
-    const state = Buffer.from(JSON.stringify({ workspaceId })).toString('base64');
-
-    const params = new URLSearchParams({
-      client_id: process.env.INSTAGRAM_APP_ID!,
-      redirect_uri: redirectUri,
-      response_type: 'code',
-      scope: [
-        'instagram_business_basic',
-        'instagram_business_manage_messages',
-        'instagram_business_manage_comments',
-        // 'instagram_business_content_publish',
-      ].join(','),
-      state,
-    });
-
-    const url = `https://www.instagram.com/oauth/authorize?${params.toString()}`;
-    return { url };
+    return {
+      url: this.oauthService.buildAuthUrl({
+        workspaceId:req.workspaceId,
+        userId: req.user.id,
+      }),
+    };
   }
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -267,83 +254,123 @@ export class InstagramController {
   // POST /webhooks/instagram/auth/callback
   // ─────────────────────────────────────────────────────────────────────────
 
-  @Post('auth/callback')
-    @WorkspaceRoute(WorkspacePermission.CHANNELS_MANAGE)
+  @Get('auth/callback')
+  @Public()
+  async handleOAuthCallback(
+    @Query('code') code: string,
+    @Query('error') error: string,
+    @Query('error_description') errorDescription: string,
+    @Query('state') state: string,
+    @Req() req: any,
+    @Res() res: Response,
+  ) {
+    console.log({
+      code,
+      error,
+      errorDescription,
+      state,
+      requestOrigin: this.getRequestOrigin(req),
+    });
+    
+    const result = await this.oauthService.handleBrowserCallback({
+      code,
+      error,
+      errorDescription,
+      state,
+      requestOrigin: this.getRequestOrigin(req),
+    });
 
-  async handleCallback(@Body() dto: ConnectInstagramDto) {
-    const { code, workspaceId, redirectUri } = dto;
-    if (!code || !workspaceId || !redirectUri) {
+     res.type('html').send(result.html);
+  }
+
+  @Post('auth/callback')
+  @WorkspaceRoute(WorkspacePermission.CHANNELS_MANAGE)
+
+  async handleCallback(@Body() dto: ConnectInstagramDto, @Req() req: any) {
+    const { code, redirectUri } = dto;
+
+    if (!code || !redirectUri) {
       throw new BadRequestException('code, workspaceId, redirectUri are required');
     }
 
-    // Step 1: Exchange code for short-lived token
-    const shortLivedToken = await this.exchangeCodeForToken(code, redirectUri);
-this.logger.log(`Short-lived token: ${shortLivedToken}`);
-
-
-
-    // Step 2: Exchange short-lived for long-lived token (60 days)
-    const { access_token: longLivedToken, expires_in } = await this.exchangeLongLivedToken(shortLivedToken);
-this.logger.log(`long-lived token: ${{longLivedToken,expires_in}}`);
-
-    // Step 3: Get Instagram profile info
-    // igUser.id = 25930098660015623 → used for sending messages via API
-    const igUser = await this.getIGUserInfo(longLivedToken);
-
-    await this.subscribeToWebhook(igUser.id, longLivedToken);
-    // Step 4: Get Business Account ID
-    // businessAccountId = 17841473852821256 → what webhook entry.id sends
-    // These are TWO DIFFERENT IDs for the same account
-    // const businessAccountId = await this.getIGBusinessAccountId(longLivedToken);
-
-    // Step 5: Upsert channel — store businessAccountId as identifier (for webhook matching)
-    const expiresAt = new Date(Date.now() + expires_in * 1000);
-
-    const channel = await this.prisma.channel.upsert({
-      where: {
-   
-        identifier: igUser.user_id,  // ← webhook entry.id matches this
-      },
-      update: {
-        credentials: {
-          accessToken: longLivedToken,
-          tokenExpiresAt: expiresAt,
-          igUserId: igUser.id,          // ← used when calling /messages API
-        },
-        name: igUser.username,
-        config: {
-          userName: igUser.username,
-          accountType: igUser.account_type,
-          mediaCount: igUser.media_count,
-          igUserId: igUser.id,          // store here too for easy access
-          // businessAccountId,
-        },
-        status: 'connected',
-      },
-      create: {
-        workspaceId,
-        type: 'instagram',
-        identifier: igUser.user_id,  // ← webhook entry.id matches this
-        name: igUser.username,
-        credentials: {
-          accessToken: longLivedToken,
-          tokenExpiresAt: expiresAt,
-          igUserId: igUser.id,          // ← used when calling /messages API
-        },
-        config: {
-                    userName: igUser.username,
-
-          accountType: igUser.account_type,
-          mediaCount: igUser.media_count,
-          igUserId: igUser.id,
-          // businessAccountId,
-        },
-        status: 'connected',
-      },
+    const channel = await this.oauthService.connectWithCode({
+      code,
+      redirectUri,
+      workspaceId: req.workspaceId,
     });
 
-    this.logger.log(`Instagram channel connected: ${igUser.username} | webhookId: ${"efe"} | apiId: ${igUser.id}`);
     return { success: true, channel };
+
+    // Step 1: Exchange code for short-lived token
+    // const shortLivedToken = await this.exchangeCodeForToken(code, redirectUri);
+    // this.logger.log(`Short-lived token: ${shortLivedToken}`);
+
+
+
+    // // Step 2: Exchange short-lived for long-lived token (60 days)
+    // const { access_token: longLivedToken, expires_in } = await this.exchangeLongLivedToken(shortLivedToken);
+    // this.logger.log(`long-lived token: ${{ longLivedToken, expires_in }}`);
+
+    // // Step 3: Get Instagram profile info
+    // // igUser.id = 25930098660015623 → used for sending messages via API
+    // const igUser = await this.getIGUserInfo(longLivedToken);
+
+    // await this.subscribeToWebhook(igUser.id, longLivedToken);
+    // // Step 4: Get Business Account ID
+    // // businessAccountId = 17841473852821256 → what webhook entry.id sends
+    // // These are TWO DIFFERENT IDs for the same account
+    // // const businessAccountId = await this.getIGBusinessAccountId(longLivedToken);
+
+    // // Step 5: Upsert channel — store businessAccountId as identifier (for webhook matching)
+    // const expiresAt = new Date(Date.now() + expires_in * 1000);
+
+    // const channel = await this.prisma.channel.upsert({
+    //   where: {
+    //     workspaceId: req.workspaceId,
+    //     type: 'instagram',
+
+    //     identifier: igUser.user_id,  // ← webhook entry.id matches this
+    //   },
+    //   update: {
+    //     credentials: {
+    //       accessToken: longLivedToken,
+    //       tokenExpiresAt: expiresAt,
+    //       igUserId: igUser.id,          // ← used when calling /messages API
+    //     },
+    //     name: igUser.username,
+    //     config: {
+    //       userName: igUser.username,
+    //       accountType: igUser.account_type,
+    //       mediaCount: igUser.media_count,
+    //       igUserId: igUser.id,          // store here too for easy access
+    //       // businessAccountId,
+    //     },
+    //     status: 'connected',
+    //   },
+    //   create: {
+    //     workspaceId: req.workspaceId,
+    //     type: 'instagram',
+    //     identifier: igUser.user_id,  // ← webhook entry.id matches this
+    //     name: igUser.username,
+    //     credentials: {
+    //       accessToken: longLivedToken,
+    //       tokenExpiresAt: expiresAt,
+    //       igUserId: igUser.id,          // ← used when calling /messages API
+    //     },
+    //     config: {
+    //       userName: igUser.username,
+
+    //       accountType: igUser.account_type,
+    //       mediaCount: igUser.media_count,
+    //       igUserId: igUser.id,
+    //       // businessAccountId,
+    //     },
+    //     status: 'connected',
+    //   },
+    // });
+
+    // this.logger.log(`Instagram channel connected: ${igUser.username} | webhookId: ${"efe"} | apiId: ${igUser.id}`);
+    // return { success: true, channel };
   }
 
   private async subscribeToWebhook(igUserId: string, accessToken: string): Promise<void> {
@@ -382,7 +409,7 @@ this.logger.log(`long-lived token: ${{longLivedToken,expires_in}}`);
   // ─────────────────────────────────────────────────────────────────────────
 
   @Post('auth/refresh/:channelId')
-    @WorkspaceRoute(WorkspacePermission.CHANNELS_MANAGE)
+  @WorkspaceRoute(WorkspacePermission.CHANNELS_MANAGE)
 
   async refreshToken(@Param('channelId') channelId: string) {
     const channel: any = await this.findChannelOrThrow(channelId);
@@ -410,7 +437,7 @@ this.logger.log(`long-lived token: ${{longLivedToken,expires_in}}`);
   // ─────────────────────────────────────────────────────────────────────────
 
   @Delete('channel/:channelId')
-    @WorkspaceRoute(WorkspacePermission.CHANNELS_MANAGE)
+  @WorkspaceRoute(WorkspacePermission.CHANNELS_MANAGE)
 
   async disconnectChannel(@Param('channelId') channelId: string) {
     await this.findChannelOrThrow(channelId);
@@ -428,7 +455,7 @@ this.logger.log(`long-lived token: ${{longLivedToken,expires_in}}`);
   // ─────────────────────────────────────────────────────────────────────────
 
   @Get('channel/:channelId/info')
-    @WorkspaceRoute(WorkspacePermission.CHANNELS_MANAGE)
+  @WorkspaceRoute(WorkspacePermission.CHANNELS_MANAGE)
 
   async getChannelInfo(@Param('channelId') channelId: string) {
     const channel: any = await this.findChannelOrThrow(channelId);
@@ -586,7 +613,7 @@ this.logger.log(`long-lived token: ${{longLivedToken,expires_in}}`);
         access_token: accessToken,
       },
     });
-        console.dir({getIGUserInfo:data},{depth:null});
+    console.dir({ getIGUserInfo: data }, { depth: null });
 
     return data;
   }
@@ -594,7 +621,7 @@ this.logger.log(`long-lived token: ${{longLivedToken,expires_in}}`);
     const { data } = await axios.get(`${IG_BASE}/me/accounts`, {
       params: { access_token: accessToken },
     });
-    
+
     // Returns the page/business account ID = 17841473852821256
     return data?.data?.[0]?.instagram_business_account?.id ?? data?.data?.[0]?.id;
   }
@@ -659,5 +686,16 @@ this.logger.log(`long-lived token: ${{longLivedToken,expires_in}}`);
 
     // Default: plain text
     return { text: dto.text };
+  }
+
+  private getRequestOrigin(req: any) {
+    const proto =
+      req.headers['x-forwarded-proto']?.split(',')?.[0] ?? req.protocol;
+    const host =
+      req.headers['x-forwarded-host']?.split(',')?.[0] ??
+      req.headers.host ??
+      req.get?.('host');
+
+    return host ? `${proto}://${host}` : undefined;
   }
 }

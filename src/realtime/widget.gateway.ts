@@ -89,6 +89,8 @@ export class WidgetGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
     const sessionId = client.data?.sessionId;
     if (sessionId) this.sessionSockets.delete(sessionId);
+    console.log({disconnectt:client.data});
+    
     this.logger.log(`Widget disconnected: session=${sessionId}`);
   }
 

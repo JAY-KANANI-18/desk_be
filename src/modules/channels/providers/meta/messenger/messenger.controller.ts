@@ -17,6 +17,7 @@ import { ChannelAdaptersRegistry } from 'src/modules/channel-adapters/channel-ad
 import { Public, WorkspaceRoute } from 'src/common/auth/route-access.decorator';
 import { WorkspacePermission } from 'src/common/constants/permissions';
 import { MessageProcessingQueueService } from 'src/modules/outbound/message-processing-queue.service';
+import { MessengerOAuthService } from './messenger-oauth.service';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -76,6 +77,7 @@ export class MessengerController {
         private readonly inbound: InboundService,
         private readonly outbound: OutboundService,
         private readonly processingQueue: MessageProcessingQueueService,
+        private readonly oauthService: MessengerOAuthService,
     ) { }
 
 
@@ -213,39 +215,44 @@ export class MessengerController {
       @WorkspaceRoute(WorkspacePermission.CHANNELS_MANAGE)
     
     async getAuthUrl(
-        @Query('workspaceId') workspaceId: string,
-        @Query('redirectUri') redirectUri: string,
+     
+        @Req() req: any,
     ) {
-        if (!workspaceId || !redirectUri) {
-            throw new BadRequestException('workspaceId and redirectUri are required');
-        }
+     
 
-        const state = Buffer.from(JSON.stringify({ workspaceId })).toString('base64');
-
-        const params = new URLSearchParams({
-            client_id: process.env.MESSENGER_APP_ID!,
-            redirect_uri: redirectUri,
-            response_type: 'code',
-            scope: [
-                // "business_management",
-                'pages_manage_metadata',
-
-                // 'pages_show_list', // respond --
-                'pages_messaging', // repond ++ 2Cpages_messaging_phone_number 2Cpages_utility_messaging email
-                // 'pages_read_engagement',
-                'public_profile',
-            ].join(','),
-            state,
-        });
-
-        const url = `https://www.facebook.com/dialog/oauth?${params.toString()}`;
-        return { url };
+        return {
+            url: this.oauthService.buildAuthUrl({
+                workspaceId:req.workspaceId,
+                userId: req.user.id
+            }),
+        };
     }
 
     // ─────────────────────────────────────────────────────────────────────────
     // 4. OAUTH — Callback: code → user token → page token → save all pages
     // POST /webhooks/messenger/auth/callback
     // ─────────────────────────────────────────────────────────────────────────
+
+    @Get('auth/callback')
+      @Public()
+    async handleOAuthCallback(
+        @Query('code') code: string,
+        @Query('error') error: string,
+        @Query('error_description') errorDescription: string,
+        @Query('state') state: string,
+        @Req() req: any,
+        @Res() res: Response,
+    ) {
+        const result = await this.oauthService.handleBrowserCallback({
+            code,
+            error,
+            errorDescription,
+            state,
+            requestOrigin: this.getRequestOrigin(req),
+        });
+
+         res.type('html').send(result.html);
+    }
 
     // New DTO
 
@@ -293,10 +300,10 @@ export class MessengerController {
     @Post('auth/callback')
       @WorkspaceRoute(WorkspacePermission.CHANNELS_MANAGE)
     
-    async handleCallback(@Body() dto: any) {
-        const { workspaceId, selectedPageIds, pages } = dto;
+    async handleCallback(@Body() dto: any,@Req() req:any) {
+        const {  selectedPageIds, pages } = dto;
 
-        if (!workspaceId || !selectedPageIds?.length || !pages?.length) {
+        if ( !selectedPageIds?.length || !pages?.length) {
             throw new BadRequestException('workspaceId, selectedPageIds, pages are required');
         }
 
@@ -315,7 +322,7 @@ export class MessengerController {
 
                 const channel = await this.prisma.channel.upsert({
                     where: {
-                        workspaceId,
+                        workspaceId:req.workspaceId,
                         type: 'messenger',
                         identifier: pageId,
                     },
@@ -331,7 +338,7 @@ export class MessengerController {
                         },
                     },
                     create: {
-                        workspaceId,
+                        workspaceId:req.workspaceId,
                         type: 'messenger',
                         identifier: pageId,
                         name: pageName,
@@ -571,5 +578,15 @@ export class MessengerController {
         this.logger.log(`Page ${pageId} subscribed to webhook`);
     }
 
+    private getRequestOrigin(req: any) {
+        const proto =
+            req.headers['x-forwarded-proto']?.split(',')?.[0] ?? req.protocol;
+        const host =
+            req.headers['x-forwarded-host']?.split(',')?.[0] ??
+            req.headers.host ??
+            req.get?.('host');
+
+        return host ? `${proto}://${host}` : undefined;
+    }
 
 }
