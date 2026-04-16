@@ -59,4 +59,50 @@ describe('NotificationActivityService', () => {
     expect(result.status).toBe(UserPresenceStatus.ACTIVE);
     expect(prisma.userActivity.update).not.toHaveBeenCalled();
   });
+
+  it('marks the session offline immediately when the app moves to the background', async () => {
+    prisma.workspace.findUnique.mockResolvedValue({
+      notificationInactivityTimeoutSec: 300,
+    });
+    prisma.userActivity.findUnique.mockResolvedValue({
+      userId: 'user-3',
+      activityStatus: UserPresenceStatus.ACTIVE,
+      lastActivityAt: new Date(),
+      inactivitySessionId: 'session-2',
+    });
+    prisma.userActivity.update.mockResolvedValue({
+      userId: 'user-3',
+      activityStatus: UserPresenceStatus.OFFLINE,
+      inactivitySessionId: 'session-3',
+    });
+
+    const result = await service.heartbeat('user-3', 'workspace-1', 'background');
+
+    expect(result.activityStatus).toBe(UserPresenceStatus.OFFLINE);
+    expect(prisma.userActivity.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { userId: 'user-3' },
+        data: expect.objectContaining({
+          activityStatus: UserPresenceStatus.OFFLINE,
+        }),
+      }),
+    );
+  });
+
+  it('respects an explicit offline status even if the last activity timestamp is recent', async () => {
+    prisma.workspace.findUnique.mockResolvedValue({
+      notificationInactivityTimeoutSec: 300,
+    });
+    prisma.userActivity.findUnique.mockResolvedValue({
+      userId: 'user-4',
+      activityStatus: UserPresenceStatus.OFFLINE,
+      lastActivityAt: new Date(),
+      inactivitySessionId: 'session-4',
+    });
+
+    const result = await service.getEffectiveStatus('user-4', 'workspace-1');
+
+    expect(result.status).toBe(UserPresenceStatus.OFFLINE);
+    expect(prisma.userActivity.update).not.toHaveBeenCalled();
+  });
 });

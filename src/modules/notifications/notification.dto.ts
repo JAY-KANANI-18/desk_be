@@ -10,6 +10,7 @@ import {
   IsInt,
   IsObject,
   IsOptional,
+  ValidateIf,
   IsString,
   IsUUID,
   Max,
@@ -63,12 +64,32 @@ export class RegisterNotificationDeviceDto {
   @IsString()
   platform!: string;
 
+  @IsOptional()
   @IsString()
-  token!: string;
+  deviceKey?: string;
+
+  @IsOptional()
+  @IsString()
+  token?: string;
+
+  @IsOptional()
+  @IsObject()
+  subscription?: {
+    endpoint: string;
+    expirationTime?: number | null;
+    keys: {
+      p256dh: string;
+      auth: string;
+    };
+  };
 
   @IsOptional()
   @IsString()
   deviceName?: string;
+
+  @IsOptional()
+  @IsString()
+  pushPermission?: string;
 
   @IsOptional()
   @IsObject()
@@ -76,8 +97,21 @@ export class RegisterNotificationDeviceDto {
 }
 
 export class UnregisterNotificationDeviceDto {
+  @IsOptional()
+  @IsUUID()
+  deviceId?: string;
+
+  @IsOptional()
   @IsString()
-  token!: string;
+  deviceKey?: string;
+
+  @ValidateIf((value) => !value.deviceId && !value.deviceKey)
+  @IsString()
+  token?: string;
+
+  @IsOptional()
+  @IsString()
+  reason?: string;
 }
 
 export class ActivityHeartbeatDto {

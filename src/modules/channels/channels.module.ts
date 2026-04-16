@@ -32,6 +32,8 @@ import { InstagramIcebreakersController } from './providers/meta/instagram/insta
 import { MessengerController } from './providers/meta/messenger/messenger.controller';
 import { MessengerMenuService } from './providers/meta/messenger/messenger-menu.service';
 import { MessengerMenuController } from './providers/meta/messenger/messenger-menu.controller';
+import { MetaAutomationService } from './providers/meta/meta-automation.service';
+import { MetaAutomationController } from './providers/meta/meta-automation.controller';
 
 // ── Mailgun ────────────────────────────────────────────────────────────────
 import { MailgunController } from './providers/email/mailgun.controller';
@@ -58,6 +60,8 @@ import { ChannelOAuthEventsService } from './oauth/channel-oauth-events.service'
 import { InstagramOAuthService } from './providers/meta/instagram/instagram-oauth.service';
 import { MessengerOAuthService } from './providers/meta/messenger/messenger-oauth.service';
 import { WhatsAppOAuthService } from './providers/whatsapp/whatsapp-oauth.service';
+import { ActivityModule } from '../activity/activity.module';
+import { WorkflowsModule } from '../workflows/workflows.module';
 
 @Module({
     imports: [
@@ -68,6 +72,8 @@ import { WhatsAppOAuthService } from './providers/whatsapp/whatsapp-oauth.servic
         ChannelAdaptersModule,
         MediaModule,
         RealtimeModule,
+        ActivityModule,
+        WorkflowsModule,
         
         ScheduleModule.forRoot()
     ],
@@ -92,6 +98,7 @@ import { WhatsAppOAuthService } from './providers/whatsapp/whatsapp-oauth.servic
           
         InstagramIcebreakersService,
         MessengerMenuService,
+        MetaAutomationService,
 
         // Mailgun
               
@@ -118,6 +125,7 @@ import { WhatsAppOAuthService } from './providers/whatsapp/whatsapp-oauth.servic
         WhatsAppTemplatesController, // GET/POST  channels/:channelId/whatsapp/templates
         InstagramIcebreakersController, // GET/POST channels/:channelId/instagram/icebreakers
         MessengerMenuController,     // GET/POST  channels/:channelId/messenger/menu
+        MetaAutomationController,
         WebchatManageController,      // POST/PATCH channels/:channelId/webchat
         WebchatController
     ],

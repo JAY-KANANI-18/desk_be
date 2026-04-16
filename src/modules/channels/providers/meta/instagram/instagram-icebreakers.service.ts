@@ -4,6 +4,7 @@
 // Synced from Meta Graph API → stored in MetaPageTemplate table.
 
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { PrismaService } from '../../../../../prisma/prisma.service';
 import axios from 'axios';
 import { Prisma } from '@prisma/client';
@@ -19,7 +20,10 @@ export interface IceBreakerItem {
 export class InstagramIcebreakersService {
   private readonly logger = new Logger(InstagramIcebreakersService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly events: EventEmitter2,
+  ) {}
 
   // ─── Sync from Meta ────────────────────────────────────────────────────────
 
@@ -65,6 +69,15 @@ export class InstagramIcebreakersService {
       errors++;
     }
 
+    this.events.emit('channel.sync.completed', {
+      workspaceId,
+      channelId,
+      feature: 'instagram_icebreakers',
+      synced,
+      errors,
+      syncedAt: new Date().toISOString(),
+    });
+
     return { synced, errors };
   }
 
@@ -94,6 +107,12 @@ export class InstagramIcebreakersService {
     );
 
     this.logger.log(`Instagram ice-breakers pushed channel=${channelId} count=${items.length}`);
+    this.events.emit('channel.config.updated', {
+      workspaceId,
+      channelId,
+      feature: 'instagram_icebreakers',
+      items,
+    });
   }
 
   // ─── Helpers ───────────────────────────────────────────────────────────────

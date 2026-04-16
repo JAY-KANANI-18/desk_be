@@ -1,13 +1,13 @@
 // modules/channels/providers/meta/instagram/instagram-icebreakers.controller.ts
 
-import { Controller, Get, Post, Param, Body, Query, UseGuards, HttpCode, HttpStatus } from '@nestjs/common';
+import { Controller, Get, Post, Param, Body, Req, HttpCode, HttpStatus } from '@nestjs/common';
 import { InstagramIcebreakersService, IceBreakerItem } from './instagram-icebreakers.service';
 import { WorkspaceRoute } from 'src/common/auth/route-access.decorator';
 import { WorkspacePermission } from 'src/common/constants/permissions';
 // import { JwtGuard } from '../../../../../common/guards/jwt.guard';
 // import { WorkspaceGuard } from '../../../../../common/guards/workspace.guard';
 
-@Controller('channels/:channelId/instagram/icebreakers')
+@Controller('api/channels/:channelId/instagram/icebreakers')
 // @UseGuards(JwtGuard, WorkspaceGuard)
 export class InstagramIcebreakersController {
   constructor(private readonly svc: InstagramIcebreakersService) {}
@@ -21,10 +21,10 @@ export class InstagramIcebreakersController {
     @WorkspaceRoute(WorkspacePermission.CHANNELS_MANAGE)
   
   sync(
+    @Req() req: any,
     @Param('channelId') channelId: string,
-    @Query('workspaceId') workspaceId: string,
   ) {
-    return this.svc.sync(channelId, workspaceId);
+    return this.svc.sync(channelId, req.workspaceId);
   }
 
   /**
@@ -35,10 +35,10 @@ export class InstagramIcebreakersController {
     @WorkspaceRoute(WorkspacePermission.CHANNELS_MANAGE)
   
   list(
+    @Req() req: any,
     @Param('channelId') channelId: string,
-    @Query('workspaceId') workspaceId: string,
   ) {
-    return this.svc.list(channelId, workspaceId);
+    return this.svc.list(channelId, req.workspaceId);
   }
 
   /**
@@ -51,10 +51,10 @@ export class InstagramIcebreakersController {
   
   @HttpCode(HttpStatus.OK)
   push(
+    @Req() req: any,
     @Param('channelId') channelId: string,
-    @Query('workspaceId') workspaceId: string,
     @Body('items') items: IceBreakerItem[],
   ) {
-    return this.svc.push(channelId, workspaceId, items);
+    return this.svc.push(channelId, req.workspaceId, items);
   }
 }

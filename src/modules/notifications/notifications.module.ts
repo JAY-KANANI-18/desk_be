@@ -7,6 +7,8 @@ import { NotificationQueue } from 'src/queues/notification.queue';
 import { NotificationsController } from './notifications.controller';
 import { NotificationActivityService } from './notification-activity.service';
 import { NotificationRuleEngineService } from './notification-rule-engine.service';
+import { NotificationDeviceService } from './notification-device.service';
+import { NotificationPushService } from './notification-push.service';
 
 @Module({
   imports: [RealtimeModule],
@@ -17,8 +19,16 @@ import { NotificationRuleEngineService } from './notification-rule-engine.servic
     NotificationPreferencesService,
     NotificationActivityService,
     NotificationRuleEngineService,
+    NotificationDeviceService,
+    NotificationPushService,
     NotificationQueue,
   ],
-  exports: [NotificationsService, NotificationPreferencesService, NotificationActivityService]
+  exports: [
+    NotificationsService,
+    NotificationPreferencesService,
+    NotificationActivityService,
+    NotificationDeviceService,
+    NotificationPushService,
+  ]
 })
 export class NotificationsModule {}

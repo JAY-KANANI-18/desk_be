@@ -18,6 +18,7 @@ import { Public, WorkspaceRoute } from 'src/common/auth/route-access.decorator';
 import { WorkspacePermission } from 'src/common/constants/permissions';
 import { MessageProcessingQueueService } from 'src/modules/outbound/message-processing-queue.service';
 import { MessengerOAuthService } from './messenger-oauth.service';
+import { MetaAutomationService } from '../meta-automation.service';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -78,6 +79,7 @@ export class MessengerController {
         private readonly outbound: OutboundService,
         private readonly processingQueue: MessageProcessingQueueService,
         private readonly oauthService: MessengerOAuthService,
+        private readonly automation: MetaAutomationService,
     ) { }
 
 
@@ -130,6 +132,15 @@ export class MessengerController {
             where: { type: 'messenger', identifier: pageId },
         });
         if (!channel) return { status: 'channel_not_found' };
+
+        const commentEvents = this.automation.extractCommentEvents(body, 'messenger');
+        for (const commentEvent of commentEvents) {
+            await this.automation.processCommentEvent(
+                channel.id,
+                channel.workspaceId,
+                commentEvent,
+            );
+        }
 
         const provider = this.registry.getProviderByType('messenger');
         const parsedList: any[] = await provider.parseWebhook(body);

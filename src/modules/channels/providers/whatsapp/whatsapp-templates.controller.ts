@@ -25,12 +25,13 @@ export class WhatsAppTemplatesController {
   
   @HttpCode(HttpStatus.OK)
   async sync(
+    @Req() req: any,
     @Param('channelId') channelId: string,
-    @Query('workspaceId') workspaceId: string,
   ) {
-    const channel = await this.prisma.channel.findUniqueOrThrow({ where: { id: channelId } });
-    console.log({channel});
-    
+    const channel = await this.prisma.channel.findFirstOrThrow({
+      where: { id: channelId, workspaceId: req.workspaceId, type: 'whatsapp' },
+    });
+
     return this.svc.sync(channel);
   }
 
@@ -51,9 +52,12 @@ export class WhatsAppTemplatesController {
     @Query('language')    language?: string,
     @Query('search')      search?: string,
   ) {
-        const workspaceId = req.headers['x-workspace-id'] as string;
-    console.log({channelId,workspaceId});
-    return this.svc.list(channelId, workspaceId, { status, category, language, search });
+    return this.svc.list(channelId, req.workspaceId, {
+      status,
+      category,
+      language,
+      search,
+    });
   }
 
   /**

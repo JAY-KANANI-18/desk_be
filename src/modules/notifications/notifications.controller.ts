@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   Param,
   Patch,
@@ -9,7 +10,6 @@ import {
   Query,
   Req,
 } from '@nestjs/common';
-import { Prisma } from '@prisma/client';
 import { WorkspacePermission } from 'src/common/constants/permissions';
 import { WorkspaceRoute } from 'src/common/auth/route-access.decorator';
 import { NotificationsService } from './notifications.service';
@@ -26,7 +26,7 @@ import {
 } from './notification.dto';
 import { NotificationPreferencesService } from './notification-preferences.service';
 import { NotificationActivityService } from './notification-activity.service';
-import { PrismaService } from '../../prisma/prisma.service';
+import { NotificationDeviceService } from './notification-device.service';
 
 @WorkspaceRoute(WorkspacePermission.NOTIFICATIONS_MANAGE)
 @Controller('api/notifications')
@@ -35,7 +35,7 @@ export class NotificationsController {
     private notifications: NotificationsService,
     private preferences: NotificationPreferencesService,
     private activity: NotificationActivityService,
-    private prisma: PrismaService,
+    private devices: NotificationDeviceService,
   ) {}
 
   @Get()
@@ -91,44 +91,29 @@ export class NotificationsController {
     return this.preferences.updateUserPreferences(req.user.id, req.workspaceId, body);
   }
 
+  @Get('push/config')
+  async getPushConfig() {
+    return this.devices.getPushConfig();
+  }
+
+  @Get('devices')
+  async listDevices(@Req() req: any) {
+    return this.devices.listForUser(req.user.id);
+  }
+
   @Post('devices')
   async registerDevice(@Req() req: any, @Body() body: RegisterNotificationDeviceDto) {
-    return this.prisma.notificationDevice.upsert({
-      where: { token: body.token },
-      create: {
-        userId: req.user.id,
-        workspaceId: req.workspaceId,
-        platform: body.platform,
-        token: body.token,
-        deviceName: body.deviceName,
-        metadata: body.metadata as Prisma.InputJsonValue | undefined,
-        lastSeenAt: new Date(),
-      },
-      update: {
-        userId: req.user.id,
-        workspaceId: req.workspaceId,
-        platform: body.platform,
-        deviceName: body.deviceName,
-        metadata: body.metadata as Prisma.InputJsonValue | undefined,
-        disabledAt: null,
-        lastSeenAt: new Date(),
-      },
-    });
+    return this.devices.register(req.user.id, req.workspaceId, body);
   }
 
   @Post('devices/unregister')
   async unregisterDevice(@Req() req: any, @Body() body: UnregisterNotificationDeviceDto) {
-    await this.prisma.notificationDevice.updateMany({
-      where: {
-        userId: req.user.id,
-        token: body.token,
-      },
-      data: {
-        disabledAt: new Date(),
-      },
-    });
+    return this.devices.unregister(req.user.id, body);
+  }
 
-    return { success: true };
+  @Delete('devices/:id')
+  async disableDevice(@Req() req: any, @Param('id') id: string) {
+    return this.devices.disableById(req.user.id, id);
   }
 
   @Post('activity/heartbeat')

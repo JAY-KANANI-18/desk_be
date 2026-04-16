@@ -10,9 +10,13 @@ async function start() {
   const prisma = new PrismaClient();
   const redis = new RedisService();
   const events = new EventEmitter2();
+  const notificationDebugEnabled = ['1', 'true', 'yes', 'on'].includes(
+    String(process.env.NOTIFICATION_DEBUG || '').toLowerCase(),
+  );
 
   new NotificationWorker(redis, prisma);
   console.log('Notification worker started');
+  console.log('Notification debug logging', notificationDebugEnabled ? 'enabled' : 'disabled');
 
   const workflowEngine = new WorkflowEngineService(prisma as any, redis);
   const workflowWorker = createWorkflowWorker(workflowEngine);

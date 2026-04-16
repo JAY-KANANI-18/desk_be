@@ -40,6 +40,10 @@ export class InstagramOAuthService {
         'instagram_business_basic',
         'instagram_business_manage_messages',
         'instagram_business_manage_comments',
+          'pages_show_list',
+  'pages_manage_metadata',
+  'pages_messaging'
+
       ].join(','),
       state: oauthState,
     });

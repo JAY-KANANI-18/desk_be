@@ -15,9 +15,14 @@ import {
 import { NotificationActivityService } from './notification-activity.service';
 import { NotificationRuleEngineService } from './notification-rule-engine.service';
 import { NotificationEventInput } from './notification.types';
+import { decorateNotificationMetadata } from './notification-routing';
 
 @Injectable()
 export class NotificationsService {
+  private readonly debugEnabled = ['1', 'true', 'yes', 'on'].includes(
+    String(process.env.NOTIFICATION_DEBUG || '').toLowerCase(),
+  );
+
   constructor(
     private prisma: PrismaService,
     private realtime: RealtimeService,
@@ -49,6 +54,11 @@ export class NotificationsService {
       input.type,
       input.target,
     );
+    const metadata = decorateNotificationMetadata(input.metadata, {
+      type: input.type,
+      workspaceId: input.workspaceId,
+      sourceEntityType: input.sourceEntityType,
+    });
 
     const notification = await this.prisma.notification.create({
       data: {
@@ -58,7 +68,7 @@ export class NotificationsService {
         type: input.type,
         title: input.title,
         body: input.body ?? undefined,
-        metadata: (input.metadata as Prisma.InputJsonValue | undefined) ?? undefined,
+        metadata: (metadata as Prisma.InputJsonValue | undefined) ?? undefined,
         sourceEntityType: input.sourceEntityType ?? undefined,
         sourceEntityId: input.sourceEntityId ?? undefined,
         dedupeKey: input.dedupeKey ?? undefined,
@@ -279,15 +289,36 @@ export class NotificationsService {
     });
 
     if (!notification) {
+      this.logDebug('dispatch:notification-missing', {
+        notificationId,
+      });
       return;
     }
 
+    this.logDebug('dispatch:start', {
+      notificationId,
+      userId: notification.userId,
+      workspaceId: notification.workspaceId ?? null,
+      type: notification.type,
+      deliveries: notification.deliveries,
+      metadata: notification.metadata ?? null,
+    });
+
     for (const delivery of notification.deliveries) {
       if (delivery.status !== NotificationDeliveryStatus.PENDING) {
+        this.logDebug('dispatch:skip-non-pending', {
+          notificationId,
+          channel: delivery.channel,
+          status: delivery.status,
+        });
         continue;
       }
 
       if (delivery.channel === NotificationChannel.IN_APP) {
+        this.logDebug('dispatch:in-app', {
+          notificationId,
+          channel: delivery.channel,
+        });
         await this.prisma.notificationDelivery.update({
           where: { notificationId_channel: { notificationId, channel: delivery.channel } },
           data: {
@@ -300,8 +331,14 @@ export class NotificationsService {
       }
 
       if (delivery.channel === NotificationChannel.EMAIL) {
+        this.logDebug('dispatch:queue-email', {
+          notificationId,
+          email: notification.user.email,
+          workspaceId: notification.workspaceId ?? null,
+        });
         await this.notificationQueue.addEmailNotification({
           notificationId,
+          workspaceId: notification.workspaceId ?? null,
           email: notification.user.email,
           subject: notification.title,
           body: notification.body ?? '',
@@ -310,9 +347,18 @@ export class NotificationsService {
       }
 
       if (delivery.channel === NotificationChannel.MOBILE_PUSH) {
+        this.logDebug('dispatch:queue-push', {
+          notificationId,
+          userId: notification.userId,
+          workspaceId: notification.workspaceId ?? null,
+          title: notification.title,
+          body: notification.body ?? '',
+          metadata: notification.metadata ?? null,
+        });
         await this.notificationQueue.addPushNotification({
           notificationId,
           userId: notification.userId,
+          workspaceId: notification.workspaceId ?? null,
           title: notification.title,
           body: notification.body ?? '',
           metadata: (notification.metadata ?? {}) as Record<string, unknown>,
@@ -320,6 +366,10 @@ export class NotificationsService {
         continue;
       }
 
+      this.logDebug('dispatch:mark-sent-no-queue', {
+        notificationId,
+        channel: delivery.channel,
+      });
       await this.prisma.notificationDelivery.update({
         where: { notificationId_channel: { notificationId, channel: delivery.channel } },
         data: {
@@ -338,5 +388,13 @@ export class NotificationsService {
 
     const unreadCount = await this.getUnreadCount(userId, workspaceId);
     this.realtime.emitToUser(userId, 'notification:badge', { unreadCount, workspaceId });
+  }
+
+  private logDebug(event: string, details?: unknown) {
+    if (!this.debugEnabled) {
+      return;
+    }
+
+    console.info(`[NotificationDebug][NotificationsService] ${event}`, details ?? '');
   }
 }

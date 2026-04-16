@@ -124,6 +124,15 @@ export class MetaProvider implements ChannelProvider {
 
     const msg = event.message;
     if (!msg) return null;
+    const story = msg.reply_to?.story ?? null;
+    const storyReplyMeta = story
+      ? {
+          storyReply: {
+            storyId: story.id ?? story.story_id ?? null,
+            storyUrl: story.url ?? story.link ?? null,
+          },
+        }
+      : undefined;
 
     const base = {
       externalId: msg.mid,
@@ -132,6 +141,7 @@ export class MetaProvider implements ChannelProvider {
       replyToChannelMsgId: msg.reply_to?.mid,
       timestamp: event.timestamp,
       raw: event,
+      metadata: storyReplyMeta,
     };
 
     if (msg.is_deleted) {
@@ -144,7 +154,7 @@ export class MetaProvider implements ChannelProvider {
         messageType: 'interactive',
         text: msg.text ?? msg.quick_reply.payload,
         attachments: [],
-        metadata: { quickReply: msg.quick_reply },
+        metadata: { ...storyReplyMeta, quickReply: msg.quick_reply },
       };
     }
 
@@ -159,6 +169,7 @@ export class MetaProvider implements ChannelProvider {
       messageType: attachments[0]?.type ?? 'text',
       text: msg.text,
       attachments,
+      metadata: storyReplyMeta,
     };
   }
 

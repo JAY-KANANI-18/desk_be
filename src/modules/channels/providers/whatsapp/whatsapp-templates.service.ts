@@ -1,6 +1,7 @@
 // modules/channels/providers/whatsapp/whatsapp-templates.service.ts
 
 import { Injectable, Logger, NotFoundException, BadRequestException } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { PrismaService } from '../../../../prisma/prisma.service';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import axios from 'axios';
@@ -22,15 +23,16 @@ export interface TemplatePreviewResult {
 export class WhatsAppTemplatesService {
   private readonly logger = new Logger(WhatsAppTemplatesService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly events: EventEmitter2,
+  ) {}
 
   // ─── Sync ──────────────────────────────────────────────────────────────────
 
   async sync(channel: any): Promise<{ synced: number; errors: number }> {
     const token  = channel.credentials?.accessToken;
     const wabaId = channel.config?.wabaId;
-    console.log({token,wabaId});
-    
 
     if (!token)  throw new BadRequestException('WhatsApp channel missing accessToken');
     if (!wabaId) throw new BadRequestException('WhatsApp channel missing wabaId');
@@ -93,6 +95,14 @@ export class WhatsAppTemplatesService {
     }
 
     this.logger.log(`WA template sync channel=${channel.id} synced=${synced} errors=${errors}`);
+    this.events.emit('channel.sync.completed', {
+      workspaceId: channel.workspaceId,
+      channelId: channel.id,
+      feature: 'whatsapp_templates',
+      synced,
+      errors,
+      syncedAt: new Date().toISOString(),
+    });
     return { synced, errors };
   }
 
@@ -120,8 +130,6 @@ export class WhatsAppTemplatesService {
     workspaceId: string,
     filters: { status?: string; category?: string; language?: string; search?: string } = {},
   ) {
-    console.log({channelId,workspaceId});
-    
     return this.prisma.whatsAppTemplate.findMany({
       where: {
         channelId,
@@ -154,7 +162,8 @@ export class WhatsAppTemplatesService {
   ): Promise<TemplatePreviewResult> {
     const t = await this.prisma.whatsAppTemplate.findUnique({ where: { id: templateId } });
     if (!t) throw new NotFoundException('Template not found');
-    return this.render(t.components as any[], variables);
+    const components = await this.fetchTemplateComponents(t);
+    return this.render(components, variables);
   }
 
   // ─── Build (returns components ready for OutboundService) ─────────────────
@@ -168,6 +177,55 @@ export class WhatsAppTemplatesService {
   }
 
   // ─── Render ────────────────────────────────────────────────────────────────
+
+  private async fetchTemplateComponents(template: any): Promise<any[]> {
+    try {
+      const channel = await this.prisma.channel.findUnique({
+        where: { id: template.channelId },
+      });
+
+      if (!channel?.credentials || !channel?.config) {
+        return (template.components as any[]) ?? [];
+      }
+
+      const token = (channel.credentials as any)?.accessToken;
+      const wabaId = (channel.config as any)?.wabaId;
+      if (!token || !wabaId) {
+        return (template.components as any[]) ?? [];
+      }
+
+      const params = {
+        fields: 'id,name,language,category,status,components,rejected_reason',
+        access_token: token,
+      };
+
+      if (template.metaId) {
+        const { data } = await axios.get(`${GRAPH}/${template.metaId}`, { params });
+        if (Array.isArray(data?.components)) {
+          return data.components;
+        }
+      }
+
+      const { data } = await axios.get(`${GRAPH}/${wabaId}/message_templates`, {
+        params: {
+          ...params,
+          name: template.name,
+          limit: 25,
+        },
+      });
+
+      const match = (data.data ?? []).find(
+        (entry: any) => entry.name === template.name && entry.language === template.language,
+      );
+
+      return (match?.components as any[]) ?? (template.components as any[]) ?? [];
+    } catch (error: any) {
+      this.logger.warn(
+        `Using cached template snapshot for ${template.name}/${template.language}: ${error?.message ?? error}`,
+      );
+      return (template.components as any[]) ?? [];
+    }
+  }
 
   private render(components: any[], vars: Record<string, string>): TemplatePreviewResult {
     const sub = (text: string) =>

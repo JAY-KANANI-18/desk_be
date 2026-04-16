@@ -1,6 +1,6 @@
 // modules/channels/providers/meta/messenger/messenger-menu.controller.ts
 
-import { Controller, Get, Post, Param, Body, Query, UseGuards, HttpCode, HttpStatus } from '@nestjs/common';
+import { Controller, Get, Post, Param, Body, Req, HttpCode, HttpStatus } from '@nestjs/common';
 import { MessengerMenuService, PersistentMenuLocale } from './messenger-menu.service';
 import { WorkspaceRoute } from 'src/common/auth/route-access.decorator';
 import { WorkspacePermission } from 'src/common/constants/permissions';
@@ -20,10 +20,10 @@ export class MessengerMenuController {
     @WorkspaceRoute(WorkspacePermission.CHANNELS_MANAGE)
   
   sync(
+    @Req() req: any,
     @Param('channelId') channelId: string,
-    @Query('workspaceId') workspaceId: string,
   ) {
-    return this.svc.sync(channelId, workspaceId);
+    return this.svc.sync(channelId, req.workspaceId);
   }
 
   /**
@@ -34,11 +34,10 @@ export class MessengerMenuController {
     @WorkspaceRoute(WorkspacePermission.CHANNELS_MANAGE)
   
   list(
+    @Req() req: any,
     @Param('channelId') channelId: string,
-    @Query('workspaceId') workspaceId: string,
-    @Query('type') type?: string,
   ) {
-    return this.svc.list(channelId, workspaceId, type);
+    return this.svc.list(channelId, req.workspaceId);
   }
 
   /**
@@ -51,11 +50,11 @@ export class MessengerMenuController {
   
   @HttpCode(HttpStatus.OK)
   pushMenu(
+    @Req() req: any,
     @Param('channelId') channelId: string,
-    @Query('workspaceId') workspaceId: string,
     @Body('menu') menu: PersistentMenuLocale[],
   ) {
-    return this.svc.pushMenu(channelId, workspaceId, menu);
+    return this.svc.pushMenu(channelId, req.workspaceId, menu);
   }
 
   /**
@@ -68,10 +67,10 @@ export class MessengerMenuController {
   
   @HttpCode(HttpStatus.OK)
   pushGetStarted(
+    @Req() req: any,
     @Param('channelId') channelId: string,
-    @Query('workspaceId') workspaceId: string,
     @Body('payload') payload: string,
   ) {
-    return this.svc.pushGetStarted(channelId, workspaceId, payload);
+    return this.svc.pushGetStarted(channelId, req.workspaceId, payload);
   }
 }

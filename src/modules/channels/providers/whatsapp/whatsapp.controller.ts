@@ -13,7 +13,7 @@ import { OutboundService } from '../../../outbound/outbound.service';
 import { verifyMetaSignature } from '../meta/meta-signature.util';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import axios from 'axios';
-import { IsString } from 'class-validator';
+import { IsOptional, IsString } from 'class-validator';
 import { ChannelAdaptersRegistry } from 'src/modules/channel-adapters/channel-adapters.registry';
 import { Public, WorkspaceRoute } from 'src/common/auth/route-access.decorator';
 import { WorkspacePermission } from 'src/common/constants/permissions';
@@ -31,6 +31,24 @@ class ConnectWhatsAppDto {
     code: string;
     @IsString()
     redirectUri: string;
+}
+
+class ConnectWhatsAppCoexistDto {
+    @IsString()
+    code: string;
+
+    @IsString()
+    state: string;
+
+    @IsString()
+    wabaId: string;
+
+    @IsString()
+    phoneNumberId: string;
+
+    @IsOptional()
+    @IsString()
+    businessId?: string;
 }
 
 // Manual connect (for users who set up WABA manually via Meta Business Suite)
@@ -223,6 +241,17 @@ export class WhatsAppController implements OnModuleInit {
         };
     }
 
+    @Get('auth/coexist/state')
+      @WorkspaceRoute(WorkspacePermission.CHANNELS_MANAGE)
+    getCoexistState(@Req() req: any) {
+        return {
+            state: this.oauthService.buildCoexistState({
+                workspaceId: req.workspaceId,
+                userId: req.user.id,
+            }),
+        };
+    }
+
     // ─────────────────────────────────────────────────────────────────────────
     // 4. OAUTH — Callback: code → token → WABA → phone numbers → save channels
     // POST /webhooks/whatsapp/auth/callback
@@ -345,6 +374,30 @@ export class WhatsAppController implements OnModuleInit {
         }
 
         return { success: true, channels: connectedChannels };
+    }
+
+    @Post('auth/coexist')
+      @WorkspaceRoute(WorkspacePermission.CHANNELS_MANAGE)
+    async handleCoexistCallback(
+        @Body() dto: ConnectWhatsAppCoexistDto,
+        @Req() req: any,
+    ) {
+        const { code, state, wabaId, phoneNumberId, businessId } = dto;
+        if (!code || !state || !wabaId || !phoneNumberId) {
+            throw new BadRequestException('code, state, wabaId and phoneNumberId are required');
+        }
+
+        const channels = await this.oauthService.handleCoexistFrontendCallback({
+            code,
+            state,
+            wabaId,
+            phoneNumberId,
+            businessId,
+            userId: req.user.id,
+            workspaceId: req.workspaceId,
+        });
+
+        return { success: true, channels };
     }
 
     // ─────────────────────────────────────────────────────────────────────────

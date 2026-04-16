@@ -14,6 +14,9 @@ import { verifySupabaseToken } from 'src/common/guards/supabase-jwt';
 import { OnEvent } from '@nestjs/event-emitter';
 import { RedisService } from 'src/redis/redis.service';
 import { getPendingChannelOAuthEventsKey } from 'src/modules/channels/oauth/channel-oauth-events.shared';
+
+const getRealtimeUserSocketsKey = (userId: string) =>
+    `realtime:user:${userId}:sockets`;
 @WebSocketGateway({
     namespace: '/inbox',
 
@@ -64,6 +67,8 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
             // attach user to socket
             client.data.user = user;
             client.join(`user:${user.id}`);
+            await this.redis.client.sadd(getRealtimeUserSocketsKey(user.id), client.id);
+            await this.redis.client.expire(getRealtimeUserSocketsKey(user.id), 60 * 60 * 24);
 
             const activity = await this.prisma.userActivity.findUnique({
                 where: { userId: user.id },
@@ -108,6 +113,12 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
 
     handleDisconnect(client: Socket) {
         console.log('Socket disconnected:', client.id);
+        const userId = client.data?.user?.id;
+        if (!userId) {
+            return;
+        }
+
+        void this.redis.client.srem(getRealtimeUserSocketsKey(userId), client.id);
     }
 
 
@@ -265,6 +276,9 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
         conversationId: string;
         message: any;
     }) {
+        if (!event?.message) {
+            return;
+        }
         this.server
             .to(`conversation:${event.conversationId}`)
             .emit('message.upsert', event.message);
@@ -336,5 +350,49 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
         this.server
             .to(`workspace:${conv.workspaceId}`)
             .emit('conversation.upsert', conv);
+    }
+
+    @OnEvent('channel.sync.completed')
+    handleChannelSync(event: {
+        workspaceId: string;
+        channelId: string;
+        feature: string;
+        [key: string]: any;
+    }) {
+        this.server
+            .to(`workspace:${event.workspaceId}`)
+            .emit('channel:sync', event);
+    }
+
+    @OnEvent('channel.config.updated')
+    handleChannelConfig(event: {
+        workspaceId: string;
+        channelId: string;
+        feature: string;
+        [key: string]: any;
+    }) {
+        this.server
+            .to(`workspace:${event.workspaceId}`)
+            .emit('channel:config', event);
+    }
+
+    @OnEvent('automation.triggered')
+    handleAutomationTriggered(event: {
+        workspaceId: string;
+        [key: string]: any;
+    }) {
+        this.server
+            .to(`workspace:${event.workspaceId}`)
+            .emit('automation:triggered', event);
+    }
+
+    @OnEvent('automation.error')
+    handleAutomationError(event: {
+        workspaceId: string;
+        [key: string]: any;
+    }) {
+        this.server
+            .to(`workspace:${event.workspaceId}`)
+            .emit('automation:error', event);
     }
 }

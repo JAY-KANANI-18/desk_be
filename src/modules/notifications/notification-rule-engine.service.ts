@@ -18,13 +18,19 @@ import {
   NotificationDeliveryDecision,
 } from './notification.types';
 import { PrismaService } from '../../prisma/prisma.service';
+import { RealtimeService } from '../../realtime/realtime.service';
 
 @Injectable()
 export class NotificationRuleEngineService {
+  private readonly debugEnabled = ['1', 'true', 'yes', 'on'].includes(
+    String(process.env.NOTIFICATION_DEBUG || '').toLowerCase(),
+  );
+
   constructor(
     private prisma: PrismaService,
     private preferences: NotificationPreferencesService,
     private activity: NotificationActivityService,
+    private realtime: RealtimeService,
   ) {}
 
   async evaluate(
@@ -33,10 +39,13 @@ export class NotificationRuleEngineService {
     type: NotificationType,
     target?: NotificationActorTarget,
   ): Promise<NotificationDeliveryDecision[]> {
-    const [prefs, activity] = await Promise.all([
+    const [prefs, activity, hasLiveSession] = await Promise.all([
       this.preferences.getUserPreferences(userId, workspaceId),
       this.activity.getEffectiveStatus(userId, workspaceId),
+      this.realtime.hasUserConnection(userId),
     ]);
+    const hasForegroundSession =
+      hasLiveSession && activity.status !== UserPresenceStatus.OFFLINE;
 
     const inApp = NOTIFICATION_CENTER_DEFAULTS[type];
     const desktop = DESKTOP_DEFAULTS[type];
@@ -47,28 +56,42 @@ export class NotificationRuleEngineService {
 
     decisions.push({
       channel: NotificationChannel.IN_APP,
-      shouldSend: inApp,
-      reason: inApp ? 'default-enabled' : 'matrix-disabled',
+      shouldSend: inApp && hasForegroundSession,
+      reason: !inApp ? 'matrix-disabled' : hasForegroundSession ? 'active-session' : 'no-active-session',
     });
 
     decisions.push({
       channel: NotificationChannel.DESKTOP,
       shouldSend:
         desktop &&
+        hasForegroundSession &&
         this.matchesContactScope(prefs.desktopScope, type, userId, target),
-      reason: desktop ? 'preference-scope' : 'matrix-disabled',
+      reason:
+        !desktop
+          ? 'matrix-disabled'
+          : hasForegroundSession
+            ? 'preference-scope'
+            : 'no-active-session',
     });
+
+    const shouldSendBackgroundPush =
+      mobile &&
+      !hasForegroundSession &&
+      this.matchesPushRules(activity.status) &&
+      this.matchesContactScope(prefs.mobileScope, type, userId, target);
 
     decisions.push({
       channel: NotificationChannel.MOBILE_PUSH,
-      shouldSend:
-        mobile &&
-        activity.status === UserPresenceStatus.OFFLINE &&
-        this.matchesContactScope(prefs.mobileScope, type, userId, target),
+      shouldSend: shouldSendBackgroundPush,
       reason:
-        activity.status === UserPresenceStatus.OFFLINE
-          ? 'offline-preference-scope'
-          : 'user-active',
+        !mobile
+          ? 'matrix-disabled'
+          : hasForegroundSession
+            ? 'active-session'
+            : activity.status === UserPresenceStatus.DND ||
+                activity.status === UserPresenceStatus.BUSY
+              ? 'manual-presence-suppressed'
+              : 'background-preference-scope',
     });
 
     const emailEligible =
@@ -119,14 +142,29 @@ export class NotificationRuleEngineService {
 
     decisions.push({
       channel: NotificationChannel.SOUND,
-      shouldSend: this.matchesSoundScope(prefs.soundScope, userId, target),
-      reason: 'frontend-active-module-gates-final-playback',
+      shouldSend:
+        hasForegroundSession && this.matchesSoundScope(prefs.soundScope, userId, target),
+      reason: hasForegroundSession ? 'frontend-active-module-gates-final-playback' : 'no-active-session',
     });
 
     decisions.push({
       channel: NotificationChannel.CALL_SOUND,
-      shouldSend: this.matchesCallSoundScope(prefs.callSoundScope, userId, target),
-      reason: 'frontend-active-module-gates-final-playback',
+      shouldSend:
+        hasForegroundSession &&
+        this.matchesCallSoundScope(prefs.callSoundScope, userId, target),
+      reason: hasForegroundSession ? 'frontend-active-module-gates-final-playback' : 'no-active-session',
+    });
+
+    this.logDebug('evaluate', {
+      userId,
+      workspaceId,
+      type,
+      target: target ?? null,
+      preferences: prefs,
+      activity,
+      hasLiveSession,
+      hasForegroundSession,
+      decisions,
     });
 
     return decisions;
@@ -144,6 +182,13 @@ export class NotificationRuleEngineService {
     }
 
     return true;
+  }
+
+  private matchesPushRules(activityStatus: UserPresenceStatus) {
+    return (
+      activityStatus !== UserPresenceStatus.DND &&
+      activityStatus !== UserPresenceStatus.BUSY
+    );
   }
 
   private matchesContactScope(
@@ -212,5 +257,13 @@ export class NotificationRuleEngineService {
       default:
         return false;
     }
+  }
+
+  private logDebug(event: string, details?: unknown) {
+    if (!this.debugEnabled) {
+      return;
+    }
+
+    console.info(`[NotificationDebug][RuleEngine] ${event}`, details ?? '');
   }
 }

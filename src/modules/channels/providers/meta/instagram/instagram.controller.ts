@@ -18,6 +18,7 @@ import { Public, WorkspaceRoute } from 'src/common/auth/route-access.decorator';
 import { WorkspacePermission } from 'src/common/constants/permissions';
 import { MessageProcessingQueueService } from 'src/modules/outbound/message-processing-queue.service';
 import { InstagramOAuthService } from './instagram-oauth.service';
+import { MetaAutomationService } from '../meta-automation.service';
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -66,6 +67,7 @@ export class InstagramController {
     private readonly outbound: OutboundService,
     private readonly processingQueue: MessageProcessingQueueService,
     private readonly oauthService: InstagramOAuthService,
+    private readonly automation: MetaAutomationService,
   ) { }
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -116,6 +118,15 @@ export class InstagramController {
       where: { type: 'instagram', identifier: pageId },
     });
     if (!channel) return { status: 'channel_not_found' };
+
+    const commentEvents = this.automation.extractCommentEvents(body, 'instagram');
+    for (const commentEvent of commentEvents) {
+      await this.automation.processCommentEvent(
+        channel.id,
+        channel.workspaceId,
+        commentEvent,
+      );
+    }
 
     const provider = this.registry.getProviderByType('instagram');
     const parsedList: any = await provider.parseWebhook(body);

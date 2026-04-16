@@ -9,13 +9,13 @@ import {
 export { NotificationChannel, NotificationContactScope, NotificationType };
 
 export const NOTIFICATION_CENTER_DEFAULTS: Record<NotificationType, boolean> = {
-  NEW_INCOMING_MESSAGE: false,
-  CONTACT_ASSIGNED: false,
+  NEW_INCOMING_MESSAGE: true,
+  CONTACT_ASSIGNED: true,
   COMMENT_MENTION: true,
   CUSTOM_NOTIFICATION: true,
   CONTACTS_IMPORT_COMPLETED: true,
   DATA_EXPORT_READY: true,
-  NEW_INCOMING_CALL: false,
+  NEW_INCOMING_CALL: true,
 };
 
 export const DESKTOP_DEFAULTS: Record<NotificationType, boolean> = {

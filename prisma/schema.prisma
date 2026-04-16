@@ -876,11 +876,14 @@ model NotificationDelivery {
   providerMessageId String?
   lastError String?
   lastAttemptAt DateTime?
+  details Json?
+  completedAt DateTime?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   notification Notification @relation(fields: [notificationId], references: [id], onDelete: Cascade)
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  attempts NotificationDeliveryAttempt[]
 
   @@unique([notificationId, channel])
   @@index([userId, channel, status])
@@ -890,19 +893,57 @@ model NotificationDevice {
   id String @id @default(uuid()) @db.Uuid
   userId String @db.Uuid
   workspaceId String? @db.Uuid
+  deviceKey String? @unique
   platform String
   token String @unique
+  authSecret String?
+  p256dhKey String?
+  expirationTime DateTime?
+  pushPermission String?
   deviceName String?
   metadata Json?
   lastSeenAt DateTime?
+  lastSuccessfulDeliveryAt DateTime?
+  lastFailureAt DateTime?
+  failureCount Int @default(0)
+  invalidatedAt DateTime?
   disabledAt DateTime?
+  disabledReason String?
+  lastSubscriptionChangeAt DateTime?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
   workspace Workspace? @relation(fields: [workspaceId], references: [id], onDelete: SetNull)
+  deliveries NotificationDeliveryAttempt[]
 
   @@index([userId, disabledAt])
+  @@index([workspaceId, disabledAt, invalidatedAt])
+}
+
+model NotificationDeliveryAttempt {
+  id String @id @default(uuid()) @db.Uuid
+  notificationDeliveryId String @db.Uuid
+  notificationDeviceId String? @db.Uuid
+  targetIdentifier String
+  status NotificationDeliveryStatus @default(PENDING)
+  attemptCount Int @default(0)
+  providerMessageId String?
+  providerStatusCode Int?
+  lastError String?
+  lastAttemptAt DateTime?
+  deliveredAt DateTime?
+  invalidatedAt DateTime?
+  metadata Json?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  delivery NotificationDelivery @relation(fields: [notificationDeliveryId], references: [id], onDelete: Cascade)
+  device NotificationDevice? @relation(fields: [notificationDeviceId], references: [id], onDelete: SetNull)
+
+  @@unique([notificationDeliveryId, targetIdentifier])
+  @@index([notificationDeviceId, status])
+  @@index([status, lastAttemptAt])
 }
 
 model NotificationEmailHistory {
