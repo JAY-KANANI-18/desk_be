@@ -504,7 +504,9 @@ export class ConversationsService {
         conversationId: dto.conversationId,
         channelId: dto.channelId,
         channelType: channel.type,
-        type: dto.attachments?.length
+        type: dto.metadata?.template
+          ? 'template'
+          : dto.attachments?.length
           ? dto.attachments[0].type
           : 'text',
         direction: 'outgoing',
@@ -1145,13 +1147,13 @@ export class ConversationsService {
       case 'whatsapp':
         if (dto.metadata?.template) {
           return {
-            messaging_product: 'whatsapp',
             to,
-            type: 'template',
             template: {
+              id: dto.metadata.template.id,
+              metaId: dto.metadata.template.metaId,
               name: dto.metadata.template.name,
-              language: { code: dto.metadata.template.language },
-              components: dto.metadata.template.components ?? [],
+              language: dto.metadata.template.language,
+              variables: dto.metadata.template.variables ?? {},
             },
           };
         }
@@ -1175,6 +1177,18 @@ export class ConversationsService {
         };
       case 'instagram':
       case 'messenger':
+        if (dto.metadata?.template) {
+          return {
+            to,
+            template: {
+              id: dto.metadata.template.id,
+              metaId: dto.metadata.template.metaId,
+              name: dto.metadata.template.name,
+              language: dto.metadata.template.language,
+              variables: dto.metadata.template.variables ?? {},
+            },
+          };
+        }
         return {
           recipient: { id: to },
           message: {

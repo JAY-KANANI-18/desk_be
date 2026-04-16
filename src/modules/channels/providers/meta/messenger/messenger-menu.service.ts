@@ -112,6 +112,8 @@ export class MessengerMenuService {
         };
       }),
     }));
+    console.dir({persistentMenu},{depth:null});
+    
 
     await axios.post(
       `${GRAPH}/me/messenger_profile`,
@@ -170,62 +172,62 @@ export class MessengerMenuService {
   // ─── Helpers ───────────────────────────────────────────────────────────────
 
   private async fetchState(
-    channelId: string,
-    workspaceId: string,
-  ): Promise<MessengerMenuState> {
-    const channel: any = await this.findChannel(channelId, workspaceId);
-    const token = channel.credentials?.accessToken;
-    const automationConfig = ((channel.config ?? {}) as any)?.automation ?? {};
-    const menuActions = (automationConfig.menuActions ?? {}) as Record<
-      string,
-      MenuActionConfig
-    >;
+  channelId: string,
+  workspaceId: string,
+): Promise<MessengerMenuState> {
+  const channel: any = await this.findChannel(channelId, workspaceId);
+  const token = channel.credentials?.accessToken;
+  const automationConfig = ((channel.config ?? {}) as any)?.automation ?? {};
+  const menuActions = (automationConfig.menuActions ?? {}) as Record <string,MenuActionConfig>;
 
-    const { data } = await axios.get(`${GRAPH}/me/messenger_profile`, {
-      params: {
-        fields: 'persistent_menu,get_started,greeting',
-        access_token: token,
-      },
-    });
+  const { data } = await axios.get(`${GRAPH}/${channel.identifier}/messenger_profile`, {
+    params: {
+      fields: 'persistent_menu,get_started,greeting',
+      access_token: token,
+    },
+  });
 
-    const persistentMenu = (data.persistent_menu ?? []).map((locale: any) => ({
-      locale: locale.locale ?? 'default',
-      composer_input_disabled: Boolean(locale.composer_input_disabled),
-      call_to_actions: (locale.call_to_actions ?? []).map((item: any) => {
-        const action = item.payload ? menuActions[item.payload] : undefined;
-        return {
-          type: item.type === 'web_url' ? 'web_url' : 'postback',
-          title: item.title,
-          payload: item.payload,
-          url: item.url,
-          actionType:
-            item.type === 'web_url'
-              ? 'url'
-              : action?.kind === 'quick_reply'
-                ? 'quick_reply'
-                : 'payload',
-          replyText: action?.replyText,
-        } satisfies PersistentMenuItem;
-      }),
-    }));
+  // ✅ Correctly unwrap nested response
+  const profile = data?.data?.[0] ?? {};
 
-    const state: MessengerMenuState = {
-      persistentMenu,
-      getStarted: data.get_started?.payload
-        ? { payload: data.get_started.payload }
-        : null,
-      greeting: Array.isArray(data.greeting)
-        ? data.greeting.map((entry: any) => ({
-            locale: entry.locale,
-            text: entry.text,
-          }))
-        : [],
-      syncedAt: new Date().toISOString(),
-    };
+  const persistentMenu = (profile.persistent_menu ?? []).map((locale: any) => ({
+    locale: locale.locale ?? 'default',
+    composer_input_disabled: Boolean(locale.composer_input_disabled),
+    call_to_actions: (locale.call_to_actions ?? []).map((item: any) => {
+      const action = item.payload ? menuActions[item.payload] : undefined;
+      return {
+        type: item.type === 'web_url' ? 'web_url' : 'postback',
+        title: item.title,
+        payload: item.payload,
+        url: item.url,
+        actionType:
+          item.type === 'web_url'
+            ? 'url'
+            : action?.kind === 'quick_reply'
+              ? 'quick_reply'
+              : 'payload',
+        replyText: action?.replyText,
+      } satisfies PersistentMenuItem;
+    }),
+  }));
 
-    await this.cacheState(workspaceId, channelId, state);
-    return state;
-  }
+  const state: MessengerMenuState = {
+    persistentMenu,
+    getStarted: profile.get_started?.payload
+      ? { payload: profile.get_started.payload }
+      : null,
+    greeting: Array.isArray(profile.greeting)
+      ? profile.greeting.map((entry: any) => ({
+          locale: entry.locale,
+          text: entry.text,
+        }))
+      : [],
+    syncedAt: new Date().toISOString(),
+  };
+
+  await this.cacheState(workspaceId, channelId, state);
+  return state;
+}
 
   private async cacheState(
     workspaceId: string,

@@ -112,24 +112,44 @@ export class InstagramController {
     console.dir({ body }, { depth: null });
 
     const pageId = body?.entry?.[0]?.id;
-    if (!pageId) return { status: 'ignored' };
+    this.logger.log(
+      `Instagram webhook received entryId=${pageId ?? 'missing'} entries=${body?.entry?.length ?? 0} fields=${this.describeWebhookFields(body)}`,
+    );
+    if (!pageId) {
+      this.logger.warn('Instagram webhook ignored: missing entry id');
+      return { status: 'ignored' };
+    }
 
     const channel = await this.prisma.channel.findFirst({
       where: { type: 'instagram', identifier: pageId },
     });
-    if (!channel) return { status: 'channel_not_found' };
+    if (!channel) {
+      this.logger.warn(`Instagram webhook channel not found for entryId=${pageId}`);
+      return { status: 'channel_not_found' };
+    }
 
     const commentEvents = this.automation.extractCommentEvents(body, 'instagram');
+    this.logger.log(
+      `Instagram private reply candidates channel=${channel.id} count=${commentEvents.length}`,
+    );
+    let privateRepliesProcessed = 0;
     for (const commentEvent of commentEvents) {
-      await this.automation.processCommentEvent(
+      const processed = await this.automation.processCommentEvent(
         channel.id,
         channel.workspaceId,
         commentEvent,
+      );
+      if (processed) privateRepliesProcessed++;
+      this.logger.log(
+        `Instagram private reply result channel=${channel.id} comment=${commentEvent.commentId} post=${commentEvent.postId ?? 'none'} processed=${processed}`,
       );
     }
 
     const provider = this.registry.getProviderByType('instagram');
     const parsedList: any = await provider.parseWebhook(body);
+    this.logger.log(
+      `Instagram webhook parsed channel=${channel.id} messages=${parsedList.length} privateRepliesProcessed=${privateRepliesProcessed}`,
+    );
 
     for (const parsed of parsedList) {
 
@@ -199,7 +219,37 @@ export class InstagramController {
       });
     }
 
-    return { status: 'ok' };
+    return {
+      status: 'ok',
+      automation: {
+        commentEvents: commentEvents.length,
+        privateRepliesProcessed,
+      },
+      parsed: parsedList.length,
+    };
+  }
+
+  private describeWebhookFields(body: any) {
+    return (body?.entry ?? [])
+      .flatMap((entry: any) => [
+        entry?.field,
+        ...(entry?.changes ?? []).map((change: any) => change?.field),
+        ...(entry?.messaging ?? []).map((event: any) =>
+          event?.message?.reply_to?.story
+            ? 'story_reply'
+            : event?.postback
+              ? 'postback'
+              : event?.message
+                ? 'message'
+                : event?.delivery
+                  ? 'delivery'
+                  : event?.read
+                    ? 'read'
+                    : 'unknown',
+        ),
+      ])
+      .filter(Boolean)
+      .join(',');
   }
 
   // Resolve channel by calling /me for each instagram channel

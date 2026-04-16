@@ -8,6 +8,10 @@ import { validateTemplateVariables, buildTemplateComponents } from '../channels/
 import { SendValidator, ProviderErrorNormaliser } from './send-validator';
 import { MediaService } from '../media/media.service';
 import { ChannelAdaptersRegistry } from '../channel-adapters/channel-adapters.registry';
+import {
+    MESSENGER_TEMPLATE_CATALOG,
+    MessengerTemplateCatalogItem,
+} from '../channels/providers/meta/messenger/messenger-templates.service';
 
 export interface SendAttachmentDto {
     type: string;
@@ -28,7 +32,15 @@ export interface SendMessageDto {
     /** Links outbound rows to a broadcast batch for delivery analytics */
     broadcastRunId?: string;
     metadata?: {
-        template?: { name: string; language: string; variables?: Record<string, string> };
+        template?: {
+            id?: string;
+            metaId?: string;
+            name: string;
+            language: string;
+            variables?: Record<string, string> | string[];
+            components?: any[];
+            [key: string]: any;
+        };
         htmlBody?: string;
         quickReplies?: Array<{ title: string; payload: string }>;
         [key: string]: any;
@@ -238,7 +250,7 @@ export class OutboundService {
                     templateMeta: params.metadata.template,
                     workspaceId,
                 });
-                await this.finalise(message.id, result?.id, conversation.id, workspaceId, channel.id);
+                await this.finalise(message.id, result?.externalId ?? result?.id, conversation.id, workspaceId, channel.id);
                 await this.updateContactChannelWindowForOutbound({
                     contactChannelId: contactChannel?.id,
                     channelType: channel.type,
@@ -413,7 +425,21 @@ export class OutboundService {
         }
 
         try {
-            const result: any = await provider.sendMessage(channel, payload);
+            const templateMeta = (message.metadata as Record<string, any> | null)?.template;
+            const templateRecipient = queueEntry.to ?? payload.to ?? payload.recipient?.id ?? templateMeta?.to;
+            if (templateMeta && !templateRecipient) {
+                throw new BadRequestException('Missing template recipient');
+            }
+            const result: any = templateMeta
+                ? await this.sendTemplate({
+                    channel,
+                    provider,
+                    conversation: message.conversation,
+                    to: templateRecipient,
+                    templateMeta,
+                    workspaceId: message.workspaceId,
+                })
+                : await provider.sendMessage(channel, payload);
             const metadata = {
                 ...((message.metadata as Record<string, any>) ?? {}),
                 ...(channel.type === 'email' && result?.id ? { messageId: result.id } : {}),
@@ -444,6 +470,21 @@ export class OutboundService {
                     },
                 }),
             ]);
+
+            const contactChannel = await this.prisma.contactChannel.findFirst({
+                where: {
+                    contactId: message.conversation.contactId,
+                    channelId: channel.id,
+                },
+                select: { id: true },
+            });
+
+            await this.updateContactChannelWindowForOutbound({
+                contactChannelId: contactChannel?.id,
+                channelType: channel.type,
+                eventTimestamp: Date.now(),
+                metadata,
+            });
 
             this.events.emit('message.outbound', {
                 workspaceId: message.workspaceId,
@@ -501,6 +542,20 @@ export class OutboundService {
         const { channel, provider, conversation, to, templateMeta, workspaceId } = opts;
         console.log({ templateMeta });
 
+        if (channel.type === 'messenger') {
+            return this.sendMessengerTemplate({
+                channel,
+                provider,
+                to,
+                templateMeta,
+                workspaceId,
+            });
+        }
+
+        if (channel.type !== 'whatsapp') {
+            throw new BadRequestException(`Templates are not supported for ${channel.type}`);
+        }
+
         const template = await this.prisma.whatsAppTemplate.findFirst({
             where: {
                 workspaceId,
@@ -517,23 +572,11 @@ export class OutboundService {
             );
         }
 
-        const variables = templateMeta.variables || [];
+        const variables = this.normaliseTemplateVariables(templateMeta.variables);
 
         validateTemplateVariables(template.components as any[], variables);
 
-        let components: any[] | undefined;
-
-        if (variables.length > 0) {
-            components = [
-                {
-                    type: "body",
-                    parameters: variables.map((v: string) => ({
-                        type: "text",
-                        text: v,
-                    })),
-                },
-            ];
-        }
+        const components = buildTemplateComponents(template.components as any[], variables);
 
         const payload: any = {
             messaging_product: "whatsapp",
@@ -545,11 +588,65 @@ export class OutboundService {
             },
         };
 
-        if (components) {
+        if (components.length > 0) {
             payload.template.components = components;
         }
 
         return provider.sendMessage(channel, payload);
+    }
+
+    private async sendMessengerTemplate(opts: {
+        channel: any;
+        provider: any;
+        to: string;
+        templateMeta: any;
+        workspaceId: string;
+    }) {
+        const { channel, provider, to, templateMeta, workspaceId } = opts;
+        const templateId = templateMeta.metaId ?? templateMeta.id ?? templateMeta.name;
+        const templateLookup: any[] = [
+            { metaId: templateId },
+            { name: templateId },
+        ];
+
+        if (this.isUuid(templateId)) {
+            templateLookup.unshift({ id: templateId });
+        }
+
+        const row = await this.prisma.metaPageTemplate.findFirst({
+            where: {
+                workspaceId,
+                channelId: channel.id,
+                channelType: 'messenger',
+                type: 'messenger_template',
+                OR: templateLookup,
+            },
+        });
+
+        const template =
+            (row?.payload as unknown as MessengerTemplateCatalogItem | undefined) ??
+            MESSENGER_TEMPLATE_CATALOG.find((item) =>
+                item.metaId === templateId || item.name === templateId,
+            );
+
+        if (!template) {
+            throw new BadRequestException(
+                `Messenger template "${templateId}" not found`,
+            );
+        }
+
+        const message = this.normaliseMessengerTemplateMessage(
+            this.renderTemplateValue(
+                template.payload,
+                this.normaliseTemplateVariables(templateMeta.variables),
+            ),
+            template,
+        );
+
+        return provider.sendMessage(channel, {
+            recipient: { id: to },
+            message,
+        });
     }
 
     // ─── Attachment resolution ─────────────────────────────────────────────────
@@ -630,7 +727,23 @@ export class OutboundService {
         const base = { messaging_product: 'whatsapp', to: dto.to };
 
         if (dto.template) {
-            return { ...base, type: 'template', template: { name: dto.template.name, language: { code: dto.template.language }, components: dto.template.components ?? [] } };
+            const language = typeof dto.template.language === 'string'
+                ? dto.template.language
+                : dto.template.language?.code;
+            const rawComponents = Array.isArray(dto.template.components) ? dto.template.components : [];
+            const sendReadyComponents = rawComponents.filter((component: any) =>
+                Array.isArray(component?.parameters) || component?.sub_type,
+            );
+            const definitionComponents = rawComponents.filter((component: any) =>
+                !Array.isArray(component?.parameters) && !component?.sub_type,
+            );
+            const components = [
+                ...sendReadyComponents,
+                ...buildTemplateComponents(definitionComponents, this.normaliseTemplateVariables(dto.template.variables)),
+            ];
+            const template: any = { name: dto.template.name, language: { code: language } };
+            if (components.length > 0) template.components = components;
+            return { ...base, type: 'template', template };
         }
         if (dto.attachments?.length) {
             const att = dto.attachments[0];
@@ -772,6 +885,79 @@ export class OutboundService {
         if (mimeType.startsWith('video/')) return 'video';
         if (mimeType.startsWith('audio/')) return 'audio';
         return 'document';
+    }
+
+    private normaliseTemplateVariables(value: any): Record<string, string> {
+        if (!value) return {};
+
+        if (Array.isArray(value)) {
+            return value.reduce<Record<string, string>>((acc, item, index) => {
+                acc[String(index + 1)] = String(item ?? '');
+                return acc;
+            }, {});
+        }
+
+        if (typeof value === 'object') {
+            return Object.entries(value).reduce<Record<string, string>>((acc, [key, item]) => {
+                acc[key] = String(item ?? '');
+                return acc;
+            }, {});
+        }
+
+        return {};
+    }
+
+    private normaliseMessengerTemplateMessage(message: any, template: MessengerTemplateCatalogItem): any {
+        const attachment = message?.attachment;
+        const payload = attachment?.payload;
+
+        if (attachment?.type !== 'template' || payload?.template_type !== 'media') {
+            return message;
+        }
+
+        const element = payload.elements?.[0] ?? {};
+        if (element.attachment_id || this.isFacebookMediaUrl(element.url)) {
+            return message;
+        }
+
+        const header = template.components?.find((component: any) => component?.type === 'HEADER');
+        const body = template.components?.find((component: any) => component?.type === 'BODY');
+
+        return {
+            attachment: {
+                type: 'template',
+                payload: {
+                    template_type: 'generic',
+                    elements: [
+                        {
+                            title: header?.text ?? template.name,
+                            subtitle: body?.text ?? template.description,
+                            ...(element.url ? { image_url: element.url } : {}),
+                            ...(element.buttons?.length ? { buttons: element.buttons } : {}),
+                        },
+                    ],
+                },
+            },
+        };
+    }
+
+    private isFacebookMediaUrl(value: unknown): value is string {
+        if (typeof value !== 'string') return false;
+
+        try {
+            const hostname = new URL(value).hostname.toLowerCase();
+            return hostname === 'facebook.com' ||
+                hostname.endsWith('.facebook.com') ||
+                hostname === 'fbcdn.net' ||
+                hostname.endsWith('.fbcdn.net');
+        } catch {
+            return false;
+        }
+    }
+
+    private isUuid(value: unknown): value is string {
+        return typeof value === 'string' &&
+            /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
     }
 
     private async resolveReplyTarget(replyToMessageId: string, conversationId: string) {
@@ -1272,6 +1458,30 @@ export class OutboundService {
         }
 
         return value.replace(/{{\s*([a-zA-Z0-9_]+)\s*}}/g, (_match, key: string) => context[key] ?? '');
+    }
+
+    private renderTemplateValue(value: any, variables: Record<string, string>): any {
+        if (typeof value === 'string') {
+            return value.replace(
+                /{{\s*([a-zA-Z0-9_]+)\s*}}/g,
+                (_match, key: string) => variables[key] ?? '',
+            );
+        }
+
+        if (Array.isArray(value)) {
+            return value.map((entry) => this.renderTemplateValue(entry, variables));
+        }
+
+        if (value && typeof value === 'object') {
+            return Object.fromEntries(
+                Object.entries(value).map(([key, entry]) => [
+                    key,
+                    this.renderTemplateValue(entry, variables),
+                ]),
+            );
+        }
+
+        return value;
     }
 
     private async ensureSendableContactChannel(opts: {

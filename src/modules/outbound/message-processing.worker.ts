@@ -62,6 +62,8 @@ export class MessageProcessingWorker
     );
 
     this.worker.on('failed', (job, err) => {
+      console.dir({err});
+      
       this.logger.error(
         `message-processing job failed kind=${job?.name} id=${job?.id}: ${err.message}`,
       );

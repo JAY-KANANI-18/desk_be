@@ -32,6 +32,8 @@ import { InstagramIcebreakersController } from './providers/meta/instagram/insta
 import { MessengerController } from './providers/meta/messenger/messenger.controller';
 import { MessengerMenuService } from './providers/meta/messenger/messenger-menu.service';
 import { MessengerMenuController } from './providers/meta/messenger/messenger-menu.controller';
+import { MessengerTemplatesService } from './providers/meta/messenger/messenger-templates.service';
+import { MessengerTemplatesController } from './providers/meta/messenger/messenger-templates.controller';
 import { MetaAutomationService } from './providers/meta/meta-automation.service';
 import { MetaAutomationController } from './providers/meta/meta-automation.controller';
 
@@ -98,6 +100,7 @@ import { WorkflowsModule } from '../workflows/workflows.module';
           
         InstagramIcebreakersService,
         MessengerMenuService,
+        MessengerTemplatesService,
         MetaAutomationService,
 
         // Mailgun
@@ -125,6 +128,7 @@ import { WorkflowsModule } from '../workflows/workflows.module';
         WhatsAppTemplatesController, // GET/POST  channels/:channelId/whatsapp/templates
         InstagramIcebreakersController, // GET/POST channels/:channelId/instagram/icebreakers
         MessengerMenuController,     // GET/POST  channels/:channelId/messenger/menu
+        MessengerTemplatesController, // GET/POST channels/:channelId/messenger/templates
         MetaAutomationController,
         WebchatManageController,      // POST/PATCH channels/:channelId/webchat
         WebchatController

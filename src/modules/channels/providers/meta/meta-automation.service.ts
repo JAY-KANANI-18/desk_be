@@ -158,13 +158,13 @@ export class MetaAutomationService {
       }));
     }
 
-    const { data } = await axios.get(`${FB_GRAPH}/${channel.identifier}/feed`, {
-      params: {
-        fields: 'id,message,story,permalink_url,full_picture,created_time',
-        access_token: token,
-        limit: 25,
-      },
-    });
+   const { data } = await axios.get(`${FB_GRAPH}/${channel.identifier}/posts`, {
+  params: {
+    fields: 'id,message,story,permalink_url,full_picture,created_time', // ✅ uncommented
+    access_token: token, // ✅ page token instead of user token
+    limit: 25,
+  },
+});
 
     return (data.data ?? []).map((item: any) => ({
       id: item.id,
@@ -229,7 +229,21 @@ export class MetaAutomationService {
     const channel = await this.findChannel(channelId, workspaceId);
     const config = this.normalisePrivateReplies(this.getAutomationConfig(channel).privateReplies);
 
-    if (!config.enabled || !config.message) {
+    this.logger.log(
+      `Private reply event channel=${channel.id} type=${channel.type} comment=${payload.commentId} post=${payload.postId ?? 'none'} commenter=${payload.commenterId ?? 'unknown'} enabled=${config.enabled} scope=${config.scope} hasMessage=${Boolean(config.message)}`,
+    );
+
+    if (!config.enabled) {
+      this.logger.warn(
+        `Private reply skipped reason=disabled channel=${channel.id} comment=${payload.commentId}`,
+      );
+      return false;
+    }
+
+    if (!config.message) {
+      this.logger.warn(
+        `Private reply skipped reason=empty_message channel=${channel.id} comment=${payload.commentId}`,
+      );
       return false;
     }
 
@@ -238,18 +252,27 @@ export class MetaAutomationService {
       config.selectedPostIds.length > 0 &&
       (!payload.postId || !config.selectedPostIds.includes(payload.postId))
     ) {
+      this.logger.warn(
+        `Private reply skipped reason=post_not_selected channel=${channel.id} comment=${payload.commentId} post=${payload.postId ?? 'none'} selected=${config.selectedPostIds.join(',')}`,
+      );
       return false;
     }
 
     const dedupeKey = `meta:auto:comment:${channel.id}:${payload.commentId}`;
     const accepted = await this.redis.client.set(dedupeKey, '1', 'EX', 60 * 60 * 24, 'NX');
     if (!accepted) {
+      this.logger.warn(
+        `Private reply skipped reason=duplicate channel=${channel.id} comment=${payload.commentId}`,
+      );
       return false;
     }
 
     const recipientKey = payload.commenterId ?? payload.commentId;
     const withinLimit = await this.allowRateLimitedSend(channel.id, recipientKey);
     if (!withinLimit) {
+      this.logger.warn(
+        `Private reply skipped reason=rate_limited channel=${channel.id} recipient=${recipientKey}`,
+      );
       await this.emitAutomationError(channel.workspaceId, {
         channelId: channel.id,
         triggerType: 'comment',
@@ -266,6 +289,9 @@ export class MetaAutomationService {
     });
 
     try {
+      this.logger.log(
+        `Private reply sending channel=${channel.id} type=${channel.type} comment=${payload.commentId} textLength=${message.length}`,
+      );
       if (channel.type === 'instagram') {
         await this.sendInstagramCommentReply(channel, payload.commentId, message);
       } else {
@@ -288,6 +314,10 @@ export class MetaAutomationService {
 
       return true;
     } catch (error: any) {
+      this.logger.error(
+        `Private reply failed channel=${channel.id} type=${channel.type} comment=${payload.commentId}: ${this.getErrorMessage(error)}`,
+        this.getProviderErrorDebug(error),
+      );
       await this.emitAutomationError(channel.workspaceId, {
         channelId: channel.id,
         triggerType: 'comment',
@@ -326,6 +356,16 @@ export class MetaAutomationService {
 
     const automation = this.getAutomationConfig(message.channel);
     const metadata = (message.metadata ?? {}) as Record<string, any>;
+    const hasStoryReply = Boolean(metadata.storyReply);
+    const menuPayload =
+      metadata.postback?.payload ??
+      metadata.quickReply?.payload ??
+      metadata.interactive?.payload ??
+      null;
+
+    this.logger.log(
+      `Inbound automation check channel=${message.channelId} type=${message.channel.type} message=${message.id} storyReply=${hasStoryReply} menuPayload=${menuPayload ?? 'none'}`,
+    );
 
     await this.handleStoryReplyTrigger(message, automation, metadata);
     await this.handleMenuClickTrigger(message, automation, metadata);
@@ -392,13 +432,34 @@ export class MetaAutomationService {
 
     const storyReply = metadata.storyReply;
     const config = this.normaliseStoryReplies(automation.storyReplies);
-    if (!storyReply || !config.enabled || !config.message) {
+    if (!storyReply) {
+      return;
+    }
+
+    this.logger.log(
+      `Story reply event channel=${message.channelId} message=${message.id} story=${storyReply.storyId ?? storyReply.storyUrl ?? 'unknown'} enabled=${config.enabled} hasMessage=${Boolean(config.message)}`,
+    );
+
+    if (!config.enabled) {
+      this.logger.warn(
+        `Story reply skipped reason=disabled channel=${message.channelId} message=${message.id}`,
+      );
+      return;
+    }
+
+    if (!config.message) {
+      this.logger.warn(
+        `Story reply skipped reason=empty_message channel=${message.channelId} message=${message.id}`,
+      );
       return;
     }
 
     const dedupeKey = `meta:auto:story:${message.channelId}:${message.channelMsgId ?? message.id}`;
     const accepted = await this.redis.client.set(dedupeKey, '1', 'EX', 60 * 60 * 24, 'NX');
     if (!accepted) {
+      this.logger.warn(
+        `Story reply skipped reason=duplicate channel=${message.channelId} message=${message.id}`,
+      );
       return;
     }
 
@@ -427,6 +488,9 @@ export class MetaAutomationService {
           },
         },
       });
+      this.logger.log(
+        `Story reply sent channel=${message.channelId} message=${message.id} textLength=${text.length}`,
+      );
 
       await this.activity.record({
         workspaceId: message.workspaceId,
@@ -462,6 +526,10 @@ export class MetaAutomationService {
         story: storyReply,
       });
     } catch (error: any) {
+      this.logger.error(
+        `Story reply failed channel=${message.channelId} message=${message.id}: ${this.getErrorMessage(error)}`,
+        this.getProviderErrorDebug(error),
+      );
       await this.emitAutomationError(message.workspaceId, {
         channelId: message.channelId,
         conversationId: message.conversationId,
@@ -571,30 +639,58 @@ export class MetaAutomationService {
       (channel.config as any)?.igUserId ??
       (channel.credentials as any)?.igUserId ??
       channel.identifier;
+    const url = `${IG_GRAPH}/${senderId}/messages`;
 
-    await axios.post(
-      `${IG_GRAPH}/${senderId}/messages`,
+    this.logger.log(
+      `Instagram private reply API request sender=${senderId} comment=${commentId} textLength=${text.length}`,
+    );
+    const { data } = await axios.post(
+      url,
       {
         recipient: { comment_id: commentId },
         message: { text },
+              messaging_type: 'RESPONSE',
+
       },
       {
         params: { access_token: token },
       },
     );
-  }
-
-  private async sendMessengerCommentReply(channel: any, commentId: string, text: string) {
-    const token = this.getAccessToken(channel);
-
-    await axios.post(
-      `${FB_GRAPH}/${commentId}/private_replies`,
-      { message: text },
-      {
-        params: { access_token: token },
-      },
+    this.logger.log(
+      `Instagram private reply API accepted sender=${senderId} comment=${commentId} response=${this.safeJson(data)}`,
     );
+    return data;
   }
+
+ private async sendMessengerCommentReply(channel: any, commentId: string, text: string) {
+  const token = this.getAccessToken(channel);
+  const pageId = channel.identifier;
+
+  // ✅ Use Send API with recipient.comment_id — NOT /private_replies endpoint
+  const url = `${FB_GRAPH}/${pageId}/messages`;
+
+  this.logger.log(
+    `Messenger private reply API request page=${pageId} comment=${commentId} textLength=${text.length}`,
+  );
+
+  const { data } = await axios.post(
+    url,
+    {
+      recipient: { comment_id: commentId }, // ✅ full comment_id here
+      message: { text },
+      messaging_type: 'RESPONSE',
+    },
+    {
+      params: { access_token: token },
+    },
+  );
+
+  this.logger.log(
+    `Messenger private reply API accepted page=${pageId} comment=${commentId} response=${this.safeJson(data)}`,
+  );
+
+  return data;
+}
 
   private getAutomationConfig(channel: any): ChannelAutomationConfig {
     const config = (channel.config ?? {}) as Record<string, any>;
@@ -721,6 +817,26 @@ export class MetaAutomationService {
       error?.message ??
       'Automation request failed'
     );
+  }
+
+  private getProviderErrorDebug(error: any) {
+    const metaError = error?.response?.data?.error;
+    return this.safeJson({
+      status: error?.response?.status ?? null,
+      code: metaError?.code ?? null,
+      subcode: metaError?.error_subcode ?? null,
+      type: metaError?.type ?? null,
+      message: metaError?.message ?? error?.message ?? null,
+      fbtraceId: metaError?.fbtrace_id ?? null,
+    });
+  }
+
+  private safeJson(value: any) {
+    try {
+      return JSON.stringify(value);
+    } catch {
+      return String(value);
+    }
   }
 
   private async emitAutomationError(

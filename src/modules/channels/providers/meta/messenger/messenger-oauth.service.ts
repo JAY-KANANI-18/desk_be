@@ -10,6 +10,28 @@ const FB_API = 'https://graph.facebook.com';
 const FB_API_VERSION = 'v22.0';
 const FB_BASE = `${FB_API}/${FB_API_VERSION}`;
 
+export const MESSENGER_OAUTH_SCOPES = [
+  'pages_manage_metadata',//
+  'pages_read_engagement',
+  'business_management',
+  'pages_messaging',
+  'public_profile',
+  'email',
+  // 'pages_messaging_phone_number',
+  'pages_utility_messaging',
+];
+
+export const MESSENGER_WEBHOOK_FIELDS = [
+  'messages',
+  'message_echoes',
+  'messaging_postbacks',
+  'messaging_optins',
+  'message_deliveries',
+  'message_reads',
+  'messaging_referrals',
+  'feed',
+];
+
 @Injectable()
 export class MessengerOAuthService {
   private readonly logger = new Logger(MessengerOAuthService.name);
@@ -38,13 +60,7 @@ export class MessengerOAuthService {
       client_id: process.env.MESSENGER_APP_ID!,
       redirect_uri: callbackUri,
       response_type: 'code',
-      scope: [
-        'pages_show_list',
-        'pages_manage_metadata',
-        'pages_read_engagement',
-        'pages_messaging',
-        'public_profile',
-      ].join(','),
+      scope: MESSENGER_OAUTH_SCOPES.join(','),
       state: oauthState,
     });
 
@@ -205,6 +221,7 @@ export class MessengerOAuthService {
           pageCategory: page.category,
           pagePicture: pageInfo?.picture?.data?.url,
           tokenNeverExpires: true,
+          subscribedFields: MESSENGER_WEBHOOK_FIELDS,
         },
       };
 
@@ -302,14 +319,19 @@ export class MessengerOAuthService {
       {
         subscribed_fields: [
           'messages',
+          'message_echoes',
           'messaging_postbacks',
           'messaging_optins',
           'message_deliveries',
           'message_reads',
           'messaging_referrals',
+  'feed',       // 👈 ADD THIS ALSO (important)
         ],
       },
       { params: { access_token: pageToken } },
+    );
+    this.logger.log(
+      `Messenger page ${pageId} subscribed fields=${MESSENGER_WEBHOOK_FIELDS.join(',')}`,
     );
   }
 

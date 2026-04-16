@@ -125,6 +125,11 @@ export class MetaProvider implements ChannelProvider {
     const msg = event.message;
     if (!msg) return null;
     const story = msg.reply_to?.story ?? null;
+    if (story) {
+      this.logger.log(
+        `Meta story reply parsed sender=${senderId} recipient=${recipientId} mid=${msg.mid ?? 'missing'} story=${story.id ?? story.story_id ?? story.url ?? 'unknown'}`,
+      );
+    }
     const storyReplyMeta = story
       ? {
           storyReply: {

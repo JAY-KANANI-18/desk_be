@@ -17,7 +17,10 @@ import { ChannelAdaptersRegistry } from 'src/modules/channel-adapters/channel-ad
 import { Public, WorkspaceRoute } from 'src/common/auth/route-access.decorator';
 import { WorkspacePermission } from 'src/common/constants/permissions';
 import { MessageProcessingQueueService } from 'src/modules/outbound/message-processing-queue.service';
-import { MessengerOAuthService } from './messenger-oauth.service';
+import {
+    MESSENGER_WEBHOOK_FIELDS,
+    MessengerOAuthService,
+} from './messenger-oauth.service';
 import { MetaAutomationService } from '../meta-automation.service';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -125,25 +128,47 @@ export class MessengerController {
         }
 
         const body = req.body;
+        console.dir({body},{depth:null});
+        
         const pageId = body?.entry?.[0]?.id;
-        if (!pageId) return { status: 'ignored' };
+        this.logger.log(
+            `Messenger webhook received pageId=${pageId ?? 'missing'} entries=${body?.entry?.length ?? 0} fields=${this.describeWebhookFields(body)}`,
+        );
+        if (!pageId) {
+            this.logger.warn('Messenger webhook ignored: missing page id');
+            return { status: 'ignored' };
+        }
 
         const channel = await this.prisma.channel.findFirst({
             where: { type: 'messenger', identifier: pageId },
         });
-        if (!channel) return { status: 'channel_not_found' };
+        if (!channel) {
+            this.logger.warn(`Messenger webhook channel not found for pageId=${pageId}`);
+            return { status: 'channel_not_found' };
+        }
 
         const commentEvents = this.automation.extractCommentEvents(body, 'messenger');
+        this.logger.log(
+            `Messenger private reply candidates channel=${channel.id} count=${commentEvents.length}`,
+        );
+        let privateRepliesProcessed = 0;
         for (const commentEvent of commentEvents) {
-            await this.automation.processCommentEvent(
+            const processed = await this.automation.processCommentEvent(
                 channel.id,
                 channel.workspaceId,
                 commentEvent,
+            );
+            if (processed) privateRepliesProcessed++;
+            this.logger.log(
+                `Messenger private reply result channel=${channel.id} comment=${commentEvent.commentId} post=${commentEvent.postId ?? 'none'} processed=${processed}`,
             );
         }
 
         const provider = this.registry.getProviderByType('messenger');
         const parsedList: any[] = await provider.parseWebhook(body);
+        this.logger.log(
+            `Messenger webhook parsed channel=${channel.id} messages=${parsedList.length} privateRepliesProcessed=${privateRepliesProcessed}`,
+        );
 
         for (const parsed of parsedList) {
             // ── Outgoing echo ──
@@ -214,7 +239,37 @@ export class MessengerController {
             });
         }
 
-        return { status: 'ok' };
+        return {
+            status: 'ok',
+            automation: {
+                commentEvents: commentEvents.length,
+                privateRepliesProcessed,
+            },
+            parsed: parsedList.length,
+        };
+    }
+
+    private describeWebhookFields(body: any) {
+        return (body?.entry ?? [])
+            .flatMap((entry: any) => [
+                entry?.field,
+                ...(entry?.changes ?? []).map((change: any) => change?.field),
+                ...(entry?.messaging ?? []).map((event: any) =>
+                    event?.message?.reply_to?.story
+                        ? 'story_reply'
+                        : event?.postback
+                            ? 'postback'
+                            : event?.message
+                                ? 'message'
+                                : event?.delivery
+                                    ? 'delivery'
+                                    : event?.read
+                                        ? 'read'
+                                        : 'unknown',
+                ),
+            ])
+            .filter(Boolean)
+            .join(',');
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -346,6 +401,7 @@ export class MessengerController {
                             pageCategory: page.category,
                             pagePicture: pageInfo?.picture?.data?.url,
                             tokenNeverExpires: true,
+                            subscribedFields: MESSENGER_WEBHOOK_FIELDS,
                         },
                     },
                     create: {
@@ -360,6 +416,7 @@ export class MessengerController {
                             pageCategory: page.category,
                             pagePicture: pageInfo?.picture?.data?.url,
                             tokenNeverExpires: true,
+                            subscribedFields: MESSENGER_WEBHOOK_FIELDS,
                         },
                     },
                 });
@@ -412,8 +469,39 @@ export class MessengerController {
     
     async getChannelInfo(@Param('channelId') channelId: string) {
         const channel: any = await this.findChannelOrThrow(channelId);
-        const info = await this.getPageInfo(channel.identifier, channel.credentials.accessToken);
-        return { success: true, data: info };
+        const [info, subscription] = await Promise.all([
+            this.getPageInfo(channel.identifier, channel.credentials.accessToken),
+            this.getPageWebhookSubscription(channel.identifier, channel.credentials.accessToken),
+        ]);
+        return { success: true, data: info, subscription };
+    }
+
+    @Post('channel/:channelId/webhook/resubscribe')
+      @WorkspaceRoute(WorkspacePermission.CHANNELS_MANAGE)
+
+    async resubscribeChannelWebhook(@Param('channelId') channelId: string) {
+        const channel: any = await this.findChannelOrThrow(channelId);
+        await this.subscribePageToWebhook(channel.identifier, channel.credentials.accessToken);
+        const subscription = await this.getPageWebhookSubscription(
+            channel.identifier,
+            channel.credentials.accessToken,
+        );
+
+        await this.prisma.channel.update({
+            where: { id: channel.id },
+            data: {
+                config: {
+                    ...((channel.config ?? {}) as Record<string, any>),
+                    subscribedFields: MESSENGER_WEBHOOK_FIELDS,
+                },
+            },
+        });
+
+        return {
+            success: true,
+            subscribedFields: MESSENGER_WEBHOOK_FIELDS,
+            subscription,
+        };
     }
 
 
@@ -575,18 +663,30 @@ export class MessengerController {
         await axios.post(
             `${FB_BASE}/${pageId}/subscribed_apps`,
             {
-                subscribed_fields: [
-                    'messages',
-                    'messaging_postbacks',
-                    'messaging_optins',
-                    'message_deliveries',
-                    'message_reads',
-                    'messaging_referrals',
-                ],
+                subscribed_fields: MESSENGER_WEBHOOK_FIELDS,
             },
             { params: { access_token: pageToken } },
         );
-        this.logger.log(`Page ${pageId} subscribed to webhook`);
+        this.logger.log(
+            `Page ${pageId} subscribed to webhook fields=${MESSENGER_WEBHOOK_FIELDS.join(',')}`,
+        );
+    }
+
+    private async getPageWebhookSubscription(pageId: string, pageToken: string) {
+        try {
+            const { data } = await axios.get(`${FB_BASE}/${pageId}/subscribed_apps`, {
+                params: {
+                    fields: 'id,name,subscribed_fields',
+                    access_token: pageToken,
+                },
+            });
+            return data;
+        } catch (error: any) {
+            this.logger.warn(
+                `Failed to fetch webhook subscription page=${pageId}: ${error?.response?.data?.error?.message ?? error.message}`,
+            );
+            return null;
+        }
     }
 
     private getRequestOrigin(req: any) {
