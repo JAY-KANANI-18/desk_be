@@ -3,7 +3,6 @@
 import { Body, Controller, Get, Patch, Post, Req, UploadedFile, UseGuards, UseInterceptors } from '@nestjs/common';
 import { UsersService } from './users.service';
 import { CurrentUser } from 'src/common/decorators/current-user.decorator';
-import { JwtGuard } from 'src/common/guards/jwt.guard';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { InviteUserDto } from './dto/invite-user.dto';
 import { FileInterceptor } from '@nestjs/platform-express';

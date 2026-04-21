@@ -1,7 +1,5 @@
 import { Module } from '@nestjs/common';
 import { OutboundService } from './outbound.service';
-import { ChannelsModule } from '../channels/channels.module';
-import { PrismaService } from '../../prisma/prisma.service';
 import { MediaService } from '../media/media.service';
 import { MediaModule } from '../media/media.module';
 import { ChannelAdaptersModule } from '../channel-adapters/channel-adapters.module';
@@ -12,7 +10,6 @@ import { MessageProcessingModule } from './message-processing.module';
   imports: [MediaModule, ChannelAdaptersModule, MessageProcessingModule],
   providers: [
     OutboundService,
-    PrismaService,
     MediaService,
   ],
   exports: [OutboundService],

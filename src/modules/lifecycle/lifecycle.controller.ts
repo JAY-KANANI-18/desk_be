@@ -14,7 +14,6 @@ import {
 } from '@nestjs/common';
 import { LifecycleService } from './lifecycle.service';
 import { CreateLifecycleStageDto, ReorderStagesDto, ToggleVisibilityDto, UpdateLifecycleStageDto } from './lifecycle.helper';
-import { JwtGuard } from 'src/common/guards/jwt.guard';
 import { JwtOnly, WorkspaceRoute } from 'src/common/auth/route-access.decorator';
 import { WorkspacePermission } from 'src/common/constants/permissions';
 

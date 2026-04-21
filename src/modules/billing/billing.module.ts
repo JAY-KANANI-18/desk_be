@@ -5,10 +5,11 @@ import { BillingAccessService } from './billing-access.service';
 import { RazorpayService } from './providers/razorpay.service';
 import { StripeService } from './providers/stripe.service';
 import { UsageService } from './usage/usage.service';
-import { PrismaService } from '../../prisma/prisma.service';
+import { PrismaModule } from '../../prisma/prisma.module';
 import { BillingWebhookController } from './billing-webhook.controller';
 
 @Module({
+  imports: [PrismaModule],
   controllers: [BillingController,BillingWebhookController],
   providers: [
     BillingService,
@@ -16,7 +17,6 @@ import { BillingWebhookController } from './billing-webhook.controller';
     RazorpayService,
     StripeService,
     UsageService,
-    PrismaService,
   ],
   exports: [BillingService, BillingAccessService, UsageService],
 })

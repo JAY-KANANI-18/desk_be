@@ -1,10 +1,22 @@
 import { createRemoteJWKSet, jwtVerify } from 'jose';
 
-const SUPABASE_JWKS = createRemoteJWKSet(
-    new URL(process.env.SUPABASE_JWKS_URL!)
-);
+let jwks: ReturnType<typeof createRemoteJWKSet> | null = null;
+
+function getSupabaseJwks() {
+  const url = process.env.SUPABASE_JWKS_URL;
+  if (!url) {
+    throw new Error('SUPABASE_JWKS_URL is not configured');
+  }
+
+  if (!jwks) {
+    jwks = createRemoteJWKSet(new URL(url));
+  }
+
+  return jwks;
+}
 
 export async function verifySupabaseToken(token: string) {
-    const { payload } = await jwtVerify(token, SUPABASE_JWKS);
-    return payload;
+  const { payload } = await jwtVerify(token, getSupabaseJwks());
+  return payload;
 }
+

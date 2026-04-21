@@ -4,14 +4,14 @@ import { User } from '@prisma/client';
 import slugify from 'slugify';
 import { PrismaService } from '../../prisma/prisma.service';
 import { InviteUserDto } from './workspace.controller';
-import { SupabaseService } from 'src/supdabse/supabase.service';
 import { OrgPermission, OrgRole } from 'src/common/constants/permissions';
+import { AuthService } from '../auth/auth.service';
+import { seedDefaultLifecycleStages } from '../lifecycle/default-lifecycle-stages';
 
 @Injectable()
 export class WorkspaceService {
     constructor(private prisma: PrismaService,
-
-        private supabase: SupabaseService,
+        private authService: AuthService,
 
     ) { }
 
@@ -29,22 +29,27 @@ export class WorkspaceService {
             throw new ConflictException('Workspace already exists');
         }
 
-        const workspace = await this.prisma.workspace.create({
-            data: {
-                name: dto.name,
-                organizationId: dto.organizationId,
-                members: {
-                    create: {
-                        userId: user.id,
-                        role: 'owner',
-                        joinedAt: new Date(),
+        const workspace = await this.prisma.$transaction(async (tx) => {
+            const createdWorkspace = await tx.workspace.create({
+                data: {
+                    name: dto.name,
+                    organizationId: dto.organizationId,
+                    members: {
+                        create: {
+                            userId: user.id,
+                            role: 'owner',
+                            joinedAt: new Date(),
+                        },
                     },
                 },
+                include: {
+                    members: true,
+                },
+            });
 
-            },
-            include: {
-                members: true,
-            },
+            await seedDefaultLifecycleStages(tx, createdWorkspace.id);
+
+            return createdWorkspace;
         });
 
         return workspace;
@@ -185,27 +190,22 @@ export class WorkspaceService {
         workspaceId: string,
         organizationId: string
     ) {
-        // 1. Find user by email
+        const email = dto.email.trim().toLowerCase();
+
         let user = await this.prisma.user.findUnique({
-            where: { email: dto.email },
+            where: { email },
         });
 
-        // 2. If user doesn't exist -> invite + create
         if (!user) {
-            const supaUser = await this.supabase.inviteUser(dto.email);
-            console.log({ supaUser });
-
             user = await this.prisma.user.create({
                 data: {
-                    id: supaUser.user.id,
-                    email: dto.email,
-                    status: "PENDING",
+                    email,
+                    status: "INVITED",
                 },
             });
         }
 
-        return await this.prisma.$transaction(async (tx) => {
-            // 3. Check org membership
+        const result = await this.prisma.$transaction(async (tx) => {
             const existingOrgMembership = await tx.organizationMember.findUnique({
                 where: {
                     organizationId_userId: {
@@ -215,18 +215,17 @@ export class WorkspaceService {
                 },
             });
 
-            // 4. Create org membership ONLY if not found
             if (!existingOrgMembership) {
                 await tx.organizationMember.create({
                     data: {
                         userId: user.id,
                         organizationId,
                         role: OrgRole.MEMBER,
+                        status: 'invited',
                     },
                 });
             }
 
-            // 5. Check workspace membership
             const existingWorkspaceMembership = await tx.workspaceMember.findUnique({
                 where: {
                     workspaceId_userId: {
@@ -236,18 +235,17 @@ export class WorkspaceService {
                 },
             });
 
-            // 6. If not in workspace -> create
             if (!existingWorkspaceMembership) {
                 await tx.workspaceMember.create({
                     data: {
                         userId: user.id,
                         workspaceId,
                         role: dto.role,
+                        status: 'invited',
                         joinedAt: new Date(),
                     },
                 });
             } else {
-                // 7. If already in workspace -> update workspace role only
                 await tx.workspaceMember.update({
                     where: {
                         workspaceId_userId: {
@@ -270,6 +268,18 @@ export class WorkspaceService {
                 },
             });
         });
+
+        await this.authService.inviteUser({
+            email,
+            organizationId,
+            workspaceId,
+            roleSnapshot: {
+                organizationRole: OrgRole.MEMBER,
+                workspaceRole: dto.role,
+            },
+        });
+
+        return result;
     }
     async updateUser(
         dto: any,
@@ -286,8 +296,6 @@ export class WorkspaceService {
 
             },
         });
-
-        // send supabase invite email
 
         return user;
     }

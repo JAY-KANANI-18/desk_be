@@ -1,9 +1,11 @@
 import { createParamDecorator, ExecutionContext } from '@nestjs/common';
 
 export interface CurrentUserPayload {
-  sub: string;
-  orgId: string;
-  orgRole: string;
+  id: string;
+  email: string;
+  sessionId?: string;
+  orgId?: string;
+  orgRole?: string;
   workspaceRoles: Record<string, string>;
   currentWorkspaceId?: string;
 }

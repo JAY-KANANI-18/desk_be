@@ -8,7 +8,6 @@ import {
     Req,
 } from '@nestjs/common';
 import { TeamsService } from './teams.service';
-import { JwtGuard } from '../../common/guards/jwt.guard';
 import { WorkspaceRoute } from 'src/common/auth/route-access.decorator';
 import { WorkspacePermission } from 'src/common/constants/permissions';
 

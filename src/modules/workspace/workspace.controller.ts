@@ -1,7 +1,6 @@
 import { Controller, Post, Body, UseGuards, Req, Get, Delete, Put, Patch, Param, Query } from '@nestjs/common';
 import { WorkspaceService } from './workspace.service';
 import { SetupWorkspaceDto } from './dto/add-workspace.dto';
-import { JwtGuard } from '../../common/guards/jwt.guard';
 import { OrgPermission, WorkspacePermission } from 'src/common/constants/permissions';
 import { JwtOnly, OrgRoute, WorkspaceRoute } from 'src/common/auth/route-access.decorator';
 import { CurrentUser } from 'src/common/decorators/current-user.decorator';

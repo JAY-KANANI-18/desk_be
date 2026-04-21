@@ -1,13 +1,11 @@
-import { Controller, Get, Req, Query, UseGuards } from '@nestjs/common';
+import { Controller, Get, Req, Query } from '@nestjs/common';
 import { AnalyticsService } from './analytics.service';
-import { JwtGuard } from '../../common/guards/jwt.guard';
 import { RedisService } from 'src/redis/redis.service';
 import { AnalyticsFilterDto } from './dto/analytics-filter.dto';
 import { WorkspaceRoute } from 'src/common/auth/route-access.decorator';
 import { WorkspacePermission } from 'src/common/constants/permissions';
 
 @Controller('api/analytics')
-@UseGuards(JwtGuard)
 export class AnalyticsController {
     constructor(private service: AnalyticsService, private redis: RedisService) { }
 

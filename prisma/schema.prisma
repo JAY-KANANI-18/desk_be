@@ -19,12 +19,14 @@ datasource db {
 model User {
   id        String   @id @default(uuid()) @db.Uuid
   email     String   @unique
+  emailVerifiedAt DateTime?
   firstName String?
   lastName  String?
   avatarUrl String?
   createdAt DateTime @default(now())
   language  String?
   status    String?
+  lastLoginAt DateTime?
 
   organizationMemberships OrganizationMember[]
   workspaceMemberships    WorkspaceMember[]
@@ -41,6 +43,19 @@ model User {
   userActivity            UserActivity?
   broadcastRuns           BroadcastRun[]
   importExportJobs        ImportExportJob[]      @relation("ImportExportJobCreatedBy")
+  authCredentials         AuthCredential[]
+  authSessions            AuthSession[]
+  refreshTokens           RefreshToken[]
+  oauthAccounts           OAuthAccount[]
+  emailVerificationTokens EmailVerificationToken[]
+  passwordResetTokens     PasswordResetToken[]
+  magicLinkTokens         MagicLinkToken[]
+  otpCodes                OtpCode[]
+  trustedDevices          TrustedDevice[]
+  loginAttempts           LoginAttempt[]
+  authAuditLogs           AuthAuditLog[]
+  twoFactorSecrets        TwoFactorSecret[]
+  backupCodes             BackupCode[]
 }
 
 model UserActivity {
@@ -52,6 +67,384 @@ model UserActivity {
   inactivitySessionId String @default(uuid()) @db.Uuid
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+enum AuthCredentialType {
+  PASSWORD
+}
+
+enum AuthProvider {
+  LOCAL
+  GOOGLE
+  GITHUB
+  MICROSOFT
+  APPLE
+}
+
+enum AuthSessionStatus {
+  ACTIVE
+  REVOKED
+  EXPIRED
+  COMPROMISED
+}
+
+enum RefreshTokenStatus {
+  ACTIVE
+  USED
+  REVOKED
+  REUSED
+}
+
+enum AuthTokenPurpose {
+  EMAIL_VERIFICATION
+  PASSWORD_RESET
+  MAGIC_LINK_LOGIN
+  TEAM_INVITE
+  EMAIL_OTP_LOGIN
+  EMAIL_OTP_VERIFY
+  EMAIL_OTP_RESET
+  TWO_FACTOR_SETUP
+  TWO_FACTOR_CHALLENGE
+}
+
+enum OtpChannel {
+  EMAIL
+}
+
+enum LoginAttemptResult {
+  SUCCESS
+  FAILURE
+  LOCKED
+  CHALLENGE_REQUIRED
+  BLOCKED
+}
+
+enum AuthAuditEvent {
+  SIGN_UP
+  SIGN_IN
+  SIGN_OUT
+  SESSION_REFRESH
+  SESSION_REVOKED
+  SESSION_REVOKED_ALL
+  TOKEN_REUSE_DETECTED
+  EMAIL_VERIFICATION_SENT
+  EMAIL_VERIFIED
+  PASSWORD_RESET_REQUESTED
+  PASSWORD_RESET_COMPLETED
+  MAGIC_LINK_SENT
+  MAGIC_LINK_CONSUMED
+  OTP_SENT
+  OTP_VERIFIED
+  OAUTH_LINKED
+  OAUTH_SIGN_IN
+  TEAM_INVITE_SENT
+  TEAM_INVITE_ACCEPTED
+  TWO_FACTOR_ENABLED
+  TWO_FACTOR_DISABLED
+  BACKUP_CODES_REGENERATED
+  SUSPICIOUS_LOGIN
+}
+
+enum TwoFactorType {
+  TOTP
+}
+
+model AuthCredential {
+  id                    String             @id @default(uuid()) @db.Uuid
+  userId                String             @db.Uuid
+  type                  AuthCredentialType @default(PASSWORD)
+  passwordHash          String?
+  passwordVersion       Int                @default(1)
+  passwordUpdatedAt     DateTime?
+  passwordMigratedAt    DateTime?
+  mustRotatePassword    Boolean            @default(false)
+  failedPasswordAttempts Int               @default(0)
+  lockedUntil           DateTime?
+  passwordPolicyVersion Int                @default(1)
+  createdAt             DateTime           @default(now())
+  updatedAt             DateTime           @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, type])
+  @@index([userId, type])
+  @@index([lockedUntil])
+}
+
+model AuthSession {
+  id                    String            @id @default(uuid()) @db.Uuid
+  userId                String            @db.Uuid
+  status                AuthSessionStatus @default(ACTIVE)
+  rememberMe            Boolean           @default(false)
+  sessionVersion        Int               @default(1)
+  currentOrganizationId String?           @db.Uuid
+  currentWorkspaceId    String?           @db.Uuid
+  ipAddress             String?
+  ipHash                String?
+  userAgent             String?
+  deviceId              String?
+  deviceName            String?
+  deviceFingerprintHash String?
+  countryCode           String?
+  region                String?
+  city                  String?
+  lastSeenAt            DateTime          @default(now())
+  lastRefreshedAt       DateTime          @default(now())
+  expiresAt             DateTime
+  idleExpiresAt         DateTime
+  revokedAt             DateTime?
+  revokedReason         String?
+  compromisedAt         DateTime?
+  trustedDeviceId       String?           @db.Uuid
+  createdAt             DateTime          @default(now())
+  updatedAt             DateTime          @updatedAt
+
+  user          User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  trustedDevice TrustedDevice? @relation(fields: [trustedDeviceId], references: [id], onDelete: SetNull)
+  refreshTokens RefreshToken[]
+  auditLogs     AuthAuditLog[]
+
+  @@index([userId, status, expiresAt])
+  @@index([currentWorkspaceId])
+  @@index([trustedDeviceId])
+  @@index([deviceFingerprintHash])
+  @@index([lastSeenAt])
+}
+
+model RefreshToken {
+  id            String             @id @default(uuid()) @db.Uuid
+  sessionId     String             @db.Uuid
+  userId        String             @db.Uuid
+  tokenFamilyId String             @db.Uuid
+  previousTokenId String?          @db.Uuid
+  status        RefreshTokenStatus @default(ACTIVE)
+  tokenHash     String             @unique
+  expiresAt     DateTime
+  usedAt        DateTime?
+  rotatedAt     DateTime?
+  revokedAt     DateTime?
+  revokedReason String?
+  createdByIp   String?
+  lastSeenIp    String?
+  userAgent     String?
+  createdAt     DateTime           @default(now())
+
+  session       AuthSession  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  user          User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  previousToken RefreshToken? @relation("RefreshTokenChain", fields: [previousTokenId], references: [id], onDelete: SetNull)
+  nextTokens    RefreshToken[] @relation("RefreshTokenChain")
+
+  @@index([sessionId, status, expiresAt])
+  @@index([userId, tokenFamilyId, status])
+}
+
+model OAuthAccount {
+  id                    String       @id @default(uuid()) @db.Uuid
+  userId                String       @db.Uuid
+  provider              AuthProvider
+  providerAccountId     String
+  email                 String?
+  accessTokenEncrypted  String?
+  refreshTokenEncrypted String?
+  idTokenEncrypted      String?
+  scope                 String?
+  tokenType             String?
+  expiresAt             DateTime?
+  profile               Json?
+  linkedAt              DateTime     @default(now())
+  lastUsedAt            DateTime?
+  createdAt             DateTime     @default(now())
+  updatedAt             DateTime     @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@index([userId, provider])
+  @@index([email])
+}
+
+model EmailVerificationToken {
+  id                   String           @id @default(uuid()) @db.Uuid
+  userId               String           @db.Uuid
+  email                String
+  tokenHash            String           @unique
+  purpose              AuthTokenPurpose @default(EMAIL_VERIFICATION)
+  expiresAt            DateTime
+  consumedAt           DateTime?
+  requestedByIp        String?
+  requestedByUserAgent String?
+  createdAt            DateTime         @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, email, expiresAt])
+}
+
+model PasswordResetToken {
+  id                   String           @id @default(uuid()) @db.Uuid
+  userId               String           @db.Uuid
+  email                String
+  tokenHash            String           @unique
+  purpose              AuthTokenPurpose @default(PASSWORD_RESET)
+  expiresAt            DateTime
+  consumedAt           DateTime?
+  requestedByIp        String?
+  requestedByUserAgent String?
+  createdAt            DateTime         @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, email, expiresAt])
+}
+
+model MagicLinkToken {
+  id                   String           @id @default(uuid()) @db.Uuid
+  userId               String?          @db.Uuid
+  email                String
+  tokenHash            String           @unique
+  purpose              AuthTokenPurpose @default(MAGIC_LINK_LOGIN)
+  organizationId       String?          @db.Uuid
+  workspaceId          String?          @db.Uuid
+  roleSnapshot         Json?
+  redirectUri          String?
+  expiresAt            DateTime
+  consumedAt           DateTime?
+  requestedByIp        String?
+  requestedByUserAgent String?
+  createdAt            DateTime         @default(now())
+
+  user User? @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([email, purpose, expiresAt])
+  @@index([userId, purpose, expiresAt])
+}
+
+model OtpCode {
+  id                   String           @id @default(uuid()) @db.Uuid
+  userId               String?          @db.Uuid
+  email                String
+  channel              OtpChannel       @default(EMAIL)
+  purpose              AuthTokenPurpose
+  codeHash             String
+  expiresAt            DateTime
+  consumedAt           DateTime?
+  attemptCount         Int              @default(0)
+  maxAttempts          Int              @default(5)
+  requestedByIp        String?
+  requestedByUserAgent String?
+  metadata             Json?
+  createdAt            DateTime         @default(now())
+
+  user User? @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([email, purpose, expiresAt])
+  @@index([userId, purpose, expiresAt])
+  @@index([purpose, createdAt])
+}
+
+model TrustedDevice {
+  id                    String      @id @default(uuid()) @db.Uuid
+  userId                String      @db.Uuid
+  deviceKey             String      @unique
+  deviceFingerprintHash String
+  deviceName            String?
+  platform              String?
+  userAgent             String?
+  firstIpAddress        String?
+  lastIpAddress         String?
+  firstSeenAt           DateTime    @default(now())
+  lastSeenAt            DateTime    @default(now())
+  trustedAt             DateTime?
+  expiresAt             DateTime?
+  revokedAt             DateTime?
+  metadata              Json?
+  createdAt             DateTime    @default(now())
+  updatedAt             DateTime    @updatedAt
+
+  user     User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sessions AuthSession[]
+
+  @@index([userId, lastSeenAt])
+  @@index([deviceFingerprintHash])
+}
+
+model LoginAttempt {
+  id                String             @id @default(uuid()) @db.Uuid
+  userId            String?            @db.Uuid
+  email             String
+  ipAddress         String?
+  ipHash            String?
+  userAgent         String?
+  result            LoginAttemptResult
+  reason            String?
+  riskScore         Int                @default(0)
+  requiresChallenge Boolean            @default(false)
+  createdAt         DateTime           @default(now())
+
+  user User? @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([email, createdAt])
+  @@index([userId, createdAt])
+  @@index([ipHash, createdAt])
+  @@index([result, createdAt])
+}
+
+model AuthAuditLog {
+  id             String         @id @default(uuid()) @db.Uuid
+  userId         String?        @db.Uuid
+  sessionId      String?        @db.Uuid
+  event          AuthAuditEvent
+  ipAddress      String?
+  userAgent      String?
+  organizationId String?        @db.Uuid
+  workspaceId    String?        @db.Uuid
+  metadata       Json?
+  createdAt      DateTime       @default(now())
+
+  user    User?        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  session AuthSession? @relation(fields: [sessionId], references: [id], onDelete: SetNull)
+
+  @@index([userId, createdAt])
+  @@index([sessionId, createdAt])
+  @@index([event, createdAt])
+  @@index([organizationId, workspaceId, createdAt])
+}
+
+model TwoFactorSecret {
+  id              String        @id @default(uuid()) @db.Uuid
+  userId          String        @db.Uuid
+  type            TwoFactorType @default(TOTP)
+  secretEncrypted String
+  secretVersion   Int           @default(1)
+  issuer          String        @default("Axodesk")
+  label           String?
+  confirmedAt     DateTime?
+  enabledAt       DateTime?
+  disabledAt      DateTime?
+  lastUsedAt      DateTime?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  user        User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  backupCodes BackupCode[]
+
+  @@unique([userId, type])
+  @@index([userId, enabledAt])
+}
+
+model BackupCode {
+  id                String   @id @default(uuid()) @db.Uuid
+  userId            String   @db.Uuid
+  twoFactorSecretId String   @db.Uuid
+  codeHash          String   @unique
+  consumedAt        DateTime?
+  createdAt         DateTime @default(now())
+
+  user            User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  twoFactorSecret TwoFactorSecret @relation(fields: [twoFactorSecretId], references: [id], onDelete: Cascade)
+
+  @@index([userId, consumedAt])
+  @@index([twoFactorSecretId, consumedAt])
 }
 
 model Organization {

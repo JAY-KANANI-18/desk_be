@@ -6,17 +6,14 @@ import {
   Get,
   Body,
   Param,
-  UseGuards,
   Req,
 } from '@nestjs/common';
-import { JwtGuard } from '../../../../common/guards/jwt.guard';
 import { PrismaService } from '../../../../prisma/prisma.service';
 import { v4 as uuidv4 } from 'uuid';
 import { WorkspaceRoute } from 'src/common/auth/route-access.decorator';
 import { WorkspacePermission } from 'src/common/constants/permissions';
 
 @Controller('api/channels/webchat')
-@UseGuards(JwtGuard)
 export class WebchatManageController {
   constructor(private readonly prisma: PrismaService) {}
 

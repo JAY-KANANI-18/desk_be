@@ -8,6 +8,7 @@
   "scripts": {
     "start:worker": "ts-node src/workers/message.worker.ts",
     "start:workers": "ts-node -r tsconfig-paths/register src/workers/start-workers.ts",
+    "start:ai-agent-worker": "ts-node -r tsconfig-paths/register src/workers/ai-agent.worker.ts",
     "start:workflow-worker": "ts-node src/workers/workflow.worker.ts",
     "start:sla-worker": "ts-node src/workers/sla.worker.ts",
     "prisma:generate": "prisma generate",
@@ -36,7 +37,7 @@
     "@nestjs/schedule": "^6.1.1",
     "@nestjs/websockets": "^10.0.0",
     "@prisma/client": "^6.15.0",
-    "@supabase/supabase-js": "^2.98.0",
+    "argon2": "^0.41.1",
     "bullmq": "^5.70.1",
     "class-transformer": "^0.5.1",
     "class-validator": "^0.15.1",

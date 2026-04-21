@@ -1,6 +1,5 @@
 import { OrganizationService } from './organization.service';
 import { SetupOrganizationDto } from './dto/setup-organization.dto';
-import { JwtGuard } from '../../common/guards/jwt.guard';
 import { InviteUserDto } from './dto/invite-user.dto';
 import { get } from 'http';
 import { OrgPermission } from 'src/common/constants/permissions';
@@ -21,7 +20,7 @@ export class OrganizationController {
     @Post('setup')
     @JwtOnly()
     async setup(@Body() dto: SetupOrganizationDto, @Req() req: any) {
-        const organization = await this.organizationService.setup(dto, req.user);
+        const organization = await this.organizationService.setup(dto, req.user, req.user?.sessionId ?? null);
 
         return { data: organization };
 

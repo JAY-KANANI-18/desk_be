@@ -46,7 +46,6 @@ import { Transform } from 'class-transformer';
 
 import { ConversationsService } from './conversations.service';
 import { ActivityService } from '../activity/activity.service';
-import { JwtGuard } from '../../common/guards/jwt.guard';
 import { CreateConversationDto } from './dto/create-conversation.dto';
 import { SendMessageDto as SendMessageBody } from './dto/send-message.dto';
 import { WorkspacePermission } from 'src/common/constants/permissions';

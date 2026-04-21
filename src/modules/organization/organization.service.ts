@@ -3,53 +3,71 @@ import { SetupOrganizationDto } from './dto/setup-organization.dto';
 import { Prisma, User } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { InviteUserDto } from './dto/invite-user.dto';
-import { SupabaseService } from 'src/supdabse/supabase.service';
+import { AuthService } from '../auth/auth.service';
+import { seedDefaultLifecycleStages } from '../lifecycle/default-lifecycle-stages';
 
 @Injectable()
 export class OrganizationService {
     constructor(private prisma: PrismaService,
-        private supabase: SupabaseService,
+        private authService: AuthService,
 
 
 
     ) { }
 
-    async setup(dto: SetupOrganizationDto, user: User) {
+    async setup(dto: SetupOrganizationDto, user: User, sessionId?: string | null) {
         const onboardingData = dto.onboardingData
             ? (dto.onboardingData as unknown as Prisma.InputJsonValue)
             : undefined;
 
-        const organization = await this.prisma.organization.create({
-            data: {
-                name: dto.organizationName,
-                onboardingData,
-                onboardingCompletedAt: onboardingData ? new Date() : undefined,
-                members: {
-                    create: {
-                        userId: user.id,
-                        role: 'ORG_ADMIN',
-                        joinedAt: new Date(),
+        const organization = await this.prisma.$transaction(async (tx) => {
+            const createdOrganization = await tx.organization.create({
+                data: {
+                    name: dto.organizationName,
+                    onboardingData,
+                    onboardingCompletedAt: onboardingData ? new Date() : undefined,
+                    members: {
+                        create: {
+                            userId: user.id,
+                            role: 'ORG_ADMIN',
+                            joinedAt: new Date(),
+                        },
                     },
-                },
-                workspaces: {
-                    create: {
-                        name: dto.workspaceName,
-                        onboardingCompleted: Boolean(onboardingData),
-                        members: {
-                            create: {
-                                userId: user.id,
-                                role: 'WS_OWNER',
-                                joinedAt: new Date(),
+                    workspaces: {
+                        create: {
+                            name: dto.workspaceName,
+                            onboardingCompleted: Boolean(onboardingData),
+                            members: {
+                                create: {
+                                    userId: user.id,
+                                    role: 'WS_OWNER',
+                                    joinedAt: new Date(),
+                                },
                             },
                         },
                     },
                 },
-            },
-            include: {
-                workspaces: true,
-                members: true,
-            },
+                include: {
+                    workspaces: true,
+                    members: true,
+                },
+            });
+
+            const primaryWorkspace = createdOrganization.workspaces[0] ?? null;
+            if (primaryWorkspace) {
+                await seedDefaultLifecycleStages(tx, primaryWorkspace.id);
+            }
+
+            return createdOrganization;
         });
+
+        const primaryWorkspace = organization.workspaces[0] ?? null;
+        if (sessionId && primaryWorkspace) {
+            await this.authService.selectWorkspace(user.id, sessionId, {
+                organizationId: organization.id,
+                workspaceId: primaryWorkspace.id,
+            });
+        }
 
         return organization;
     }
@@ -218,37 +236,81 @@ export class OrganizationService {
         dto: InviteUserDto,
         organizationId: string,
     ) {
-        let supaUser = await this.supabase.inviteUser(dto.email);
-        console.log({ supaUser });
+        const email = dto.email.trim().toLowerCase();
 
-        // create pending user in prisma
-        const user = await this.prisma.user.create({
-            data: {
-                id: supaUser.user.id,
-                email: dto.email,
-                status: "PENDING",
+        const user = await this.prisma.$transaction(async (tx) => {
+            const existing = await tx.user.findUnique({
+                where: { email },
+            });
 
-                organizationMemberships: {
-                    create: {
+            const targetUser = existing ?? await tx.user.create({
+                data: {
+                    email,
+                    status: 'INVITED',
+                },
+            });
+
+            await tx.organizationMember.upsert({
+                where: {
+                    organizationId_userId: {
                         organizationId,
-                        role: dto.role,
-                        joinedAt: new Date(),
+                        userId: targetUser.id,
                     },
                 },
-
-                workspaceMemberships: {
-                    create: dto.workspaceAccess.map(ws => ({
-                        workspaceId: ws.workspaceId,
-                        role: ws.role,
-                        joinedAt: new Date(),
-                    })),
+                update: {
+                    role: dto.role,
+                    status: 'invited',
                 },
+                create: {
+                    organizationId,
+                    userId: targetUser.id,
+                    role: dto.role,
+                    status: 'invited',
+                    joinedAt: new Date(),
+                },
+            });
+
+            for (const workspace of dto.workspaceAccess) {
+                await tx.workspaceMember.upsert({
+                    where: {
+                        workspaceId_userId: {
+                            workspaceId: workspace.workspaceId,
+                            userId: targetUser.id,
+                        },
+                    },
+                    update: {
+                        role: workspace.role,
+                        status: 'invited',
+                    },
+                    create: {
+                        workspaceId: workspace.workspaceId,
+                        userId: targetUser.id,
+                        role: workspace.role,
+                        status: 'invited',
+                        joinedAt: new Date(),
+                    },
+                });
+            }
+
+            return targetUser;
+        });
+
+        await this.authService.inviteUser({
+            email,
+            organizationId,
+            roleSnapshot: {
+                organizationRole: dto.role,
+                workspaceAccess: dto.workspaceAccess,
             },
         });
 
-        // send supabase invite email
-
-        return user;
+        return this.prisma.user.findUnique({
+            where: { id: user.id },
+            include: {
+                organizationMemberships: true,
+                workspaceMemberships: true,
+            },
+        });
     }
     async updateUser(
         dto: any,
@@ -256,41 +318,76 @@ export class OrganizationService {
     ) {
 
 
-        // create pending user in prisma
-        const user = await this.prisma.user.update({
-            where: { email: dto.email },
-            data: {
-                organizationMemberships: {
-                    deleteMany: {
+        const email = dto.email.trim().toLowerCase();
+        const user = await this.prisma.user.findUnique({
+            where: { email },
+        });
 
+        if (!user) {
+            throw new Error('User not found');
+        }
+
+        await this.prisma.$transaction(async (tx) => {
+            await tx.organizationMember.upsert({
+                where: {
+                    organizationId_userId: {
+                        organizationId,
+                        userId: user.id,
+                    },
+                },
+                update: {
+                    role: dto.role,
+                },
+                create: {
+                    organizationId,
+                    userId: user.id,
+                    role: dto.role,
+                    joinedAt: new Date(),
+                },
+            });
+
+            const workspaceIds = dto.workspaceAccess.map((workspace) => workspace.workspaceId);
+
+            await tx.workspaceMember.deleteMany({
+                where: {
+                    userId: user.id,
+                    workspace: {
+                        organizationId,
+                    },
+                    workspaceId: {
+                        notIn: workspaceIds,
+                    },
+                },
+            });
+
+            for (const workspace of dto.workspaceAccess) {
+                await tx.workspaceMember.upsert({
+                    where: {
+                        workspaceId_userId: {
+                            workspaceId: workspace.workspaceId,
+                            userId: user.id,
+                        },
+                    },
+                    update: {
+                        role: workspace.role,
                     },
                     create: {
-                        organizationId,
-                        role: dto.role,
+                        workspaceId: workspace.workspaceId,
+                        userId: user.id,
+                        role: workspace.role,
                         joinedAt: new Date(),
                     },
-                },
-
-                workspaceMemberships: {
-                    deleteMany: {
-
-                    },
-                    create: dto.workspaceAccess.map(ws => ({
-                        workspaceId: ws.workspaceId,
-                        role: ws.role,
-                        joinedAt: new Date(),
-                    })),
-                },
-            },
-            include: {
-                workspaceMemberships: true,
-                organizationMemberships: true
+                });
             }
         });
 
-        // send supabase invite email
-
-        return user;
+        return this.prisma.user.findUnique({
+            where: { id: user.id },
+            include: {
+                workspaceMemberships: true,
+                organizationMemberships: true,
+            },
+        });
     }
     async removeUserFromOrganization(organizationId: string, userId: string) {
         // remove user from organization in prisma

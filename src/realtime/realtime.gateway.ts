@@ -14,6 +14,8 @@ import { verifySupabaseToken } from 'src/common/guards/supabase-jwt';
 import { OnEvent } from '@nestjs/event-emitter';
 import { RedisService } from 'src/redis/redis.service';
 import { getPendingChannelOAuthEventsKey } from 'src/modules/channels/oauth/channel-oauth-events.shared';
+import { AuthTokenService } from 'src/modules/auth/auth-token.service';
+import { AuthService } from 'src/modules/auth/auth.service';
 
 const getRealtimeUserSocketsKey = (userId: string) =>
     `realtime:user:${userId}:sockets`;
@@ -32,6 +34,8 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     constructor(
         private prisma: PrismaService,
         private redis: RedisService,
+        private authTokenService: AuthTokenService,
+        private authService: AuthService,
     ) { }
 
 
@@ -48,24 +52,40 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
 
             let payload: any;
             try {
-                payload = await verifySupabaseToken(token);
+                payload = await this.authTokenService.verifyAccessToken(token);
+                const context = await this.authService.getSessionContext(payload.sid as string);
+
+                client.data.user = {
+                    ...context.user,
+                    id: context.userId,
+                    email: context.user.email,
+                    sessionId: context.sessionId,
+                    workspaceRoles: context.workspaceRoles,
+                    orgRoles: context.orgRoles,
+                };
             } catch (e) {
-                throw new UnauthorizedException('Invalid token');
+                if ((process.env.AUTH_ACCEPT_SUPABASE_TOKENS ?? 'false') !== 'true') {
+                    throw new UnauthorizedException('Invalid token');
+                }
+
+                payload = await verifySupabaseToken(token);
             }
 
-            const email = payload.email;
+            if (!client.data.user) {
+                const email = payload.email;
+                const user = await this.prisma.user.findUnique({
+                    where: { email },
+                });
 
-            const user = await this.prisma.user.findUnique({
-                where: { email },
-            });
+                if (!user) {
+                    client.disconnect();
+                    return;
+                }
 
-            if (!user) {
-                client.disconnect();
-                return;
+                client.data.user = user;
             }
 
-            // attach user to socket
-            client.data.user = user;
+            const user = client.data.user;
             client.join(`user:${user.id}`);
             await this.redis.client.sadd(getRealtimeUserSocketsKey(user.id), client.id);
             await this.redis.client.expire(getRealtimeUserSocketsKey(user.id), 60 * 60 * 24);

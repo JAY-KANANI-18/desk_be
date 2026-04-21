@@ -7,16 +7,13 @@ import {
     Param,
     Body,
     Req,
-    UseGuards,
     Query,
 } from '@nestjs/common';
 import { WorkflowsService } from './workflows.service';
-import { JwtGuard } from '../../common/guards/jwt.guard';
 import { WorkspaceRoute } from 'src/common/auth/route-access.decorator';
 import { WorkspacePermission } from 'src/common/constants/permissions';
 
 @Controller('api/workflows')
-@UseGuards(JwtGuard)
 export class WorkflowsController {
     constructor(private service: WorkflowsService) { }
 

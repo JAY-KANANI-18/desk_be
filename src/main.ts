@@ -28,10 +28,21 @@ async function bootstrap() {
   /**
    * CORS
    */
+  const allowedOrigins = (process.env.AUTH_ALLOWED_ORIGINS ?? process.env.CORS_ORIGINS ?? 'http://localhost:5173')
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean);
+
   app.use(
     cors({
-      origin: '*',
-      // credentials: true,
+      origin: (origin, callback) => {
+        if (!origin || allowedOrigins.includes(origin)) {
+          callback(null, true);
+          return;
+        }
+        callback(new Error('Origin not allowed by CORS'));
+      },
+      credentials: true,
     }),
   );
 
@@ -78,6 +89,7 @@ async function bootstrap() {
    * Global Error Handler
    */
   app.useGlobalFilters(new HttpExceptionFilter());
+  app.enableShutdownHooks();
 
   await app.listen(process.env.PORT ?? 3000);
 }

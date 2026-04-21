@@ -115,10 +115,13 @@ export class MetaAdsController {
     return { disconnected: true };
   }
 
-  @Post('webhook/:channelId')
+  @Post('webhook')
   @Public()
   @HttpCode(200)
-  async webhook(@Param('channelId') channelId: string, @Req() req: any) {
+  async webhook( @Req() req: any) {
+    console.dir({body:req.body},{depth:null});
+    
+    const  channelId =""
     const channel = await this.prisma.channel.findUnique({ where: { id: channelId } });
     if (!channel || channel.type !== 'meta_ads') return { status: 'channel_not_found' };
 

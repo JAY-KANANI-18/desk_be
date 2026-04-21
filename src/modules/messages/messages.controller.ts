@@ -9,7 +9,6 @@ import {
     BadRequestException,
 } from '@nestjs/common';
 import { MessagesService } from './messages.service';
-import { JwtGuard } from '../../common/guards/jwt.guard';
 import { CreateMessageDto } from './dto/create-message.dto';
 import { User } from '@prisma/client';
 import { CurrentUser } from 'src/common/decorators/current-user.decorator';

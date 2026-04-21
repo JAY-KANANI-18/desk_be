@@ -70,6 +70,8 @@ export enum WorkspacePermission {
   WORKFLOWS_MANAGE     = 'ws:workflows:manage',
   CHANNELS_MANAGE      = 'ws:channels:manage',
   FILES_ACCESS         = 'ws:files:access',
+  AI_AGENTS_VIEW       = 'ws:ai-agents:view',
+  AI_AGENTS_MANAGE     = 'ws:ai-agents:manage',
 }
 
 export const WS_ROLE_PERMISSIONS: Record<WorkspaceRole, WorkspacePermission[]> = {
@@ -91,6 +93,8 @@ export const WS_ROLE_PERMISSIONS: Record<WorkspaceRole, WorkspacePermission[]> =
     WorkspacePermission.PROFILE_MANAGE,
     WorkspacePermission.NOTIFICATIONS_MANAGE,
     WorkspacePermission.WORKFLOWS_VIEW,
+    WorkspacePermission.AI_AGENTS_VIEW,
+    WorkspacePermission.AI_AGENTS_MANAGE,
     WorkspacePermission.FILES_ACCESS,
   ],
 
@@ -98,6 +102,7 @@ export const WS_ROLE_PERMISSIONS: Record<WorkspaceRole, WorkspacePermission[]> =
     WorkspacePermission.MESSAGES_VIEW,
     WorkspacePermission.MESSAGES_SEND,
     WorkspacePermission.SHORTCUTS_USE,
+    WorkspacePermission.AI_AGENTS_VIEW,
     WorkspacePermission.PROFILE_MANAGE,
     WorkspacePermission.NOTIFICATIONS_MANAGE,
   ],

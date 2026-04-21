@@ -30,8 +30,10 @@ import { JwtGuard } from './common/guards/jwt.guard';
 import { BroadcastsModule } from './modules/broadcasts/broadcasts.module';
 import { ScheduleModule } from '@nestjs/schedule';
 import { AiAssistModule } from './modules/ai-assist/ai-assist.module';
+import { AiAgentsModule } from './modules/ai-agents/ai-agents.module';
 import { MessageProcessingRuntimeModule } from './modules/outbound/message-processing-runtime.module';
 import { ImportExportModule } from './modules/import-export/import-export.module';
+import { AuthModule } from './modules/auth/auth.module';
 
 import { RouteGuard } from './common/auth/route.guard';
 
@@ -41,6 +43,7 @@ import { RouteGuard } from './common/auth/route.guard';
     ScheduleModule.forRoot(),
     PrismaModule,
     RedisModule,
+    AuthModule,
     RealtimeModule,
     OrganizationModule, ContactsModule, ConversationsModule, MessagesModule,
     UsersModule,
@@ -59,6 +62,7 @@ import { RouteGuard } from './common/auth/route.guard';
     BillingModule,
     BroadcastsModule,
     AiAssistModule,
+    AiAgentsModule,
     MessageProcessingRuntimeModule,
     ImportExportModule
 

@@ -14,7 +14,6 @@ import { BillingService } from './billing.service';
 import { CreateCheckoutDto } from './dto/create-checkout.dto';
 import { StripeService } from './providers/stripe.service';
 import { RazorpayService } from './providers/razorpay.service';
-import { JwtGuard } from 'src/common/guards/jwt.guard';
 
 @Controller('api/billing')
 
