@@ -77,16 +77,23 @@ export class ContactsService {
         { lastName: { contains: q, mode: 'insensitive' } },
         { email: { contains: q, mode: 'insensitive' } },
         { phone: { contains: q, mode: 'insensitive' } },
+        { company: { contains: q, mode: 'insensitive' } },
       ];
     }
 
     if (opts.lifecycle?.trim()) {
-      where.lifecycle = {
-        name: {
-          equals: opts.lifecycle.trim(),
-          mode: 'insensitive',
-        },
-      };
+      const lifecycleId = this.normalizeOptionalUuid(opts.lifecycle);
+
+      if (lifecycleId) {
+        where.lifecycleId = lifecycleId;
+      } else {
+        where.lifecycle = {
+          name: {
+            equals: opts.lifecycle.trim(),
+            mode: 'insensitive',
+          },
+        };
+      }
     }
 
     return where;
@@ -118,12 +125,20 @@ export class ContactsService {
   }
 
   async create(workspaceId: string, dto: CreateContactDto) {
+    const lifecycleId = await this.resolveLifecycleId(workspaceId, dto.lifecycleId);
+
     const contact = await this.prisma.contact.create({
       data: {
-        ...dto,
         workspaceId,
+        firstName: dto.firstName.trim(),
+        lastName: this.normalizeOptionalText(dto.lastName),
         email: this.normalizeOptionalEmail(dto.email),
         phone: this.normalizeOptionalPhone(dto.phone),
+        company: this.normalizeOptionalText(dto.company),
+        lifecycleId,
+        ...(dto.marketingOptOut !== undefined
+          ? { marketingOptOut: !!dto.marketingOptOut }
+          : {}),
       },
       include: CONTACT_INCLUDE,
     });
@@ -157,8 +172,8 @@ export class ContactsService {
     const updated = await this.prisma.contact.update({
       where: { id: contactId },
       data: {
-        assigneeId: dto.assigneeId ?? null,
-        teamId: dto.teamId ?? null,
+        ...(dto.assigneeId !== undefined ? { assigneeId: dto.assigneeId ?? null } : {}),
+        ...(dto.teamId !== undefined ? { teamId: dto.teamId ?? null } : {}),
       },
       include: CONTACT_INCLUDE,
     });
@@ -168,26 +183,31 @@ export class ContactsService {
     this.events.emit('contact.assigned', {
       workspaceId,
       contactId,
-      assigneeId: dto.assigneeId ?? null,
-      teamId: dto.teamId ?? null,
+      assigneeId: updated.assigneeId ?? null,
+      teamId: updated.teamId ?? null,
     });
 
     return this.toContactResponse(updated);
   }
 
-  async updateLifecycle(workspaceId: string, contactId: string, lifecycleId: string) {
+  async updateLifecycle(
+    workspaceId: string,
+    contactId: string,
+    lifecycleId?: string | null,
+  ) {
     await this.getEditableContact(workspaceId, contactId);
+    const resolvedLifecycleId = await this.resolveLifecycleId(workspaceId, lifecycleId);
 
     const contact = await this.prisma.contact.update({
       where: { id: contactId },
-      data: { lifecycleId },
+      data: { lifecycleId: resolvedLifecycleId },
       include: CONTACT_INCLUDE,
     });
 
     this.events.emit('contact.lifecycle_updated', {
       workspaceId,
       contactId,
-      lifecycleId,
+      lifecycleId: resolvedLifecycleId,
     });
 
     this.realtime.emitToWorkspace(workspaceId, 'contact:updated', this.toContactResponse(contact));
@@ -403,13 +423,23 @@ async removeTag(workspaceId: string, contactId: string, tagId: string) {
 
   async update(workspaceId: string, id: string, dto: UpdateContactDto) {
     await this.getEditableContact(workspaceId, id);
+    const lifecycleId =
+      dto.lifecycleId !== undefined
+        ? await this.resolveLifecycleId(workspaceId, dto.lifecycleId)
+        : undefined;
 
     const contact = await this.prisma.contact.update({
       where: { id },
       data: {
-        ...dto,
+        ...(dto.firstName !== undefined ? { firstName: dto.firstName.trim() } : {}),
+        ...(dto.lastName !== undefined ? { lastName: this.normalizeOptionalText(dto.lastName) } : {}),
         ...(dto.email !== undefined ? { email: this.normalizeOptionalEmail(dto.email) } : {}),
         ...(dto.phone !== undefined ? { phone: this.normalizeOptionalPhone(dto.phone) } : {}),
+        ...(dto.company !== undefined ? { company: this.normalizeOptionalText(dto.company) } : {}),
+        ...(dto.lifecycleId !== undefined ? { lifecycleId } : {}),
+        ...(dto.marketingOptOut !== undefined
+          ? { marketingOptOut: !!dto.marketingOptOut }
+          : {}),
       },
       include: CONTACT_INCLUDE,
     });
@@ -1007,6 +1037,11 @@ async removeTag(workspaceId: string, contactId: string, tagId: string) {
     return email ? email : null;
   }
 
+  private normalizeOptionalText(value?: string | null) {
+    const text = value?.trim();
+    return text ? text : null;
+  }
+
   private normalizeOptionalPhone(value?: string | null) {
     const raw = value?.trim();
     if (!raw) return null;
@@ -1020,6 +1055,40 @@ async removeTag(workspaceId: string, contactId: string, tagId: string) {
 
   private normalizeName(value?: string | null) {
     return value?.trim().toLowerCase().replace(/\s+/g, ' ') || null;
+  }
+
+  private normalizeOptionalUuid(value?: string | null) {
+    const text = value?.trim();
+    if (!text) return null;
+
+    return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(text)
+      ? text
+      : null;
+  }
+
+  private async resolveLifecycleId(
+    workspaceId: string,
+    lifecycleId?: string | null,
+  ) {
+    const normalizedLifecycleId = this.normalizeOptionalUuid(lifecycleId);
+
+    if (!normalizedLifecycleId) {
+      return null;
+    }
+
+    const lifecycle = await this.prisma.lifecycleStage.findFirst({
+      where: {
+        id: normalizedLifecycleId,
+        workspaceId,
+      },
+      select: { id: true },
+    });
+
+    if (!lifecycle) {
+      throw new NotFoundException('Lifecycle stage not found');
+    }
+
+    return lifecycle.id;
   }
 
   private pickMergedConversationStatus(statuses: string[]) {

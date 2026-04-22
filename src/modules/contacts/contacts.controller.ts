@@ -117,7 +117,7 @@ export class ContactsController {
     updateLifecycle(
         @Req() req: any,
         @Param('id') id: string,
-        @Body() dto: { lifecycleId: string },
+        @Body() dto: { lifecycleId?: string | null },
     ) {
         return this.contactsService.updateLifecycle(req.workspaceId, id, dto.lifecycleId);
     }

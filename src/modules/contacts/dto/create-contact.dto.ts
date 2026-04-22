@@ -1,26 +1,55 @@
-import { IsOptional, IsString, IsEmail, IsBoolean } from 'class-validator';
+import { Transform } from 'class-transformer';
+import {
+    IsBoolean,
+    IsEmail,
+    IsNotEmpty,
+    IsOptional,
+    IsString,
+    IsUUID,
+} from 'class-validator';
+
+const trimString = ({ value }: { value: unknown }) =>
+    typeof value === 'string' ? value.trim() : value;
+
+const blankStringToNull = ({ value }: { value: unknown }) => {
+    if (typeof value !== 'string') {
+        return value;
+    }
+
+    const trimmed = value.trim();
+    return trimmed ? trimmed : null;
+};
 
 export class CreateContactDto {
+    @Transform(trimString)
     @IsString()
+    @IsNotEmpty()
     firstName: string;
-    @IsString()
-    lastName: string;
 
+    @Transform(blankStringToNull)
+    @IsOptional()
+    @IsString()
+    lastName?: string | null;
+
+    @Transform(blankStringToNull)
     @IsOptional()
     @IsEmail()
-    email?: string;
+    email?: string | null;
 
+    @Transform(blankStringToNull)
     @IsOptional()
     @IsString()
-    phone?: string;
+    phone?: string | null;
 
+    @Transform(blankStringToNull)
     @IsOptional()
     @IsString()
-    company?: string;
+    company?: string | null;
 
+    @Transform(blankStringToNull)
     @IsOptional()
-    @IsString()
-    lifecycleId?: string;
+    @IsUUID()
+    lifecycleId?: string | null;
 
     @IsOptional()
     @IsBoolean()

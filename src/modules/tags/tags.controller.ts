@@ -28,7 +28,7 @@ export class TagsController {
   }
 
   @Get()
-  @WorkspaceRoute(WorkspacePermission.SETTINGS_MANAGE)
+  @WorkspaceRoute()
   findAll(
     @Req() req: any,
     @Query('search') search?: string,
@@ -43,7 +43,7 @@ export class TagsController {
   }
 
   @Get(':id')
-  @WorkspaceRoute(WorkspacePermission.SETTINGS_MANAGE)
+  @WorkspaceRoute()
   findOne(@Req() req: any, @Param('id') id: string) {
     return this.tagsService.findOne(req.workspaceId, id);
   }
