@@ -233,10 +233,11 @@ async addTag(workspaceId: string, contactId: string, tagId: string) {
   // Load updated tags for event + realtime
   const updatedTags = await this.prisma.contactTag.findMany({
     where: { contactId },
-    select: { tagId: true },
+    select: { tagId: true, tag: { select: { name: true } } },
   });
 
   const tagIds = updatedTags.map((t) => t.tagId);
+  const tagNames = updatedTags.map((t) => t.tag.name);
 
   this.events.emit('contact.tag_updated', {
     workspaceId,
@@ -248,10 +249,11 @@ async addTag(workspaceId: string, contactId: string, tagId: string) {
 
   this.realtime.emitToWorkspace(workspaceId, 'contact:updated', {
     id: contactId,
-    tags: tagIds,
+    tags: tagNames,
+    tagIds,
   });
 
-  return { contactId, tagId, tags: tagIds };
+  return { contactId, tagId, tags: tagNames, tagIds };
 }
 
 async removeTag(workspaceId: string, contactId: string, tagId: string) {
@@ -264,10 +266,11 @@ async removeTag(workspaceId: string, contactId: string, tagId: string) {
 
   const updatedTags = await this.prisma.contactTag.findMany({
     where: { contactId },
-    select: { tagId: true },
+    select: { tagId: true, tag: { select: { name: true } } },
   });
 
   const tagIds = updatedTags.map((t) => t.tagId);
+  const tagNames = updatedTags.map((t) => t.tag.name);
 
   this.events.emit('contact.tag_updated', {
     workspaceId,
@@ -279,10 +282,11 @@ async removeTag(workspaceId: string, contactId: string, tagId: string) {
 
   this.realtime.emitToWorkspace(workspaceId, 'contact:updated', {
     id: contactId,
-    tags: tagIds,
+    tags: tagNames,
+    tagIds,
   });
 
-  return { contactId, tagId, tags: tagIds };
+  return { contactId, tagId, tags: tagNames, tagIds };
 }
 
   async autoAssign(workspaceId: string, contactId: string) {

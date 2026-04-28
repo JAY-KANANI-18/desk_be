@@ -214,7 +214,7 @@ export class AuthController {
       response.redirect(
         this.authService.buildAuthCallbackUrl({
           flow: result.flow,
-          next: result.redirectTo ?? redirectTo ?? `${process.env.AUTH_FRONTEND_BASE_URL ?? 'http://localhost:5173'}/dashboard`,
+          next: result.redirectTo ?? redirectTo ?? `${process.env.AUTH_FRONTEND_BASE_URL ?? 'http://localhost:5173'}/inbox`,
         }),
       );
     } catch (error) {

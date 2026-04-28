@@ -50,8 +50,7 @@ export class WebchatController {
 
     @Post('webhook')
     @HttpCode(200)
-        @Public()
-    
+    @Public()
     @UseInterceptors(FilesInterceptor('files', 5))
     async webhook(
         @Body() body: {

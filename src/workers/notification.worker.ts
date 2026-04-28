@@ -12,6 +12,7 @@ import {
   NotificationPushService,
   WebPushSubscriptionPayload,
 } from '../modules/notifications/notification-push.service';
+import { renderEmailTemplate } from '../common/email/email-templates';
 import { RedisService } from '../redis/redis.service';
 import { connection } from './connection';
 
@@ -59,12 +60,17 @@ export class NotificationWorker {
 
     try {
       const transporter = await this.getTransporter();
+      const emailTemplate = renderEmailTemplate({
+        template: 'notification',
+        title: subject,
+        body,
+      });
       const result = await transporter.sendMail({
         from: this.getFromAddress(),
         to: email,
-        subject,
-        html: body,
-        text: body.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim(),
+        subject: emailTemplate.subject,
+        html: emailTemplate.html,
+        text: emailTemplate.text,
       });
       console.log('Notification email accepted by SMTP:', {
         notificationId,

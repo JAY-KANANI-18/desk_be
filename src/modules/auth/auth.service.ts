@@ -49,6 +49,7 @@ import { SignInDto } from './dto/sign-in.dto';
 import { SignUpDto } from './dto/sign-up.dto';
 import { VerifyOtpDto } from './dto/verify-otp.dto';
 import { DisableTwoFactorDto } from './dto/two-factor.dto';
+import { renderEmailTemplate } from '../../common/email/email-templates';
 
 type SessionQueryResult = Awaited<ReturnType<AuthService['getSessionRecord']>>;
 
@@ -304,23 +305,29 @@ export class AuthService {
     }
 
     const code = generateOtpCode();
+    const otpTtlMinutes = Number(process.env.AUTH_OTP_TTL_MINUTES ?? 10);
     await this.prisma.otpCode.create({
       data: {
         userId: user.id,
         email,
         purpose: AuthTokenPurpose.EMAIL_OTP_LOGIN,
         codeHash: hashValue(code),
-        expiresAt: addMinutes(new Date(), Number(process.env.AUTH_OTP_TTL_MINUTES ?? 10)),
+        expiresAt: addMinutes(new Date(), otpTtlMinutes),
         requestedByIp: meta.ipAddress ?? undefined,
         requestedByUserAgent: meta.userAgent ?? undefined,
       },
     });
 
+    const emailTemplate = renderEmailTemplate({
+      template: 'otp',
+      code,
+      purposeLabel: 'sign in to AxoDesk',
+      expiresInMinutes: otpTtlMinutes,
+      appUrl: this.frontendBaseUrl,
+    });
     await this.mailService.sendMail({
       to: email,
-      subject: 'Your Axodesk sign-in code',
-      text: `Use this one-time code to sign in to Axodesk: ${code}. It expires in 10 minutes.`,
-      html: `<p>Use this one-time code to sign in to Axodesk:</p><p style="font-size:24px;font-weight:700;letter-spacing:4px;">${code}</p><p>It expires in 10 minutes.</p>`,
+      ...emailTemplate,
     });
 
     await this.logAudit(AuthAuditEvent.OTP_SENT, {
@@ -490,7 +497,8 @@ export class AuthService {
     }
 
     const rawToken = generateOpaqueToken();
-    const redirectTo = dto.redirectTo ?? `${this.frontendBaseUrl}/dashboard`;
+    const redirectTo = dto.redirectTo ?? `${this.frontendBaseUrl}/inbox`;
+    const magicLinkTtlMinutes = Number(process.env.AUTH_MAGIC_LINK_TTL_MINUTES ?? MAGIC_LINK_TTL_MINUTES);
 
     await this.prisma.magicLinkToken.create({
       data: {
@@ -499,18 +507,22 @@ export class AuthService {
         purpose: dto.purpose === 'invite' ? AuthTokenPurpose.TEAM_INVITE : AuthTokenPurpose.MAGIC_LINK_LOGIN,
         tokenHash: hashValue(rawToken),
         redirectUri: redirectTo,
-        expiresAt: addMinutes(new Date(), Number(process.env.AUTH_MAGIC_LINK_TTL_MINUTES ?? MAGIC_LINK_TTL_MINUTES)),
+        expiresAt: addMinutes(new Date(), magicLinkTtlMinutes),
         requestedByIp: meta.ipAddress ?? undefined,
         requestedByUserAgent: meta.userAgent ?? undefined,
       },
     });
 
     const magicLink = `${this.apiBaseUrl}/api/auth/magic-link/consume?token=${encodeURIComponent(rawToken)}&redirectTo=${encodeURIComponent(redirectTo)}`;
+    const emailTemplate = renderEmailTemplate({
+      template: 'magic-link',
+      magicLink,
+      expiresInMinutes: magicLinkTtlMinutes,
+      appUrl: this.frontendBaseUrl,
+    });
     await this.mailService.sendMail({
       to: email,
-      subject: 'Your Axodesk magic link',
-      text: `Use this secure link to sign in to Axodesk: ${magicLink}`,
-      html: `<p>Use this secure link to sign in to Axodesk:</p><p><a href="${magicLink}">${magicLink}</a></p>`,
+      ...emailTemplate,
     });
 
     await this.logAudit(AuthAuditEvent.MAGIC_LINK_SENT, {
@@ -603,7 +615,7 @@ export class AuthService {
         currentWorkspaceId: token.workspaceId ?? null,
         authProvider: isInviteToken ? 'invite' : 'magic_link',
       })),
-      redirectTo: token.redirectUri ?? `${this.frontendBaseUrl}/dashboard`,
+      redirectTo: token.redirectUri ?? `${this.frontendBaseUrl}/inbox`,
       flow: isInviteToken
         ? 'invite'
         : token.purpose === AuthTokenPurpose.PASSWORD_RESET
@@ -791,7 +803,7 @@ export class AuthService {
 
   async startGoogleOAuth(redirectTo?: string) {
     const state = generateOpaqueToken(24);
-    const target = redirectTo ?? `${this.frontendBaseUrl}/dashboard`;
+    const target = redirectTo ?? `${this.frontendBaseUrl}/inbox`;
 
     await this.redis.client.set(
       `auth:google:state:${state}`,
@@ -1140,6 +1152,7 @@ export class AuthService {
 
     const rawToken = generateOpaqueToken();
     const redirectUri = input.redirectTo ?? `${this.frontendBaseUrl}/auth/set-password`;
+    const inviteTtlMinutes = Number(process.env.AUTH_INVITE_TTL_MINUTES ?? MAGIC_LINK_TTL_MINUTES);
 
     await this.prisma.magicLinkToken.create({
       data: {
@@ -1151,16 +1164,20 @@ export class AuthService {
         roleSnapshot: input.roleSnapshot as any,
         tokenHash: hashValue(rawToken),
         redirectUri,
-        expiresAt: addMinutes(new Date(), Number(process.env.AUTH_INVITE_TTL_MINUTES ?? MAGIC_LINK_TTL_MINUTES)),
+        expiresAt: addMinutes(new Date(), inviteTtlMinutes),
       },
     });
 
     const inviteLink = `${this.apiBaseUrl}/api/auth/invite/accept?token=${encodeURIComponent(rawToken)}&redirectTo=${encodeURIComponent(redirectUri)}`;
+    const emailTemplate = renderEmailTemplate({
+      template: 'workspace-invite',
+      inviteLink,
+      expiresInMinutes: inviteTtlMinutes,
+      appUrl: this.frontendBaseUrl,
+    });
     await this.mailService.sendMail({
       to: email,
-      subject: 'You have been invited to Axodesk',
-      text: `You have been invited to Axodesk. Accept your invitation here: ${inviteLink}`,
-      html: `<p>You have been invited to Axodesk.</p><p><a href="${inviteLink}">Accept your invitation</a></p>`,
+      ...emailTemplate,
     });
 
     await this.logAudit(AuthAuditEvent.TEAM_INVITE_SENT, {
@@ -1336,6 +1353,10 @@ export class AuthService {
   private async issueEmailVerification(userId: string, email: string, meta: RequestMeta) {
     const rawToken = generateOpaqueToken();
     const code = generateOtpCode();
+    const emailVerificationTtlMinutes = Number(
+      process.env.AUTH_EMAIL_VERIFICATION_TTL_MINUTES ?? EMAIL_VERIFICATION_TTL_MINUTES,
+    );
+    const otpTtlMinutes = Number(process.env.AUTH_OTP_TTL_MINUTES ?? 10);
 
     await this.prisma.$transaction([
       this.prisma.emailVerificationToken.create({
@@ -1344,7 +1365,7 @@ export class AuthService {
           email,
           tokenHash: hashValue(rawToken),
           purpose: AuthTokenPurpose.EMAIL_VERIFICATION,
-          expiresAt: addMinutes(new Date(), Number(process.env.AUTH_EMAIL_VERIFICATION_TTL_MINUTES ?? EMAIL_VERIFICATION_TTL_MINUTES)),
+          expiresAt: addMinutes(new Date(), emailVerificationTtlMinutes),
           requestedByIp: meta.ipAddress ?? undefined,
           requestedByUserAgent: meta.userAgent ?? undefined,
         },
@@ -1355,8 +1376,8 @@ export class AuthService {
           email,
           purpose: AuthTokenPurpose.EMAIL_VERIFICATION,
           tokenHash: hashValue(rawToken),
-          redirectUri: `${this.frontendBaseUrl}/dashboard`,
-          expiresAt: addMinutes(new Date(), Number(process.env.AUTH_EMAIL_VERIFICATION_TTL_MINUTES ?? EMAIL_VERIFICATION_TTL_MINUTES)),
+          redirectUri: `${this.frontendBaseUrl}/inbox`,
+          expiresAt: addMinutes(new Date(), emailVerificationTtlMinutes),
           requestedByIp: meta.ipAddress ?? undefined,
           requestedByUserAgent: meta.userAgent ?? undefined,
         },
@@ -1367,19 +1388,24 @@ export class AuthService {
           email,
           purpose: AuthTokenPurpose.EMAIL_OTP_VERIFY,
           codeHash: hashValue(code),
-          expiresAt: addMinutes(new Date(), Number(process.env.AUTH_OTP_TTL_MINUTES ?? 10)),
+          expiresAt: addMinutes(new Date(), otpTtlMinutes),
           requestedByIp: meta.ipAddress ?? undefined,
           requestedByUserAgent: meta.userAgent ?? undefined,
         },
       }),
     ]);
 
-    const verifyLink = `${this.apiBaseUrl}/api/auth/magic-link/consume?token=${encodeURIComponent(rawToken)}&redirectTo=${encodeURIComponent(`${this.frontendBaseUrl}/dashboard`)}`;
+    const verifyLink = `${this.apiBaseUrl}/api/auth/magic-link/consume?token=${encodeURIComponent(rawToken)}&redirectTo=${encodeURIComponent(`${this.frontendBaseUrl}/inbox`)}`;
+    const emailTemplate = renderEmailTemplate({
+      template: 'email-verification',
+      code,
+      verifyLink,
+      expiresInMinutes: Math.min(emailVerificationTtlMinutes, otpTtlMinutes),
+      appUrl: this.frontendBaseUrl,
+    });
     await this.mailService.sendMail({
       to: email,
-      subject: 'Verify your Axodesk email',
-      text: `Use this verification code: ${code}. Or verify using this secure link: ${verifyLink}`,
-      html: `<p>Use this verification code:</p><p style="font-size:24px;font-weight:700;letter-spacing:4px;">${code}</p><p>Or verify instantly with this secure link:</p><p><a href="${verifyLink}">${verifyLink}</a></p>`,
+      ...emailTemplate,
     });
 
     await this.logAudit(AuthAuditEvent.EMAIL_VERIFICATION_SENT, {
@@ -1392,6 +1418,10 @@ export class AuthService {
   private async issuePasswordReset(userId: string, email: string, meta: RequestMeta) {
     const rawToken = generateOpaqueToken();
     const code = generateOtpCode();
+    const passwordResetTtlMinutes = Number(
+      process.env.AUTH_PASSWORD_RESET_TTL_MINUTES ?? PASSWORD_RESET_TTL_MINUTES,
+    );
+    const otpTtlMinutes = Number(process.env.AUTH_OTP_TTL_MINUTES ?? 10);
 
     await this.prisma.$transaction([
       this.prisma.passwordResetToken.create({
@@ -1400,7 +1430,7 @@ export class AuthService {
           email,
           tokenHash: hashValue(rawToken),
           purpose: AuthTokenPurpose.PASSWORD_RESET,
-          expiresAt: addMinutes(new Date(), Number(process.env.AUTH_PASSWORD_RESET_TTL_MINUTES ?? PASSWORD_RESET_TTL_MINUTES)),
+          expiresAt: addMinutes(new Date(), passwordResetTtlMinutes),
           requestedByIp: meta.ipAddress ?? undefined,
           requestedByUserAgent: meta.userAgent ?? undefined,
         },
@@ -1412,7 +1442,7 @@ export class AuthService {
           purpose: AuthTokenPurpose.PASSWORD_RESET,
           tokenHash: hashValue(rawToken),
           redirectUri: `${this.frontendBaseUrl}/auth/reset-password`,
-          expiresAt: addMinutes(new Date(), Number(process.env.AUTH_PASSWORD_RESET_TTL_MINUTES ?? PASSWORD_RESET_TTL_MINUTES)),
+          expiresAt: addMinutes(new Date(), passwordResetTtlMinutes),
           requestedByIp: meta.ipAddress ?? undefined,
           requestedByUserAgent: meta.userAgent ?? undefined,
         },
@@ -1423,7 +1453,7 @@ export class AuthService {
           email,
           purpose: AuthTokenPurpose.EMAIL_OTP_RESET,
           codeHash: hashValue(code),
-          expiresAt: addMinutes(new Date(), Number(process.env.AUTH_OTP_TTL_MINUTES ?? 10)),
+          expiresAt: addMinutes(new Date(), otpTtlMinutes),
           requestedByIp: meta.ipAddress ?? undefined,
           requestedByUserAgent: meta.userAgent ?? undefined,
         },
@@ -1431,11 +1461,16 @@ export class AuthService {
     ]);
 
     const resetLink = `${this.apiBaseUrl}/api/auth/magic-link/consume?token=${encodeURIComponent(rawToken)}&redirectTo=${encodeURIComponent(`${this.frontendBaseUrl}/auth/reset-password`)}`;
+    const emailTemplate = renderEmailTemplate({
+      template: 'reset-password',
+      code,
+      resetLink,
+      expiresInMinutes: Math.min(passwordResetTtlMinutes, otpTtlMinutes),
+      appUrl: this.frontendBaseUrl,
+    });
     await this.mailService.sendMail({
       to: email,
-      subject: 'Reset your Axodesk password',
-      text: `Use this reset code: ${code}. Or reset with this secure link: ${resetLink}`,
-      html: `<p>Use this reset code:</p><p style="font-size:24px;font-weight:700;letter-spacing:4px;">${code}</p><p>Or reset your password with this secure link:</p><p><a href="${resetLink}">${resetLink}</a></p>`,
+      ...emailTemplate,
     });
 
     await this.logAudit(AuthAuditEvent.PASSWORD_RESET_REQUESTED, {

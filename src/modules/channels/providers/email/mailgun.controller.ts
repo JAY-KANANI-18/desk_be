@@ -7,6 +7,7 @@ import { PrismaService } from '../../../../prisma/prisma.service';
 import { InboundService } from '../../../inbound/inbound.service';
 import { ChannelAdaptersRegistry } from 'src/modules/channel-adapters/channel-adapters.registry';
 import { MessageProcessingQueueService } from 'src/modules/outbound/message-processing-queue.service';
+import { Public } from 'src/common/auth/route-access.decorator';
 
 @Controller('webhooks/mailgun')
 export class MailgunController {
@@ -17,13 +18,16 @@ export class MailgunController {
     private readonly processingQueue: MessageProcessingQueueService,
   ) {}
 
+
   @Post()
+  @Public()
   @UseInterceptors(AnyFilesInterceptor())
   async handle(
     @Req() req: any,
     @UploadedFiles() files: Express.Multer.File[],
   ) {
     const body = req.body;
+    console.dir({ body }, { depth: null });
 
     if (!this.verifySignature(body)) {
       return { status: 'invalid_signature' };
