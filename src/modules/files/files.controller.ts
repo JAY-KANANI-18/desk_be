@@ -25,6 +25,10 @@ export class FilesController {
                 key = `files/avatars/users/${body.entityId}/${Date.now()}-${body.fileName}`
                 break
 
+            case "static-avatar":
+                key = `static/avatars/${body.fileName.replace(/[^a-zA-Z0-9._-]/g, "-")}`
+                break
+
             case "contact-avatar":
                 key = `files/avatars/contacts/${body.entityId}/${Date.now()}-${body.fileName}`
                 break

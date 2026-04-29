@@ -11,6 +11,10 @@
     "start:ai-agent-worker": "ts-node -r tsconfig-paths/register src/workers/ai-agent.worker.ts",
     "start:workflow-worker": "ts-node src/workers/workflow.worker.ts",
     "start:sla-worker": "ts-node src/workers/sla.worker.ts",
+    "r2:rename-static-avatars": "ts-node scripts/rename-static-avatars.ts",
+    "r2:rename-static-avatars:apply": "ts-node scripts/rename-static-avatars.ts --apply",
+    "db:seed": "prisma db seed",
+    "db:seed:reset": "ts-node --compiler-options {\"module\":\"CommonJS\"} prisma/seed/index.ts --reset",
     "prisma:generate": "prisma generate",
     "build": "nest build",
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
@@ -28,6 +32,7 @@
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1005.0",
     "@aws-sdk/s3-request-presigner": "^3.1005.0",
+    "@faker-js/faker": "^10.4.0",
     "@nestjs/common": "^10.0.0",
     "@nestjs/core": "^10.0.0",
     "@nestjs/event-emitter": "^3.0.1",
@@ -98,5 +103,8 @@
     ],
     "coverageDirectory": "../coverage",
     "testEnvironment": "node"
+  },
+  "prisma": {
+    "seed": "ts-node --compiler-options {\"module\":\"CommonJS\"} prisma/seed/index.ts"
   }
 }

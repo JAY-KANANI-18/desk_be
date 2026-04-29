@@ -7,6 +7,7 @@ import { createReadStream, createWriteStream, promises as fsPromises } from 'nod
 import { extname, join } from 'node:path';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { R2Service } from '../../../common/storage/r2.service';
+import { resolveContactAvatarUrl } from '../../../common/contacts/static-contact-avatar';
 import { CONTACT_IMPORT_TYPE, ImportExportHandlerResult } from '../import-export.types';
 import { ImportHandler, ImportProgressReporter } from './import-handler.interface';
 
@@ -191,6 +192,7 @@ export class ContactImportHandler implements ImportHandler {
 
       try {
         const payload = this.toWritePayload(row, importMode);
+        const payloadAvatarUrl = typeof payload.avatarUrl === 'string' ? payload.avatarUrl : null;
         const contact = existingContact
           ? await this.prisma.contact.update({
               where: { id: existingContact.id },
@@ -201,6 +203,7 @@ export class ContactImportHandler implements ImportHandler {
               data: {
                 workspaceId: job.tenantId,
                 ...payload,
+                avatarUrl: resolveContactAvatarUrl(payloadAvatarUrl),
               } as Prisma.ContactUncheckedCreateInput,
               select: { id: true },
             });

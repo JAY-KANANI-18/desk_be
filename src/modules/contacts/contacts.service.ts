@@ -13,6 +13,7 @@ import { RealtimeService } from 'src/realtime/realtime.service';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { MergeContactsDto } from './dto/merge-contact.dto';
 import { ActivityService } from '../activity/activity.service';
+import { resolveContactAvatarUrl } from '../../common/contacts/static-contact-avatar';
 
 const CONTACT_INCLUDE = {
   tags: { include: { tag: true } },
@@ -135,6 +136,7 @@ export class ContactsService {
         email: this.normalizeOptionalEmail(dto.email),
         phone: this.normalizeOptionalPhone(dto.phone),
         company: this.normalizeOptionalText(dto.company),
+        avatarUrl: resolveContactAvatarUrl(dto.avatarUrl),
         lifecycleId,
         ...(dto.marketingOptOut !== undefined
           ? { marketingOptOut: !!dto.marketingOptOut }
@@ -440,6 +442,7 @@ async removeTag(workspaceId: string, contactId: string, tagId: string) {
         ...(dto.email !== undefined ? { email: this.normalizeOptionalEmail(dto.email) } : {}),
         ...(dto.phone !== undefined ? { phone: this.normalizeOptionalPhone(dto.phone) } : {}),
         ...(dto.company !== undefined ? { company: this.normalizeOptionalText(dto.company) } : {}),
+        ...(dto.avatarUrl !== undefined ? { avatarUrl: this.normalizeOptionalText(dto.avatarUrl) } : {}),
         ...(dto.lifecycleId !== undefined ? { lifecycleId } : {}),
         ...(dto.marketingOptOut !== undefined
           ? { marketingOptOut: !!dto.marketingOptOut }

@@ -48,6 +48,11 @@ export class CreateContactDto {
 
     @Transform(blankStringToNull)
     @IsOptional()
+    @IsString()
+    avatarUrl?: string | null;
+
+    @Transform(blankStringToNull)
+    @IsOptional()
     @IsUUID()
     lifecycleId?: string | null;
 

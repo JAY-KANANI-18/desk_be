@@ -12,6 +12,10 @@ import {
     MESSENGER_TEMPLATE_CATALOG,
     MessengerTemplateCatalogItem,
 } from '../channels/providers/meta/messenger/messenger-templates.service';
+import {
+    isMissingOrStaticContactAvatarUrl,
+    resolveContactAvatarUrl,
+} from '../../common/contacts/static-contact-avatar';
 
 export interface SendAttachmentDto {
     type: string;
@@ -1328,7 +1332,10 @@ export class OutboundService {
                     data: { displayName: profile.name, avatarUrl: profile.avatarUrl ?? undefined },
                 });
             }
-            if (profile?.avatarUrl && !existing.contact.avatarUrl) {
+            if (
+                profile?.avatarUrl &&
+                isMissingOrStaticContactAvatarUrl(existing.contact.avatarUrl)
+            ) {
                 await this.prisma.contact.update({
                     where: { id: existing.contact.id },
                     data: { avatarUrl: profile.avatarUrl },
@@ -1345,7 +1352,7 @@ export class OutboundService {
                 workspaceId,
                 firstName: nameParts.firstName,
                 lastName: nameParts.lastName,
-                avatarUrl: profile?.avatarUrl,
+                avatarUrl: resolveContactAvatarUrl(profile?.avatarUrl),
                 // No phone/email for Messenger/Instagram — identifier is a PSID/IG ID
             },
         });

@@ -9,6 +9,10 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 import { PrismaService } from '../../prisma/prisma.service';
 import { MediaService } from '../media/media.service';
 import { ParsedAttachment } from '../channel-adapters/channel-adapter.interface';
+import {
+  isMissingOrStaticContactAvatarUrl,
+  resolveContactAvatarUrl,
+} from '../../common/contacts/static-contact-avatar';
 
 // ─── DTO ─────────────────────────────────────────────────────────────────────
 // This is what EVERY webhook controller passes to inbound.process()
@@ -190,7 +194,10 @@ export class InboundService {
             avatarUrl: profile.avatarUrl ?? contactChannel.avatarUrl,
           },
         });
-        if (profile.avatarUrl && !contactChannel.contact.avatarUrl) {
+        if (
+          profile.avatarUrl &&
+          isMissingOrStaticContactAvatarUrl(contactChannel.contact.avatarUrl)
+        ) {
           await this.prisma.contact.update({
             where: { id: contactChannel.contact.id },
             data: { avatarUrl: profile.avatarUrl },
@@ -248,7 +255,7 @@ export class InboundService {
         lastName: nameParts.lastName,
         email: channelType === 'email' ? contactIdentifier : undefined,
         phone: ['whatsapp', 'sms', 'exotel_call'].includes(channelType) ? contactIdentifier : undefined,
-        avatarUrl: profile?.avatarUrl,
+        avatarUrl: resolveContactAvatarUrl(profile?.avatarUrl),
         status: 'open',   // ← new contact starts as open
       },
     });
