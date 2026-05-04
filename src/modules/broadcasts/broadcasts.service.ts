@@ -441,7 +441,6 @@ export class BroadcastsService {
             data: {
               workspaceId,
               contactId: cc.contactId,
-              status: 'open',
             },
           }));
 
@@ -603,7 +602,6 @@ export class BroadcastsService {
             data: {
               workspaceId,
               contactId: cc.contactId,
-              status: 'open',
             },
           }));
 

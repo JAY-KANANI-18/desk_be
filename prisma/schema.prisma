@@ -686,7 +686,6 @@ model Conversation {
 
   subject String? // email subject / thread subject
 
-  status String @default("open") // open | pending | resolved | closed
 
   lastMessageId  String?   @unique @db.Uuid
   lastMessageAt  DateTime?
@@ -712,7 +711,6 @@ model Conversation {
 
   @@index([workspaceId])
   @@index([contactId])
-  @@index([status])
 }
 
 // ============================================================

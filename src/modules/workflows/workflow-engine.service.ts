@@ -1063,10 +1063,16 @@ export class WorkflowEngineService {
 
   // open_conversation
   private async handleOpenConversation(step: any, ctx: WorkflowRunContext) {
-    await this.prisma.conversation.updateMany({
-      where: { contactId: ctx.contactId, workspaceId: ctx.workspaceId },
-      data: { status: 'open', updatedAt: new Date() },
-    });
+    await this.prisma.$transaction([
+      this.prisma.contact.updateMany({
+        where: { id: ctx.contactId, workspaceId: ctx.workspaceId },
+        data: { status: 'open' },
+      }),
+      this.prisma.conversation.updateMany({
+        where: { contactId: ctx.contactId, workspaceId: ctx.workspaceId },
+        data: { updatedAt: new Date() },
+      }),
+    ]);
     return { output: { opened: true } };
   }
 
@@ -1075,14 +1081,24 @@ export class WorkflowEngineService {
     const { addClosingNotes, notes, category } = step.data;
 
     const conversation = await this.prisma.conversation.findFirst({
-      where: { contactId: ctx.contactId, workspaceId: ctx.workspaceId, status: { not: 'closed' } },
+      where: {
+        contactId: ctx.contactId,
+        workspaceId: ctx.workspaceId,
+        contact: { status: { not: 'closed' } },
+      },
     });
     if (!conversation) return { output: { skipped: true } };
 
-    await this.prisma.conversation.update({
-      where: { id: conversation.id },
-      data: { status: 'closed', resolvedAt: new Date() },
-    });
+    await this.prisma.$transaction([
+      this.prisma.contact.update({
+        where: { id: ctx.contactId },
+        data: { status: 'closed' },
+      }),
+      this.prisma.conversation.update({
+        where: { id: conversation.id },
+        data: { resolvedAt: new Date() },
+      }),
+    ]);
 
     if (addClosingNotes && notes) {
       await this.prisma.message.create({
@@ -1120,7 +1136,11 @@ export class WorkflowEngineService {
     if (!text) return { output: { skipped: true, reason: 'empty comment' } };
 
     const conversation = await this.prisma.conversation.findFirst({
-      where: { contactId: ctx.contactId, status: { not: 'closed' } },
+      where: {
+        contactId: ctx.contactId,
+        workspaceId: ctx.workspaceId,
+        contact: { status: { not: 'closed' } },
+      },
     });
     if (!conversation) return { output: { skipped: true, reason: 'no open conversation' } };
 

@@ -665,7 +665,7 @@ export class AiAssistService {
       conversation: {
         id: conversation.id,
         subject: conversation.subject,
-        status: conversation.status,
+        status: conversation.contact.status ?? 'unknown',
         priority: conversation.priority,
         createdAt: conversation.createdAt.toISOString(),
         updatedAt: conversation.updatedAt.toISOString(),

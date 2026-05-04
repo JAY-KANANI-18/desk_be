@@ -24,6 +24,7 @@ export interface PrivateRepliesConfig {
   scope: PrivateReplyScope;
   selectedPostIds: string[];
   message: string;
+  postMessages: PrivateReplyPostMessage[];
   updatedAt?: string | null;
 }
 
@@ -47,6 +48,13 @@ export interface MetaAutomationTarget {
   permalink?: string | null;
   thumbnailUrl?: string | null;
   createdAt?: string | null;
+}
+
+export interface PrivateReplyPostMessage {
+  postId: string;
+  message: string;
+  target?: MetaAutomationTarget | null;
+  updatedAt?: string | null;
 }
 
 interface ChannelAutomationConfig {
@@ -90,13 +98,22 @@ export class MetaAutomationService {
   ) {
     const channel = await this.findChannel(channelId, workspaceId);
     const automation = this.getAutomationConfig(channel);
+    const scope = input.scope === 'selected' ? 'selected' : 'all';
+    const postMessages =
+      scope === 'selected'
+        ? this.normalisePrivateReplyPostMessages(
+            input.postMessages,
+            input.selectedPostIds,
+            input.message,
+            true,
+          )
+        : [];
     const next: PrivateRepliesConfig = {
       enabled: Boolean(input.enabled),
-      scope: input.scope === 'selected' ? 'selected' : 'all',
-      selectedPostIds: Array.isArray(input.selectedPostIds)
-        ? input.selectedPostIds.filter(Boolean)
-        : [],
+      scope,
+      selectedPostIds: postMessages.map((item) => item.postId),
       message: String(input.message ?? '').trim(),
+      postMessages,
       updatedAt: new Date().toISOString(),
     };
 
@@ -228,9 +245,15 @@ export class MetaAutomationService {
   async processCommentEvent(channelId: string, workspaceId: string, payload: CommentEventPayload) {
     const channel = await this.findChannel(channelId, workspaceId);
     const config = this.normalisePrivateReplies(this.getAutomationConfig(channel).privateReplies);
+    const selectedRule =
+      config.scope === 'selected'
+        ? this.findMatchingPrivateReplyPostMessage(config, payload.postId)
+        : null;
+    const messageTemplate =
+      config.scope === 'selected' ? selectedRule?.message ?? '' : config.message;
 
     this.logger.log(
-      `Private reply event channel=${channel.id} type=${channel.type} comment=${payload.commentId} post=${payload.postId ?? 'none'} commenter=${payload.commenterId ?? 'unknown'} enabled=${config.enabled} scope=${config.scope} hasMessage=${Boolean(config.message)}`,
+      `Private reply event channel=${channel.id} type=${channel.type} comment=${payload.commentId} post=${payload.postId ?? 'none'} commenter=${payload.commenterId ?? 'unknown'} enabled=${config.enabled} scope=${config.scope} postRules=${config.postMessages.length} hasMessage=${Boolean(messageTemplate)}`,
     );
 
     if (!config.enabled) {
@@ -240,20 +263,23 @@ export class MetaAutomationService {
       return false;
     }
 
-    if (!config.message) {
+    if (config.scope === 'selected') {
+      if (!payload.postId || !selectedRule) {
+        this.logger.warn(
+          `Private reply skipped reason=post_not_selected channel=${channel.id} comment=${payload.commentId} post=${payload.postId ?? 'none'} selected=${config.selectedPostIds.join(',')}`,
+        );
+        return false;
+      }
+
+      if (!selectedRule.message.trim()) {
+        this.logger.warn(
+          `Private reply skipped reason=empty_post_message channel=${channel.id} comment=${payload.commentId} post=${payload.postId}`,
+        );
+        return false;
+      }
+    } else if (!messageTemplate.trim()) {
       this.logger.warn(
         `Private reply skipped reason=empty_message channel=${channel.id} comment=${payload.commentId}`,
-      );
-      return false;
-    }
-
-    if (
-      config.scope === 'selected' &&
-      config.selectedPostIds.length > 0 &&
-      (!payload.postId || !config.selectedPostIds.includes(payload.postId))
-    ) {
-      this.logger.warn(
-        `Private reply skipped reason=post_not_selected channel=${channel.id} comment=${payload.commentId} post=${payload.postId ?? 'none'} selected=${config.selectedPostIds.join(',')}`,
       );
       return false;
     }
@@ -282,7 +308,7 @@ export class MetaAutomationService {
       return false;
     }
 
-    const message = this.interpolateAutomationText(config.message, {
+    const message = this.interpolateAutomationText(messageTemplate, {
       comment_text: payload.commentText ?? '',
       post_id: payload.postId ?? '',
       commenter_name: payload.commenterName ?? '',
@@ -309,6 +335,8 @@ export class MetaAutomationService {
         triggerType: 'comment',
         recipientId: payload.commenterId ?? null,
         externalId: payload.commentId,
+        postId: payload.postId ?? null,
+        replyRulePostId: selectedRule?.postId ?? null,
         message,
       });
 
@@ -733,15 +761,146 @@ export class MetaAutomationService {
   private normalisePrivateReplies(
     input: PrivateRepliesConfig | undefined,
   ): PrivateRepliesConfig {
+    const postMessages = this.normalisePrivateReplyPostMessages(
+      input?.postMessages,
+      input?.selectedPostIds,
+      input?.message,
+      false,
+    );
+    const selectedPostIds =
+      postMessages.length > 0
+        ? postMessages.map((item) => item.postId)
+        : Array.isArray(input?.selectedPostIds)
+          ? input!.selectedPostIds.filter(Boolean)
+          : [];
+
     return {
       enabled: Boolean(input?.enabled),
       scope: input?.scope === 'selected' ? 'selected' : 'all',
-      selectedPostIds: Array.isArray(input?.selectedPostIds)
-        ? input!.selectedPostIds.filter(Boolean)
-        : [],
+      selectedPostIds,
       message: String(input?.message ?? ''),
+      postMessages,
       updatedAt: input?.updatedAt ?? null,
     };
+  }
+
+  private normalisePrivateReplyPostMessages(
+    input: unknown,
+    selectedPostIds: unknown,
+    fallbackMessage: unknown,
+    rejectDuplicates: boolean,
+  ): PrivateReplyPostMessage[] {
+    const seen = new Set<string>();
+    const result: PrivateReplyPostMessage[] = [];
+
+    if (Array.isArray(input) && input.length > 0) {
+      for (const item of input) {
+        const record =
+          item && typeof item === 'object'
+            ? (item as Record<string, unknown>)
+            : {};
+        const postId = String(record.postId ?? '').trim();
+        if (!postId) continue;
+
+        if (seen.has(postId)) {
+          if (rejectDuplicates) {
+            throw new BadRequestException(
+              'Only one private reply message is allowed per post',
+            );
+          }
+          continue;
+        }
+
+        seen.add(postId);
+        result.push({
+          postId,
+          message: String(record.message ?? '').trim(),
+          target: this.normaliseTargetSnapshot(record.target),
+          updatedAt: String(record.updatedAt ?? '').trim() || null,
+        });
+      }
+
+      return result;
+    }
+
+    if (Array.isArray(selectedPostIds)) {
+      const message = String(fallbackMessage ?? '').trim();
+      for (const value of selectedPostIds) {
+        const postId = String(value ?? '').trim();
+        if (!postId || seen.has(postId)) continue;
+        seen.add(postId);
+        result.push({
+          postId,
+          message,
+          target: null,
+          updatedAt: null,
+        });
+      }
+    }
+
+    return result;
+  }
+
+  private normaliseTargetSnapshot(input: unknown): MetaAutomationTarget | null {
+    if (!input || typeof input !== 'object') {
+      return null;
+    }
+
+    const record = input as Record<string, unknown>;
+    const id = String(record.id ?? record.postId ?? '').trim();
+    if (!id) {
+      return null;
+    }
+
+    return {
+      id,
+      title: String(record.title ?? 'Post').trim() || 'Post',
+      subtitle:
+        record.subtitle === null || record.subtitle === undefined
+          ? null
+          : String(record.subtitle),
+      type: String(record.type ?? 'post').trim() || 'post',
+      permalink:
+        record.permalink === null || record.permalink === undefined
+          ? null
+          : String(record.permalink),
+      thumbnailUrl:
+        record.thumbnailUrl === null || record.thumbnailUrl === undefined
+          ? null
+          : String(record.thumbnailUrl),
+      createdAt:
+        record.createdAt === null || record.createdAt === undefined
+          ? null
+          : String(record.createdAt),
+    };
+  }
+
+  private findMatchingPrivateReplyPostMessage(
+    config: PrivateRepliesConfig,
+    postId?: string | null,
+  ): PrivateReplyPostMessage | null {
+    if (!postId) {
+      return null;
+    }
+
+    return (
+      config.postMessages.find((item) => this.postIdsMatch(item.postId, postId)) ??
+      null
+    );
+  }
+
+  private postIdsMatch(configuredPostId: string, eventPostId: string) {
+    if (configuredPostId === eventPostId) {
+      return true;
+    }
+
+    const configuredSuffix = configuredPostId.split('_').pop();
+    const eventSuffix = eventPostId.split('_').pop();
+    return Boolean(
+      configuredSuffix &&
+        eventSuffix &&
+        configuredSuffix === eventSuffix,
+    );
   }
 
   private normaliseStoryReplies(

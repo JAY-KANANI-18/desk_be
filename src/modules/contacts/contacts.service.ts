@@ -578,12 +578,10 @@ async removeTag(workspaceId: string, contactId: string, tagId: string) {
           score += 20;
         }
 
-        const [conversationCount, openConversationCount] = await Promise.all([
-          this.prisma.conversation.count({ where: { workspaceId, contactId: candidate.id } }),
-          this.prisma.conversation.count({
-            where: { workspaceId, contactId: candidate.id, status: { not: 'closed' } },
-          }),
-        ]);
+        const conversationCount = await this.prisma.conversation.count({
+          where: { workspaceId, contactId: candidate.id },
+        });
+        const openConversationCount = candidate.status === 'closed' ? 0 : conversationCount;
 
         return {
           contact: this.toContactResponse(candidate),
@@ -692,6 +690,9 @@ async removeTag(workspaceId: string, contactId: string, tagId: string) {
           company: resolution.company ?? null,
           lifecycleId: resolution.lifecycleId ?? primary.lifecycleId ?? secondary.lifecycleId ?? null,
           marketingOptOut: !!resolution.marketingOptOut,
+          status: this.pickMergedConversationStatus(
+            [primary.status, secondary.status].filter((status): status is string => Boolean(status)),
+          ),
         },
       });
 
@@ -810,7 +811,6 @@ async removeTag(workspaceId: string, contactId: string, tagId: string) {
               survivorConversation.subject ??
               allConversations.find((conversation) => conversation.subject)?.subject ??
               null,
-            status: this.pickMergedConversationStatus(allConversations.map((conversation) => conversation.status)),
             priority: this.pickMergedConversationPriority(allConversations.map((conversation) => conversation.priority)),
             unreadCount: allConversations.reduce((sum, conversation) => sum + conversation.unreadCount, 0),
             lastMessageId: latestMessage?.id ?? null,

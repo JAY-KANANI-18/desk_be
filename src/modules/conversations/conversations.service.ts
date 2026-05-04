@@ -226,9 +226,10 @@ export class ConversationsService {
 
     // ── Build where clause ────────────────────────────────────────────────────
     const where: Prisma.ConversationWhereInput = { workspaceId };
+    const contactWhere: Prisma.ContactWhereInput = {};
 
     if (status && status !== 'all') {
-      where.status = status;
+      contactWhere.status = status;
     }
 
     if (priority && priority !== 'all') {
@@ -251,34 +252,35 @@ export class ConversationsService {
     // Assignee filter
     if (assigneeId) {
       if (assigneeId === 'unassigned') {
-        where.contact = { assigneeId: null };
+        contactWhere.assigneeId = null;
       } else if (assigneeId === 'me' && actorUserId) {
-        where.contact = { assigneeId: actorUserId };
+        contactWhere.assigneeId = actorUserId;
       } else {
         // specific UUID
-        where.contact = { assigneeId };
+        contactWhere.assigneeId = assigneeId;
       }
     }
     if (lifecycleId) {
-      where.contact = { lifecycleId };
+      contactWhere.lifecycleId = lifecycleId;
     }
 
     if (teamId) {
-      where.contact = { ...(where.contact as any), teamId };
+      contactWhere.teamId = teamId;
     }
 
     // Search by contact name / email / phone
     if (search?.trim()) {
       const q = search.trim();
-      where.contact = {
-        ...(where.contact as any),
-        OR: [
-          { firstName: { contains: q, mode: 'insensitive' } },
-          { lastName: { contains: q, mode: 'insensitive' } },
-          { email: { contains: q, mode: 'insensitive' } },
-          { phone: { contains: q, mode: 'insensitive' } },
-        ],
-      };
+      contactWhere.OR = [
+        { firstName: { contains: q, mode: 'insensitive' } },
+        { lastName: { contains: q, mode: 'insensitive' } },
+        { email: { contains: q, mode: 'insensitive' } },
+        { phone: { contains: q, mode: 'insensitive' } },
+      ];
+    }
+
+    if (Object.keys(contactWhere).length > 0) {
+      where.contact = contactWhere;
     }
 
     // ── Cursor pagination ─────────────────────────────────────────────────────
@@ -356,12 +358,18 @@ export class ConversationsService {
     });
     if (!contact) throw new NotFoundException(`Contact ${contactId} not found`);
 
+    if (contact.status !== 'open') {
+      await this.prisma.contact.update({
+        where: { id: contactId },
+        data: { status: 'open' },
+      });
+    }
+
     const conv = await this.prisma.conversation.create({
       data: {
         workspaceId,
         contactId,
 
-        status: 'open',
         priority: 'normal',
       },
       include: CONV_INCLUDE,
@@ -373,7 +381,7 @@ export class ConversationsService {
       conversationId: conv.id,
       eventType: 'open',
       actorType: 'user',
-      metadata: { previousStatus: null } satisfies OpenActivityMeta,
+      metadata: { previousStatus: contact.status ?? null } satisfies OpenActivityMeta,
     });
 
     this.emitter.emit('conversation.created', conv);

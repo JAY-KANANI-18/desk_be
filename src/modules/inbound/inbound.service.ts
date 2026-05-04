@@ -317,7 +317,6 @@ export class InboundService {
         workspaceId,
         contactId,
         subject,
-        status: 'open',
       },
     });
   }

@@ -71,9 +71,9 @@ export class AnalyticsService {
 
         // Build where for selected tab
         const where: any = { workspaceId };
-        if (tab === 'open') where.status = 'open';
-        if (tab === 'assigned') where.assigneeId = { not: null };
-        if (tab === 'unassigned') { where.assigneeId = null; where.status = 'open'; }
+        if (tab === 'open') where.contact = { status: 'open' };
+        if (tab === 'assigned') where.contact = { assigneeId: { not: null } };
+        if (tab === 'unassigned') where.contact = { assigneeId: null, status: 'open' };
 
         const rows = await this.prisma.conversation.findMany({
             where,
@@ -800,16 +800,25 @@ export class AnalyticsService {
     }
 
     async getConversationsByStatus(workspaceId: string, filter: AnalyticsFilterDto) {
-        const rows = await this.prisma.conversation.groupBy({
-            by: ['status'],
+        const rows = await this.prisma.conversation.findMany({
             where: this.buildConversationWhere(workspaceId, filter),
-            _count: { _all: true },
+            select: {
+                contact: {
+                    select: { status: true },
+                },
+            },
         });
 
+        const counts = rows.reduce<Record<string, number>>((acc, row) => {
+            const status = row.contact?.status || 'unknown';
+            acc[status] = (acc[status] ?? 0) + 1;
+            return acc;
+        }, {});
+
         return this.mapBarDonut(
-            rows.map(r => ({
-                label: r.status || 'unknown',
-                value: r._count._all,
+            Object.entries(counts).map(([status, count]) => ({
+                label: status,
+                value: count,
             })),
         );
     }
@@ -827,13 +836,13 @@ export class AnalyticsService {
                 this.prisma.conversation.count({
                     where: {
                         ...this.buildConversationWhere(workspaceId, filter),
-                        status: 'open',
+                        contact: { status: 'open' },
                     },
                 }),
                 this.prisma.conversation.count({
                     where: {
                         ...this.buildConversationWhere(workspaceId, filter),
-                        status: 'resolved',
+                        contact: { status: 'resolved' },
                     },
                 }),
             ]);

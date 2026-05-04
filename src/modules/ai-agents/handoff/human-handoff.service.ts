@@ -164,7 +164,7 @@ export class HumanHandoffService {
             workspaceId,
             assigneeId: member.userId,
             mergedIntoContactId: null,
-            conversations: { some: { status: { not: 'closed' } } },
+            status: { not: 'closed' },
           },
         }),
       })),

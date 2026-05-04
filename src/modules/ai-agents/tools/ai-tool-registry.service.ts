@@ -308,10 +308,23 @@ export class AiToolRegistryService {
   private async closeConversation(ctx: AiToolExecutionContext, input: Record<string, any>) {
     if (!ctx.conversationId) throw new BadRequestException('conversationId is required');
     aiAgentsDebug.log('tools.closeConversation', 'start', { ctx, input });
-    await this.prisma.conversation.updateMany({
+    const conversation = await this.prisma.conversation.findFirst({
       where: { id: ctx.conversationId, workspaceId: ctx.workspaceId },
-      data: { status: 'closed', resolvedAt: new Date() },
+      select: { id: true, contactId: true },
     });
+
+    if (conversation) {
+      await this.prisma.$transaction([
+        this.prisma.contact.update({
+          where: { id: conversation.contactId },
+          data: { status: 'closed' },
+        }),
+        this.prisma.conversation.update({
+          where: { id: conversation.id },
+          data: { resolvedAt: new Date() },
+        }),
+      ]);
+    }
     await this.recordConversationActivity(ctx, 'ai_closed_conversation', { reason: input.reason || 'resolved_by_ai' });
     const result = { conversationId: ctx.conversationId, status: 'closed' };
     aiAgentsDebug.log('tools.closeConversation', 'result', { ctx, result });

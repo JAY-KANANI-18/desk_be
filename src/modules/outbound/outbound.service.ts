@@ -1385,7 +1385,7 @@ export class OutboundService {
             where: {
                 workspaceId,
                 contactId,
-                status: { not: 'closed' },
+                contact: { status: { not: 'closed' } },
             },
             orderBy: { updatedAt: 'desc' },
         });
@@ -1397,12 +1397,16 @@ export class OutboundService {
             });
         }
 
+        await this.prisma.contact.update({
+            where: { id: contactId },
+            data: { status: 'open' },
+        });
+
         return this.prisma.conversation.create({
             data: {
                 workspaceId,
 
                 contactId,
-                status: 'open',
                 priority: 'normal',
             },
         });
