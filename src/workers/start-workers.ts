@@ -3,6 +3,7 @@ import { PrismaClient } from '@prisma/client';
 import { RedisService } from '../redis/redis.service';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { NotificationWorker } from './notification.worker';
+import { ActivityService } from '../modules/activity/activity.service';
 import { WorkflowEngineService } from '../modules/workflows/workflow-engine.service';
 import { createWorkflowWorker } from './workflow.worker';
 
@@ -18,7 +19,8 @@ async function start() {
   console.log('Notification worker started');
   console.log('Notification debug logging', notificationDebugEnabled ? 'enabled' : 'disabled');
 
-  const workflowEngine = new WorkflowEngineService(prisma as any, redis);
+  const activity = new ActivityService(prisma as any, events);
+  const workflowEngine = new WorkflowEngineService(prisma as any, redis, activity);
   const workflowWorker = createWorkflowWorker(workflowEngine);
 
   workflowWorker.on('completed', (job) => {

@@ -157,7 +157,7 @@ export class MetaProvider implements ChannelProvider {
       return {
         ...base,
         messageType: 'interactive',
-        text: msg.text ?? msg.quick_reply.payload,
+        text: msg.quick_reply.payload ?? msg.text,
         attachments: [],
         metadata: { ...storyReplyMeta, quickReply: msg.quick_reply },
       };

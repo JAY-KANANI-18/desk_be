@@ -71,14 +71,24 @@ export class InboundService {
     } = dto;
 
     // ── 1. Upsert Contact + ContactChannel ─────────────────────────────────
-    const { contact, contactChannel } = await this.upsertContact({
+    const { contact, contactChannel, openedConversation } = await this.upsertContact({
       workspaceId, channelId, channelType, contactIdentifier, profile,
     });
 
     // ── 2. Upsert Conversation ─────────────────────────────────────────────
-    const  conversation = await this.upsertConversation({
+    const { conversation, created: conversationCreated } = await this.upsertConversation({
       workspaceId, channelId, channelType, contactId: contact.id, subject,
     });
+
+    if (openedConversation || conversationCreated) {
+      this.emitter.emit('conversation.opened', {
+        workspaceId,
+        contactId: contact.id,
+        conversationId: conversation.id,
+        source: openedConversation?.source ?? 'conversation',
+        channel: channelType,
+      });
+    }
     
 
     // ── 3. Process media attachments ───────────────────────────────────────
@@ -232,13 +242,11 @@ export class InboundService {
         contactChannel.contact.status = 'open';
 
         // Emit for workflow engine — conversation_opened trigger
-        this.emitter.emit('conversation.opened', {
-          workspaceId,
-          contactId: contactChannel.contact.id,
-          conversationId: null,   // filled after upsertConversation
-          source: 'contact',
-          channel: channelType,
-        });
+        return {
+          contact: contactChannel.contact,
+          contactChannel,
+          openedConversation: { source: 'contact' },
+        };
       }
 
       return { contact: contactChannel.contact, contactChannel };
@@ -274,14 +282,7 @@ export class InboundService {
       include: { contact: true },
     });
 
-    this.emitter.emit('conversation.opened', {
-          workspaceId,
-          contactId: contactChannel.contact.id,
-          conversationId: null,   // filled after upsertConversation
-          source: 'contact',
-          channel: channelType,
-        });
-    return { contact, contactChannel };
+    return { contact, contactChannel, openedConversation: { source: 'contact' } };
   }
 
   // ─── Conversation upsert ───────────────────────────────────────────────────
@@ -306,19 +307,21 @@ export class InboundService {
     });
 
     if (existing) {
-      return this.prisma.conversation.update({
+      const conversation = await this.prisma.conversation.update({
         where: { id: existing.id },
         data: { updatedAt: new Date() },
       });
+      return { conversation, created: false };
     }
 
-    return this.prisma.conversation.create({
+    const conversation = await this.prisma.conversation.create({
       data: {
         workspaceId,
         contactId,
         subject,
       },
     });
+    return { conversation, created: true };
   }
   // ─── Helpers ──────────────────────────────────────────────────────────────
 

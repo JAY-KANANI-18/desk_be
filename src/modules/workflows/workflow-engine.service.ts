@@ -1,13 +1,15 @@
 // src/modules/workflows/workflow-engine.service.ts
 import { Injectable, Logger } from '@nestjs/common';
+import { QueueEvents } from 'bullmq';
 import { NotificationType } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { RedisService } from '../../redis/redis.service';
 import { workflowQueue, WorkflowJob } from '../../queues/workflow.queue';
+import { connection } from '../../queues/connection';
+import { messageProcessingQueue } from '../../queues/message-processing.queue';
 import { OnEvent } from '@nestjs/event-emitter';
 import { WorkflowRunContext } from './workflow-run.context';
-import { log } from 'console';
-import { OutboundService } from '../outbound/outbound.service';
+import type { SendMessageDto } from '../outbound/outbound.service';
 import { ActivityService } from '../activity/activity.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import {
@@ -19,6 +21,38 @@ const RUN_CTX_TTL = 60 * 60 * 24;
 const ACTIVE_RUN_KEY = (workspaceId: string, contactId: string) =>
   `wf:active:${workspaceId}:${contactId}`;
 const RUN_CTX_KEY = (runId: string) => `wf:ctx:${runId}`;
+const ACTIVITY_TIMELINE_CHANNEL = 'activity.timeline';
+const PROCESSED_ANSWER_MESSAGE_IDS_KEY = '__processedAnswerMessageIds';
+const MAX_PROCESSED_ANSWER_MESSAGE_IDS = 100;
+const WORKFLOW_OUTBOUND_WAIT_TIMEOUT_MS = 30_000;
+
+let messageProcessingQueueEvents: QueueEvents | null = null;
+
+const getMessageProcessingQueueEvents = () => {
+  if (!messageProcessingQueueEvents) {
+    messageProcessingQueueEvents = new QueueEvents(messageProcessingQueue.name, { connection });
+  }
+  return messageProcessingQueueEvents;
+};
+
+type ContactWorkflowField =
+  | 'firstName'
+  | 'lastName'
+  | 'email'
+  | 'phone'
+  | 'company'
+  | 'status';
+
+const CONTACT_FIELD_ALIASES: Record<string, ContactWorkflowField> = {
+  firstName: 'firstName',
+  first_name: 'firstName',
+  lastName: 'lastName',
+  last_name: 'lastName',
+  email: 'email',
+  phone: 'phone',
+  company: 'company',
+  status: 'status',
+};
 
 @Injectable()
 export class WorkflowEngineService {
@@ -384,6 +418,7 @@ export class WorkflowEngineService {
     const ctx: WorkflowRunContext = {
       runId: run.id,
       workflowId,
+      workflowName: workflow.name,
       workspaceId,
       contactId,
       conversationId,
@@ -394,6 +429,7 @@ export class WorkflowEngineService {
     };
 
     await this.saveContext(ctx);
+    await this.recordWorkflowLifecycleActivity(ctx, 'workflow_started');
 
     await this.redis.client.setex(
       ACTIVE_RUN_KEY(workspaceId, contactId),
@@ -503,6 +539,13 @@ export class WorkflowEngineService {
     const ctx = await this.loadContext(runId);
     if (!ctx) return;
 
+    if (this.hasProcessedAnswerMessage(ctx, resumeData?.lastAnswerMessageId)) {
+      this.logger.debug(
+        `Ignoring duplicate workflow answer message=${resumeData.lastAnswerMessageId} run=${runId}`,
+      );
+      return;
+    }
+
     ctx.vars = { ...ctx.vars, ...resumeData };
     await this.saveContext(ctx);
 
@@ -547,7 +590,7 @@ export class WorkflowEngineService {
 
   // send_message
   private async handleSendMessage(step: any, ctx: WorkflowRunContext) {
-  const { defaultMessage, attachments = [] } = step.data;
+  const { defaultMessage, attachments = [], metadata = {} } = step.data;
 
   // Require either text or attachments
   if (!defaultMessage?.text && attachments.length === 0) {
@@ -579,25 +622,48 @@ export class WorkflowEngineService {
     return { output: { skipped: true, reason: 'no channel resolved' } };
   }
 
-  await this.redis.client.publish(
-    'outbound.send',
-    JSON.stringify({
-      workspaceId:    ctx.workspaceId,
-      conversationId: conversation.id,
-      channelId,
-      text:           text || undefined,
-      authorId:       null,
+  const outboundPayload: SendMessageDto = {
+    workspaceId: ctx.workspaceId,
+    conversationId: conversation.id,
+    channelId,
+    text: text || undefined,
       // Pass attachments directly — already uploaded to R2, just URLs
-      attachments: attachments.map((att: any) => ({
-        url:      att.url,
-        type:     att.type,
-        filename: att.filename,
-        mimeType: att.mimeType,
-        size:     att.size,
-      })),
-      metadata: {},
-    }),
-  );
+    attachments: attachments.map((att: any) => ({
+      url: att.url,
+      type: att.type,
+      filename: att.filename,
+      mimeType: att.mimeType,
+      size: att.size,
+    })),
+    metadata,
+  };
+
+  const outboundJob = await messageProcessingQueue.add('outbound.send_message', {
+    kind: 'outbound.send_message',
+    payload: outboundPayload,
+  });
+
+  try {
+    const queueEvents = getMessageProcessingQueueEvents();
+    await queueEvents.waitUntilReady();
+    await outboundJob.waitUntilFinished(queueEvents, WORKFLOW_OUTBOUND_WAIT_TIMEOUT_MS);
+  } catch (err: any) {
+    const message = err?.message ?? String(err);
+    if (message.toLowerCase().includes('timed out')) {
+      this.logger.warn(
+        `Workflow outbound message still processing after timeout run=${ctx.runId} step=${step.id ?? step.type ?? 'send_message'}`,
+      );
+      return {
+        output: {
+          queued: true,
+          text,
+          attachments: attachments.length,
+          warning: 'outbound message still processing',
+        },
+      };
+    }
+    throw err;
+  }
 
   return { output: { sent: true, text, attachments: attachments.length } };
 }
@@ -605,7 +671,7 @@ export class WorkflowEngineService {
 
   // ask_question
  private async handleAskQuestion(step: any, ctx: WorkflowRunContext, config: any) {
-  const lastAnswer = ctx.vars?.lastAnswer;
+  const rawAnswer = ctx.vars?.lastAnswer;
   const steps: any[] = config.steps ?? [];
 
   const findConnector = (name: string) =>
@@ -615,14 +681,22 @@ export class WorkflowEngineService {
              s.name === name,
     );
 
-  if (lastAnswer === undefined) {
+  if (rawAnswer === undefined) {
+    const quickReplies = this.buildQuestionQuickReplies(step.data);
     await this.handleSendMessage(
-      { data: { channel: 'last_interacted', defaultMessage: { text: step.data.questionText } } },
+      {
+        data: {
+          channel: 'last_interacted',
+          defaultMessage: { text: step.data.questionText },
+          metadata: quickReplies.length > 0 ? { quickReplies } : {},
+        },
+      },
       ctx,
     );
-    return { output: { waiting: true }, suspend: true };
+    return { output: { waiting: true, quickReplies: quickReplies.length }, suspend: true };
   }
 
+  const lastAnswer = this.normaliseQuestionAnswer(rawAnswer, step.data.questionType, step.data);
   const validation = this.validateAnswer(lastAnswer, step.data.questionType, step.data);
 
   if (!validation.valid) {
@@ -631,6 +705,7 @@ export class WorkflowEngineService {
     );
 
     // Clear answer from context
+    this.markProcessedAnswerMessage(ctx, ctx.vars?.lastAnswerMessageId);
     delete ctx.vars.lastAnswer;
     delete ctx.vars.lastAnswerMessageId;
 
@@ -645,6 +720,7 @@ export class WorkflowEngineService {
   }
 
   // Valid answer
+  ctx.vars.lastAnswer = lastAnswer;
   const output: Record<string, any> = { answer: lastAnswer, valid: true };
 
   if (step.data.saveAsVariable && step.data.variableName) {
@@ -672,6 +748,7 @@ export class WorkflowEngineService {
     }
   }
 
+  this.markProcessedAnswerMessage(ctx, ctx.vars?.lastAnswerMessageId);
   delete ctx.vars.lastAnswer;
   delete ctx.vars.lastAnswerMessageId;
 
@@ -763,9 +840,7 @@ export class WorkflowEngineService {
         const options: { id: string; label: string }[] = stepData.multipleChoiceOptions ?? [];
         if (!options.length) return { valid: true };
 
-        const match = options.find(
-          (o) => o.label.toLowerCase() === val.toLowerCase(),
-        );
+        const match = this.resolveMultipleChoiceAnswer(val, stepData);
         if (!match) {
           return {
             valid: false,
@@ -784,6 +859,78 @@ export class WorkflowEngineService {
       default:
         return { valid: true };
     }
+  }
+
+  private normaliseQuestionAnswer(
+    answer: unknown,
+    questionType: string,
+    stepData: any,
+  ): string {
+    const val = typeof answer === 'string' ? answer.trim() : String(answer ?? '').trim();
+    if (questionType === 'rating') {
+      return this.resolveRatingAnswer(val) ?? val;
+    }
+
+    if (questionType !== 'multiple_choice') return val;
+
+    return this.resolveMultipleChoiceAnswer(val, stepData) ?? val;
+  }
+
+  private resolveRatingAnswer(answer: string): string | null {
+    const compact = answer.replace(/\s+/g, '').replace(/\uFE0F/g, '');
+    if (!compact) return null;
+
+    if (/^[⭐★]+$/.test(compact)) {
+      const rating = Array.from(compact).length;
+      return rating >= 1 && rating <= 5 ? String(rating) : null;
+    }
+
+    return null;
+  }
+
+  private resolveMultipleChoiceAnswer(answer: string, stepData: any): string | null {
+    const options: { id?: string; label?: string }[] = Array.isArray(stepData?.multipleChoiceOptions)
+      ? stepData.multipleChoiceOptions
+      : [];
+    if (!options.length) return null;
+
+    const val = answer.trim();
+    const numericIndex = Number(val);
+    if (Number.isInteger(numericIndex) && numericIndex >= 1 && numericIndex <= options.length) {
+      return options[numericIndex - 1]?.label?.trim() || null;
+    }
+
+    const match = options.find(
+      (option) => option.label?.trim().toLowerCase() === val.toLowerCase(),
+    );
+    return match?.label?.trim() || null;
+  }
+
+  private buildQuestionQuickReplies(stepData: any): Array<{ title: string; payload: string }> {
+    if (stepData?.questionType === 'rating') {
+      return Array.from({ length: 5 }, (_, index) => {
+        const rating = index + 1;
+        return { title: '⭐'.repeat(rating), payload: String(rating) };
+      });
+    }
+
+    if (stepData?.questionType !== 'multiple_choice') {
+      return [];
+    }
+
+    const options = Array.isArray(stepData.multipleChoiceOptions)
+      ? stepData.multipleChoiceOptions
+      : [];
+
+    return options
+      .map((option: any) => {
+        const label = typeof option?.label === 'string' ? option.label.trim() : '';
+        if (!label) return null;
+
+        return { title: label.slice(0, 20), payload: label };
+      })
+      .filter((option): option is { title: string; payload: string } => Boolean(option))
+      .slice(0, 13);
   }
 
   // assign_to
@@ -946,16 +1093,29 @@ export class WorkflowEngineService {
     const { fieldId, value } = step.data;
     if (!fieldId) return { output: { skipped: true, reason: 'no fieldId' } };
 
-    const interpolated = this.interpolate(String(value ?? ''), ctx);
+    const contactField = this.resolveContactWorkflowField(String(fieldId));
+    if (!contactField) {
+      throw new Error(`Unsupported contact field: ${fieldId}`);
+    }
 
-    await this.prisma.contact.update({
-      where: { id: ctx.contactId },
-      data: { [fieldId]: interpolated },
+    const interpolated = this.interpolate(String(value ?? ''), ctx);
+    const data: Partial<Record<ContactWorkflowField, string>> = {
+      [contactField]: interpolated,
+    };
+
+    const result = await this.prisma.contact.updateMany({
+      where: { id: ctx.contactId, workspaceId: ctx.workspaceId },
+      data,
     });
 
+    if (result.count === 0) {
+      throw new Error(`Contact ${ctx.contactId} not found in workspace ${ctx.workspaceId}`);
+    }
+
+    ctx.contact[contactField] = interpolated;
     ctx.contact[fieldId] = interpolated;
 
-    return { output: { fieldId, value: interpolated } };
+    return { output: { fieldId, contactField, value: interpolated } };
   }
 
   // branch — evaluates BranchCondition[] per connector
@@ -1067,6 +1227,8 @@ export class WorkflowEngineService {
     }
 
     await this.redis.client.incr(jumpKey);
+    delete ctx.vars.lastAnswer;
+    delete ctx.vars.lastAnswerMessageId;
     return { output: { jumped: true, to: targetStepId }, nextStepId: targetStepId };
   }
 
@@ -1198,6 +1360,7 @@ export class WorkflowEngineService {
   // date_time — routes to In Range / Out of Range connector
   private async handleDateTime(step: any, ctx: WorkflowRunContext, config: any) {
     const { timezone, mode, businessHours, dateRangeStart, dateRangeEnd } = step.data;
+    const timeZone = this.getSafeTimeZone(timezone);
     const now = new Date();
     const steps: any[] = config.steps ?? [];
 
@@ -1206,33 +1369,39 @@ export class WorkflowEngineService {
     );
 
     let inRange = false;
+    let currentDate: string | undefined;
+    let currentTime: string | undefined;
+    let currentDay: string | undefined;
 
     if (mode === 'business_hours' && businessHours) {
       const day = new Intl.DateTimeFormat('en-US', {
         weekday: 'long',
-        timeZone: timezone ?? 'UTC',
+        timeZone,
       }).format(now).toLowerCase();
 
       const time = new Intl.DateTimeFormat('en-US', {
         hour: '2-digit',
         minute: '2-digit',
         hour12: false,
-        timeZone: timezone ?? 'UTC',
+        timeZone,
       }).format(now);
 
+      currentDay = day;
+      currentTime = time;
       const hours = businessHours[day];
       if (hours?.enabled && hours.startTime && hours.endTime) {
         inRange = time >= hours.startTime && time <= hours.endTime;
       }
     } else if (mode === 'date_range' && dateRangeStart && dateRangeEnd) {
-      inRange = now >= new Date(dateRangeStart) && now <= new Date(dateRangeEnd);
+      currentDate = this.formatDateInTimeZone(now, timeZone);
+      inRange = this.isNowInDateRange(now, timeZone, dateRangeStart, dateRangeEnd);
     }
 
     const targetName = inRange ? 'In Range' : 'Out of Range';
-    const connector = connectors.find((c) => c.name === targetName);
+    const connector = this.findDateTimeConnector(step, connectors, inRange);
 
     return {
-      output: { inRange, targetName, timezone, mode },
+      output: { inRange, targetName, timezone: timeZone, mode, currentDate, currentDay, currentTime },
       branchConnectorId: connector?.id ?? null,
     };
   }
@@ -1321,6 +1490,11 @@ export class WorkflowEngineService {
     contact: Record<string, any>,
     triggerData: Record<string, any>,
   ): any {
+    const contactField = this.resolveContactWorkflowField(field);
+    if (contactField) {
+      return contact?.[contactField] ?? contact?.[field] ?? triggerData?.[contactField] ?? triggerData?.[field];
+    }
+
     // Try contact first, then trigger data
     return contact?.[field] ?? triggerData?.[field];
   }
@@ -1331,8 +1505,10 @@ export class WorkflowEngineService {
     const trigger = ctx.trigger;
 
     switch (category) {
-      case 'contact_field':
-        return contact?.[field];
+      case 'contact_field': {
+        const contactField = this.resolveContactWorkflowField(String(field ?? ''));
+        return contactField ? contact?.[contactField] ?? contact?.[field] : contact?.[field];
+      }
 
       case 'contact_tags':
         return contact?.tags ?? []; // string[] of tag IDs
@@ -1485,6 +1661,7 @@ export class WorkflowEngineService {
       where: { id: runId },
       data: { status: 'completed', completedAt: new Date() },
     });
+    await this.recordWorkflowLifecycleActivity(ctx, 'workflow_ended');
     await this.cleanupRun(runId, ctx);
     this.logger.log(`Run completed runId=${runId}`);
   }
@@ -1494,8 +1671,44 @@ export class WorkflowEngineService {
       where: { id: runId },
       data: { status: 'failed', failedAt: new Date(), error },
     });
+    await this.recordWorkflowLifecycleActivity(ctx, 'workflow_failed', { error });
     await this.cleanupRun(runId, ctx);
     this.logger.error(`Run failed runId=${runId} error=${error}`);
+  }
+
+  private async recordWorkflowLifecycleActivity(
+    ctx: WorkflowRunContext,
+    eventType: 'workflow_started' | 'workflow_ended' | 'workflow_failed',
+    opts: { error?: string } = {},
+  ) {
+    if (!ctx.conversationId || !this.activity) return;
+
+    try {
+      const activity = await this.activity.record({
+        workspaceId: ctx.workspaceId,
+        conversationId: ctx.conversationId,
+        eventType,
+        actorType: 'automation',
+        metadata: {
+          workflowId: ctx.workflowId,
+          workflowName: ctx.workflowName ?? 'Workflow',
+          runId: ctx.runId,
+          ...(opts.error ? { error: opts.error } : {}),
+        },
+      });
+      await this.redis.client.publish(
+        ACTIVITY_TIMELINE_CHANNEL,
+        JSON.stringify({
+          workspaceId: ctx.workspaceId,
+          conversationId: ctx.conversationId,
+          activity,
+        }),
+      );
+    } catch (err: any) {
+      this.logger.warn(
+        `Failed to record workflow lifecycle activity run=${ctx.runId}: ${err?.message ?? err}`,
+      );
+    }
   }
 
   private async cleanupRun(runId: string, ctx: WorkflowRunContext) {
@@ -1556,6 +1769,28 @@ export class WorkflowEngineService {
     );
   }
 
+  private hasProcessedAnswerMessage(ctx: WorkflowRunContext, messageId: unknown): boolean {
+    if (typeof messageId !== 'string' || !messageId.trim()) return false;
+    const processed = this.getProcessedAnswerMessageIds(ctx);
+    return processed.includes(messageId);
+  }
+
+  private markProcessedAnswerMessage(ctx: WorkflowRunContext, messageId: unknown) {
+    if (typeof messageId !== 'string' || !messageId.trim()) return;
+
+    const processed = this.getProcessedAnswerMessageIds(ctx)
+      .filter((id) => id !== messageId);
+    processed.push(messageId);
+    ctx.vars[PROCESSED_ANSWER_MESSAGE_IDS_KEY] = processed.slice(-MAX_PROCESSED_ANSWER_MESSAGE_IDS);
+  }
+
+  private getProcessedAnswerMessageIds(ctx: WorkflowRunContext): string[] {
+    const processed = ctx.vars?.[PROCESSED_ANSWER_MESSAGE_IDS_KEY];
+    return Array.isArray(processed)
+      ? processed.filter((id): id is string => typeof id === 'string' && id.trim().length > 0)
+      : [];
+  }
+
   private async loadContext(runId: string): Promise<WorkflowRunContext | null> {
     return this.redis.getJSON(RUN_CTX_KEY(runId));
   }
@@ -1581,6 +1816,80 @@ export class WorkflowEngineService {
       lifecycleId: contact.lifecycleId,
       lifecycleName: contact.lifecycle?.name,
     };
+  }
+
+  private resolveContactWorkflowField(fieldId: string): ContactWorkflowField | null {
+    return CONTACT_FIELD_ALIASES[fieldId] ?? null;
+  }
+
+  private findDateTimeConnector(
+    step: any,
+    connectors: any[],
+    inRange: boolean,
+  ): any | null {
+    const connectorIds = Array.isArray(step.data?.connectors)
+      ? step.data.connectors
+      : [];
+    const connectorId = connectorIds[inRange ? 0 : 1];
+    const targetName = inRange ? 'In Range' : 'Out of Range';
+
+    return (
+      connectors.find((connector) => connector.id === connectorId) ??
+      connectors.find((connector) => connector.name === targetName) ??
+      null
+    );
+  }
+
+  private isNowInDateRange(
+    now: Date,
+    timeZone: string,
+    dateRangeStart: string,
+    dateRangeEnd: string,
+  ): boolean {
+    if (this.isDateOnly(dateRangeStart) && this.isDateOnly(dateRangeEnd)) {
+      const currentDate = this.formatDateInTimeZone(now, timeZone);
+      return currentDate >= dateRangeStart && currentDate <= dateRangeEnd;
+    }
+
+    const start = new Date(dateRangeStart);
+    const end = new Date(dateRangeEnd);
+
+    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
+      return false;
+    }
+
+    return now >= start && now <= end;
+  }
+
+  private isDateOnly(value: string): boolean {
+    return /^\d{4}-\d{2}-\d{2}$/.test(value);
+  }
+
+  private formatDateInTimeZone(date: Date, timeZone: string): string {
+    const parts = new Intl.DateTimeFormat('en-US', {
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      timeZone,
+    }).formatToParts(date);
+    const year = parts.find((part) => part.type === 'year')?.value;
+    const month = parts.find((part) => part.type === 'month')?.value;
+    const day = parts.find((part) => part.type === 'day')?.value;
+
+    return `${year}-${month}-${day}`;
+  }
+
+  private getSafeTimeZone(timeZone: unknown): string {
+    if (typeof timeZone !== 'string' || !timeZone.trim()) {
+      return 'UTC';
+    }
+
+    try {
+      new Intl.DateTimeFormat('en-US', { timeZone });
+      return timeZone;
+    } catch {
+      return 'UTC';
+    }
   }
 
   private interpolate(template: string, ctx: WorkflowRunContext): string {

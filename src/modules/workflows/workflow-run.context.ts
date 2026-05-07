@@ -2,6 +2,7 @@
 export interface WorkflowRunContext {
   runId: string;
   workflowId: string;
+  workflowName?: string;
   workspaceId: string;
   contactId: string;
   conversationId?: string;

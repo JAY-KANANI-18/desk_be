@@ -23,7 +23,11 @@ export type ActivityEventType =
   // Priority
   | 'priority_changed'
   // SLA
-  | 'sla_breached';
+  | 'sla_breached'
+  // Workflow automation
+  | 'workflow_started'
+  | 'workflow_ended'
+  | 'workflow_failed';
 
 export type ActorType = 'user' | 'system' | 'automation' | 'bot';
 
@@ -100,6 +104,13 @@ export interface SlaBreachedActivityMeta {
   dueAt: string;
 }
 
+export interface WorkflowActivityMeta {
+  workflowId: string;
+  workflowName: string;
+  runId: string;
+  error?: string;
+}
+
 // ─── Union discriminator ──────────────────────────────────────────────────────
 
 export type ActivityMetadata =
@@ -114,7 +125,8 @@ export type ActivityMetadata =
   | NoteActivityMeta
   | LabelActivityMeta
   | PriorityChangedActivityMeta
-  | SlaBreachedActivityMeta;
+  | SlaBreachedActivityMeta
+  | WorkflowActivityMeta;
 
 // ─── Create activity DTO ──────────────────────────────────────────────────────
 

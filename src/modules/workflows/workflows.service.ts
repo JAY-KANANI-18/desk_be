@@ -13,25 +13,41 @@ type WorkflowListOptions = {
     limit?: number;
 };
 
+type WorkflowMutationDto = {
+    name?: unknown;
+    description?: unknown;
+    config?: unknown;
+};
+
+type WorkflowStepPayload = {
+    id: string;
+    type: string;
+    parentId: string;
+};
+
 @Injectable()
 export class WorkflowsService {
     constructor(private prisma: PrismaService) { }
 
-    async create(workspaceId: string, dto: any, userId: string) {
-        this.validateWorkflow(dto);
+    async create(workspaceId: string, dto: WorkflowMutationDto, userId: string) {
+        this.validateWorkflow(dto, { requireName: true });
+        const name = this.getRequiredString(dto.name, 'Workflow name is required');
+        const config =
+            dto.config === undefined ? null : (dto.config as Prisma.InputJsonValue);
 
         return this.prisma.workflow.create({
             data: {
                 workspaceId,
                 createBy: userId,
-                name: dto.name,
-                config: dto.config,
+                name,
+                description: typeof dto.description === 'string' ? dto.description : undefined,
+                config,
                 status: "draft"
             },
         });
     }
 
-    async update(workspaceId: string, id: string, dto: any) {
+    async update(workspaceId: string, id: string, dto: WorkflowMutationDto) {
         const workflow = await this.prisma.workflow.findFirst({
             where: { id, workspaceId },
         });
@@ -40,13 +56,27 @@ export class WorkflowsService {
             throw new NotFoundException('Workflow not found');
         }
 
-        // this.validateWorkflow(dto);
+        this.validateWorkflow(dto);
+        const data: Prisma.WorkflowUpdateInput = {};
+
+        if (dto.config !== undefined) {
+            data.config = dto.config as Prisma.InputJsonValue;
+        }
+
+        if (dto.name !== undefined) {
+            data.name = this.getRequiredString(dto.name, 'Workflow name is required');
+        }
+
+        if (dto.description !== undefined) {
+            data.description =
+                typeof dto.description === 'string' && dto.description.trim().length > 0
+                    ? dto.description.trim()
+                    : null;
+        }
 
         return this.prisma.workflow.update({
             where: { id },
-            data: {
-                config: dto.config,
-            },
+            data,
         });
     }
     async rename(workspaceId: string, id: string, dto: any) {
@@ -70,6 +100,8 @@ export class WorkflowsService {
         if (!workflow) {
             throw new NotFoundException('Workflow not found');
         }
+
+        this.validateWorkflow({ config: workflow.config });
 
         return this.prisma.workflow.update({
             where: { id },
@@ -183,42 +215,123 @@ export class WorkflowsService {
         return workflow;
     }
 
-    /**
-     * Basic structure validation
-     */
-    private validateWorkflow(dto: any) {
-        if (!dto.name) {
+    private validateWorkflow(
+        dto: WorkflowMutationDto,
+        options: { requireName?: boolean } = {},
+    ) {
+        if (options.requireName && !this.isNonEmptyString(dto.name)) {
             throw new BadRequestException('Workflow name is required');
         }
 
-        // if (!dto.trigger || !dto.trigger.type) {
-        //     throw new BadRequestException('Trigger is required');
-        // }
+        if (!options.requireName && dto.name !== undefined && !this.isNonEmptyString(dto.name)) {
+            throw new BadRequestException('Workflow name is required');
+        }
 
-        // if (!Array.isArray(dto.config)) {
-        //     throw new BadRequestException('config must be an array');
-        // }
+        this.validateWorkflowConfig(dto.config);
+    }
 
-        // for (const node of dto.config) {
-        //     if (!node.type) {
-        //         throw new BadRequestException('Node type is required');
-        //     }
+    private validateWorkflowConfig(config: unknown) {
+        if (config === undefined || config === null) {
+            return;
+        }
 
-        //     if (node.type === 'condition') {
-        //         if (!node.field || !node.operator) {
-        //             throw new BadRequestException(
-        //                 'Condition node requires field and operator',
-        //             );
-        //         }
-        //     }
+        if (!this.isRecord(config)) {
+            throw new BadRequestException('Workflow config must be an object');
+        }
 
-        //     if (node.type === 'action') {
-        //         if (!node.actionType) {
-        //             throw new BadRequestException(
-        //                 'Action node requires actionType',
-        //             );
-        //         }
-        //     }
-        // }
+        const stepsValue = config.steps;
+        if (stepsValue === undefined || stepsValue === null) {
+            return;
+        }
+
+        if (!Array.isArray(stepsValue)) {
+            throw new BadRequestException('Workflow config steps must be an array');
+        }
+
+        const steps = stepsValue.map((step, index) =>
+            this.parseWorkflowStep(step, index),
+        );
+        const stepIds = new Set<string>();
+
+        for (const step of steps) {
+            if (stepIds.has(step.id)) {
+                throw new BadRequestException(`Duplicate workflow step id: ${step.id}`);
+            }
+            stepIds.add(step.id);
+        }
+
+        const childrenByParent = new Map<string, WorkflowStepPayload[]>();
+
+        for (const step of steps) {
+            if (step.parentId !== 'trigger' && !stepIds.has(step.parentId)) {
+                throw new BadRequestException(
+                    `Workflow step ${step.id} references missing parent ${step.parentId}`,
+                );
+            }
+
+            const children = childrenByParent.get(step.parentId) ?? [];
+            children.push(step);
+            childrenByParent.set(step.parentId, children);
+        }
+
+        const reachableIds = new Set<string>();
+        const stack = [...(childrenByParent.get('trigger') ?? [])];
+
+        while (stack.length > 0) {
+            const step = stack.pop();
+            if (!step || reachableIds.has(step.id)) continue;
+
+            reachableIds.add(step.id);
+            stack.push(...(childrenByParent.get(step.id) ?? []));
+        }
+
+        const unreachableSteps = steps.filter((step) => !reachableIds.has(step.id));
+        if (unreachableSteps.length > 0) {
+            throw new BadRequestException(
+                `Workflow contains unreachable steps: ${unreachableSteps
+                    .map((step) => step.id)
+                    .join(', ')}`,
+            );
+        }
+    }
+
+    private parseWorkflowStep(step: unknown, index: number): WorkflowStepPayload {
+        if (!this.isRecord(step)) {
+            throw new BadRequestException(`Workflow step at index ${index} must be an object`);
+        }
+
+        if (!this.isNonEmptyString(step.id)) {
+            throw new BadRequestException(`Workflow step at index ${index} is missing id`);
+        }
+
+        if (!this.isNonEmptyString(step.type)) {
+            throw new BadRequestException(`Workflow step ${step.id} is missing type`);
+        }
+
+        if (!this.isNonEmptyString(step.parentId)) {
+            throw new BadRequestException(`Workflow step ${step.id} is missing parentId`);
+        }
+
+        return {
+            id: step.id,
+            type: step.type,
+            parentId: step.parentId,
+        };
+    }
+
+    private isRecord(value: unknown): value is Record<string, unknown> {
+        return typeof value === 'object' && value !== null && !Array.isArray(value);
+    }
+
+    private isNonEmptyString(value: unknown): value is string {
+        return typeof value === 'string' && value.trim().length > 0;
+    }
+
+    private getRequiredString(value: unknown, message: string): string {
+        if (!this.isNonEmptyString(value)) {
+            throw new BadRequestException(message);
+        }
+
+        return value;
     }
 }

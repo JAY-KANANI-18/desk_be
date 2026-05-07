@@ -177,7 +177,13 @@ export class WhatsAppProvider implements ChannelProvider {
 
             case 'interactive': {
                 const reply = msg.interactive?.button_reply ?? msg.interactive?.list_reply;
-                return { ...base, messageType: 'interactive', text: reply?.title, attachments: [], metadata: { interactive: msg.interactive } };
+                return {
+                    ...base,
+                    messageType: 'interactive',
+                    text: reply?.id ?? reply?.title,
+                    attachments: [],
+                    metadata: { interactive: msg.interactive, interactiveReply: reply },
+                };
             }
 
             case 'order':

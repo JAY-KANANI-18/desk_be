@@ -24,6 +24,39 @@ export interface SendAttachmentDto {
     filename?: string;
 }
 
+type QuickReplyOption = {
+    title: string;
+    payload: string;
+};
+
+type OutboundPayloadInput = {
+    channelId?: string;
+    workspaceId?: string;
+    conversationId?: string;
+    to: string;
+    text?: string | null;
+    subject?: string | null;
+    htmlBody?: string | null;
+    quickReplies?: unknown;
+    quickReplyTextPrepared?: boolean;
+    attachments?: SendAttachmentDto[];
+    replyToMessageId?: string | null;
+    emailHeaders?: Record<string, string> | null;
+    template?: Record<string, any>;
+    buttons?: Array<{ id?: string; title?: string }>;
+    country?: string;
+    from?: string | null;
+    record?: boolean;
+};
+
+const META_QUICK_REPLY_LIMIT = 13;
+const WHATSAPP_BUTTON_LIMIT = 3;
+const WHATSAPP_LIST_LIMIT = 10;
+const WHATSAPP_BUTTON_TITLE_LIMIT = 20;
+const WHATSAPP_LIST_ROW_TITLE_LIMIT = 24;
+const WHATSAPP_INTERACTIVE_ID_LIMIT = 256;
+const TEXT_QUICK_REPLY_FALLBACK_CHANNELS = new Set(['email', 'sms', 'webchat']);
+
 export interface SendMessageDto {
     workspaceId?: string;
     conversationId: string;
@@ -46,7 +79,7 @@ export interface SendMessageDto {
             [key: string]: any;
         };
         htmlBody?: string;
-        quickReplies?: Array<{ title: string; payload: string }>;
+        quickReplies?: QuickReplyOption[];
         [key: string]: any;
     };
 }
@@ -209,6 +242,14 @@ export class OutboundService {
             ? undefined
             : replyTarget?.channelMsgId ?? undefined;
         const quotedMessage = this.buildQuotedMessagePreview(replyTarget);
+        const quickReplies = this.normaliseQuickReplies(params.metadata?.quickReplies);
+        const outboundText = this.applyQuickReplyTextFallback(channel.type, renderedText, quickReplies);
+        const outboundHtmlBody = channel.type === 'email'
+            ? this.appendQuickRepliesToHtml(renderedHtmlBody, quickReplies)
+            : renderedHtmlBody;
+        const outboundMetadata: Record<string, unknown> = { ...(params.metadata ?? {}) };
+        delete outboundMetadata.quickReplies;
+        delete outboundMetadata.htmlBody;
 
         /* ── 6. Create Message record (pending) ─────────────────────────────── */
 
@@ -223,7 +264,7 @@ export class OutboundService {
                 channelId: channel.id,
                 channelType: channel.type,
                 type: messageType,
-                text: renderedText,
+                text: outboundText,
                 subject: emailThreadMeta?.subject ?? renderedSubject,
                 direction: 'outgoing',
                 status: 'pending',
@@ -232,9 +273,10 @@ export class OutboundService {
                 replyToChannelMsgId: providerReplyToId ?? null,
                 metadata: {
                     contactIdentifier: contactChannel?.identifier ?? null,
-                    ...(params.metadata ?? {}),
+                    ...outboundMetadata,
+                    ...(quickReplies.length > 0 ? { quickReplies } : {}),
                     ...(quotedMessage ? { quotedMessage } : {}),
-                    ...(renderedHtmlBody ? { htmlBody: renderedHtmlBody } : {}),
+                    ...(outboundHtmlBody ? { htmlBody: outboundHtmlBody } : {}),
                     ...(emailThreadMeta ?? {}),
                 },
             },
@@ -282,10 +324,11 @@ export class OutboundService {
                 workspaceId,
                 conversationId: conversation.id,
                 to,
-                text: renderedText,
+                text: outboundText,
                 subject: emailThreadMeta?.subject ?? renderedSubject,
-                htmlBody: renderedHtmlBody,
-                quickReplies: params.metadata?.quickReplies,
+                htmlBody: outboundHtmlBody,
+                quickReplies,
+                quickReplyTextPrepared: true,
                 attachments: resolvedAttachments,
                 replyToMessageId: providerReplyToId,
                 emailHeaders: emailThreadMeta?.headers ?? null,
@@ -705,30 +748,48 @@ export class OutboundService {
 
     // ─── Payload builders ──────────────────────────────────────────────────────
 
-    private async buildPayload(channelType: string, dto: any): Promise<any> {
+    private async buildPayload(channelType: string, dto: OutboundPayloadInput): Promise<any> {
+        const quickReplies = this.normaliseQuickReplies(dto.quickReplies);
+        const preparedDto: OutboundPayloadInput = {
+            ...dto,
+            quickReplies,
+            text: dto.quickReplyTextPrepared
+                ? dto.text
+                : this.applyQuickReplyTextFallback(channelType, dto.text, quickReplies),
+            htmlBody: channelType === 'email' && !dto.quickReplyTextPrepared
+                ? this.appendQuickRepliesToHtml(dto.htmlBody, quickReplies)
+                : dto.htmlBody,
+            quickReplyTextPrepared: true,
+        };
+        dto = preparedDto;
+
         switch (channelType) {
-            case 'whatsapp': return this.buildWhatsApp(dto);
-            case 'instagram': return this.buildMetaMessaging(dto);
-            case 'messenger': return this.buildMetaMessaging(dto);
-            case 'email': return this.buildEmailPayload(dto);
+            case 'whatsapp': return this.buildWhatsApp(preparedDto);
+            case 'instagram': return this.buildMetaMessaging(preparedDto);
+            case 'messenger': return this.buildMetaMessaging(preparedDto);
+            case 'email': return this.buildEmailPayload(preparedDto);
             case 'webchat': return this.buildWebchatPayload(dto);  // ← add
-            case 'sms': return this.buildSmsPayload(dto);
-            case 'exotel_call': return this.buildExotelCallPayload(dto);
+            case 'sms': return this.buildSmsPayload(preparedDto);
+            case 'exotel_call': return this.buildExotelCallPayload(preparedDto);
 
             default: throw new Error(`No payload builder for ${channelType}`);
         }
     }
     // Add this method alongside your other builders:
-    private buildWebchatPayload(dto: any): any {
+    private buildWebchatPayload(dto: OutboundPayloadInput): any {
+        const quickReplies = this.normaliseQuickReplies(dto.quickReplies);
         return {
             to: dto.to,           // sessionId
             text: dto.text ?? null,
             attachments: dto.attachments ?? [],
+            quickReplies,
             sessionId: dto.to,           // same as identifier for webchat
         };
     }
-    private buildWhatsApp(dto: any): any {
+    private buildWhatsApp(dto: OutboundPayloadInput): any {
         const base = { messaging_product: 'whatsapp', to: dto.to };
+        const allQuickReplies = this.normaliseQuickReplies(dto.quickReplies);
+        const quickReplies = allQuickReplies.slice(0, WHATSAPP_LIST_LIMIT);
 
         if (dto.template) {
             const language = typeof dto.template.language === 'string'
@@ -754,7 +815,55 @@ export class OutboundService {
             const mediaType = this.waMediaType(att.mimeType);
             const payload: any = { ...base, type: mediaType, [mediaType]: { link: att.url } };
             if (mediaType === 'document' && att.filename) payload[mediaType].filename = att.filename;
-            if (dto.text && ['image', 'video', 'document'].includes(mediaType)) payload[mediaType].caption = dto.text;
+            const caption = allQuickReplies.length > 0 ? this.buildQuickReplyText(dto.text, allQuickReplies) : dto.text;
+            if (caption && ['image', 'video', 'document'].includes(mediaType)) payload[mediaType].caption = caption;
+            if (dto.replyToMessageId) payload.context = { message_id: dto.replyToMessageId };
+            return payload;
+        }
+        if (allQuickReplies.length > WHATSAPP_LIST_LIMIT) {
+            const payload: any = { ...base, type: 'text', text: { body: dto.text ?? '', preview_url: false } };
+            if (dto.replyToMessageId) payload.context = { message_id: dto.replyToMessageId };
+            return payload;
+        }
+        if (quickReplies.length > 0) {
+            const payload: any = quickReplies.length <= WHATSAPP_BUTTON_LIMIT
+                ? {
+                    ...base,
+                    type: 'interactive',
+                    interactive: {
+                        type: 'button',
+                        body: { text: dto.text ?? '' },
+                        action: {
+                            buttons: quickReplies.map((reply, index) => ({
+                                type: 'reply',
+                                reply: {
+                                    id: this.buildWhatsAppReplyId(reply, index),
+                                    title: this.truncate(reply.title, WHATSAPP_BUTTON_TITLE_LIMIT),
+                                },
+                            })),
+                        },
+                    },
+                }
+                : {
+                    ...base,
+                    type: 'interactive',
+                    interactive: {
+                        type: 'list',
+                        body: { text: dto.text ?? '' },
+                        action: {
+                            button: 'Choose option',
+                            sections: [
+                                {
+                                    title: 'Options',
+                                    rows: quickReplies.map((reply, index) => ({
+                                        id: this.buildWhatsAppReplyId(reply, index),
+                                        title: this.truncate(reply.title, WHATSAPP_LIST_ROW_TITLE_LIMIT),
+                                    })),
+                                },
+                            ],
+                        },
+                    },
+                };
             if (dto.replyToMessageId) payload.context = { message_id: dto.replyToMessageId };
             return payload;
         }
@@ -766,27 +875,32 @@ export class OutboundService {
         return payload;
     }
 
-    private buildMetaMessaging(dto: any): any {
+    private buildMetaMessaging(dto: OutboundPayloadInput): any {
         const recipient = { id: dto.to };
         const message: any = {};
+        const quickReplies = this.normaliseQuickReplies(dto.quickReplies, META_QUICK_REPLY_LIMIT);
         if (dto.text) message.text = dto.text;
         if (dto.attachments?.length) {
             const att = dto.attachments[0];
             const type = att.mimeType?.startsWith('image/') ? 'image' : att.mimeType?.startsWith('video/') ? 'video' : att.mimeType?.startsWith('audio/') ? 'audio' : 'file';
             message.attachment = { type, payload: { url: att.url, is_reusable: true } };
         }
-        if (dto.quickReplies?.length) {
-            message.quick_replies = dto.quickReplies.map((qr: any) => ({ content_type: 'text', title: qr.title, payload: qr.payload }));
+        if (quickReplies.length > 0) {
+            message.quick_replies = quickReplies.map((qr) => ({
+                content_type: 'text',
+                title: this.truncate(qr.title, WHATSAPP_BUTTON_TITLE_LIMIT),
+                payload: qr.payload,
+            }));
         }
         if (dto.replyToMessageId) message.reply_to = { mid: dto.replyToMessageId };
         return { recipient, message };
     }
 
-    private buildEmailPayload(dto: any): any {
+    private buildEmailPayload(dto: OutboundPayloadInput): any {
         return { to: dto.to, subject: dto.subject ?? '(no subject)', text: dto.text, html: dto.htmlBody, attachments: dto.attachments ?? [], headers: dto.emailHeaders ?? {} };
     }
 
-    private buildSmsPayload(dto: any): any {
+    private buildSmsPayload(dto: OutboundPayloadInput): any {
         return {
             to: dto.to,
             text: dto.text ?? '',
@@ -794,12 +908,87 @@ export class OutboundService {
         };
     }
 
-    private buildExotelCallPayload(dto: any): any {
+    private buildExotelCallPayload(dto: OutboundPayloadInput): any {
         return {
             to: dto.to,
             from: dto.from ?? null,
             record: dto.record ?? false,
         };
+    }
+
+    private normaliseQuickReplies(value: unknown, limit = Number.POSITIVE_INFINITY): QuickReplyOption[] {
+        if (!Array.isArray(value)) return [];
+
+        const replies: QuickReplyOption[] = [];
+        for (const option of value) {
+            if (!option || typeof option !== 'object') continue;
+
+            const raw = option as Record<string, unknown>;
+            const title = typeof raw.title === 'string' ? raw.title.trim() : '';
+            const payload = typeof raw.payload === 'string' ? raw.payload.trim() : title;
+            const resolvedTitle = title || payload;
+            const resolvedPayload = payload || resolvedTitle;
+            if (!resolvedTitle || !resolvedPayload) continue;
+
+            replies.push({ title: resolvedTitle, payload: resolvedPayload });
+            if (replies.length >= limit) break;
+        }
+
+        return replies;
+    }
+
+    private applyQuickReplyTextFallback(
+        channelType: string,
+        text: string | null | undefined,
+        quickReplies: QuickReplyOption[],
+    ): string | null | undefined {
+        const needsTextFallback = TEXT_QUICK_REPLY_FALLBACK_CHANNELS.has(channelType)
+            || (channelType === 'whatsapp' && quickReplies.length > WHATSAPP_LIST_LIMIT);
+        if (!needsTextFallback || quickReplies.length === 0) {
+            return text;
+        }
+
+        return this.buildQuickReplyText(text, quickReplies);
+    }
+
+    private buildQuickReplyText(text: string | null | undefined, quickReplies: QuickReplyOption[]): string {
+        const base = (text ?? '').trim();
+        const options = quickReplies
+            .map((reply, index) => `${index + 1}. ${reply.payload || reply.title}`)
+            .join('\n');
+
+        return `${base}${base ? '\n\n' : ''}Options:\n${options}`;
+    }
+
+    private appendQuickRepliesToHtml(
+        htmlBody: string | null | undefined,
+        quickReplies: QuickReplyOption[],
+    ): string | null | undefined {
+        if (!htmlBody || quickReplies.length === 0) return htmlBody;
+
+        const options = quickReplies
+            .map((reply) => `<li>${this.escapeHtml(reply.payload || reply.title)}</li>`)
+            .join('');
+
+        return `${htmlBody}<p><strong>Options:</strong></p><ol>${options}</ol>`;
+    }
+
+    private buildWhatsAppReplyId(reply: QuickReplyOption, index: number): string {
+        const id = (reply.payload || reply.title || `option_${index + 1}`).trim();
+        return this.truncate(id || `option_${index + 1}`, WHATSAPP_INTERACTIVE_ID_LIMIT);
+    }
+
+    private truncate(value: string, maxLength: number): string {
+        return value.length > maxLength ? value.slice(0, maxLength) : value;
+    }
+
+    private escapeHtml(value: string): string {
+        return value
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
     }
 
 

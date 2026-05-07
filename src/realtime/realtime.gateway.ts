@@ -9,16 +9,24 @@ import {
 } from '@nestjs/websockets';
 import { Server, Socket } from 'socket.io';
 import { PrismaService } from '../prisma/prisma.service';
-import { Injectable, UnauthorizedException } from '@nestjs/common';
+import {
+    Injectable,
+    Logger,
+    OnApplicationBootstrap,
+    OnApplicationShutdown,
+    UnauthorizedException,
+} from '@nestjs/common';
 import { verifySupabaseToken } from 'src/common/guards/supabase-jwt';
 import { OnEvent } from '@nestjs/event-emitter';
 import { RedisService } from 'src/redis/redis.service';
 import { getPendingChannelOAuthEventsKey } from 'src/modules/channels/oauth/channel-oauth-events.shared';
 import { AuthTokenService } from 'src/modules/auth/auth-token.service';
 import { AuthService } from 'src/modules/auth/auth.service';
+import IORedis from 'ioredis';
 
 const getRealtimeUserSocketsKey = (userId: string) =>
     `realtime:user:${userId}:sockets`;
+const ACTIVITY_TIMELINE_CHANNEL = 'activity.timeline';
 @WebSocketGateway({
     namespace: '/inbox',
 
@@ -27,9 +35,11 @@ const getRealtimeUserSocketsKey = (userId: string) =>
     },
 })
 @Injectable()
-export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect {
+export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect, OnApplicationBootstrap, OnApplicationShutdown {
     @WebSocketServer()
     server: Server;
+    private readonly logger = new Logger(RealtimeGateway.name);
+    private activitySubscriber?: IORedis;
 
     constructor(
         private prisma: PrismaService,
@@ -37,6 +47,31 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
         private authTokenService: AuthTokenService,
         private authService: AuthService,
     ) { }
+
+    onApplicationBootstrap() {
+        this.activitySubscriber = this.redis.client.duplicate();
+        this.activitySubscriber.subscribe(ACTIVITY_TIMELINE_CHANNEL, (err) => {
+            if (err) {
+                this.logger.error(`Failed to subscribe to ${ACTIVITY_TIMELINE_CHANNEL}`, err);
+                return;
+            }
+            this.logger.log(`Subscribed to ${ACTIVITY_TIMELINE_CHANNEL}`);
+        });
+        this.activitySubscriber.on('message', (channel, rawMessage) => {
+            if (channel !== ACTIVITY_TIMELINE_CHANNEL) return;
+
+            try {
+                const event = JSON.parse(rawMessage);
+                this.emitActivityTimelineItem(event);
+            } catch (err: any) {
+                this.logger.error(`Failed to parse activity timeline event: ${err?.message ?? err}`);
+            }
+        });
+    }
+
+    async onApplicationShutdown() {
+        await this.activitySubscriber?.quit();
+    }
 
 
 
@@ -334,6 +369,14 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
      */
     @OnEvent('activity.upsert')
     handleActivity(event: {
+        workspaceId: string;
+        conversationId: string;
+        activity: any;
+    }) {
+        this.emitActivityTimelineItem(event);
+    }
+
+    private emitActivityTimelineItem(event: {
         workspaceId: string;
         conversationId: string;
         activity: any;

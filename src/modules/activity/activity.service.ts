@@ -23,6 +23,7 @@ import {
   PriorityChangedActivityMeta,
   OpenActivityMeta,
   CloseActivityMeta,
+  WorkflowActivityMeta,
 } from './activity.types';
 
 @Injectable()
@@ -271,6 +272,21 @@ export class ActivityService {
       case 'sla_breached': {
         const m = meta as any;
         return `SLA breached: ${m?.slaPolicy ?? 'policy'}`;
+      }
+
+      case 'workflow_started': {
+        const m = meta as WorkflowActivityMeta;
+        return `Workflow ${m?.workflowName ?? 'Automation'} started`;
+      }
+
+      case 'workflow_ended': {
+        const m = meta as WorkflowActivityMeta;
+        return `Workflow ${m?.workflowName ?? 'Automation'} ended`;
+      }
+
+      case 'workflow_failed': {
+        const m = meta as WorkflowActivityMeta;
+        return `Workflow ${m?.workflowName ?? 'Automation'} failed`;
       }
 
       default:
