@@ -3,7 +3,7 @@
 import {
     Controller, Get, Post, Put, Delete,
     Query, Req, Res, Body, Param, Headers,
-    BadRequestException, NotFoundException, UnauthorizedException,
+    NotFoundException, UnauthorizedException,
     Logger, HttpCode,
 } from '@nestjs/common';
 import { Response } from 'express';
@@ -12,7 +12,6 @@ import { InboundService } from '../../../../inbound/inbound.service';
 import { OutboundService } from '../../../../outbound/outbound.service';
 import { verifyMetaSignature } from '../meta-signature.util';
 import axios from 'axios';
-import { IsString } from 'class-validator';
 import { ChannelAdaptersRegistry } from 'src/modules/channel-adapters/channel-adapters.registry';
 import { Public, WorkspaceRoute } from 'src/common/auth/route-access.decorator';
 import { WorkspacePermission } from 'src/common/constants/permissions';
@@ -22,6 +21,13 @@ import {
     MessengerOAuthService,
 } from './messenger-oauth.service';
 import { MetaAutomationService } from '../meta-automation.service';
+import { OAUTH_CALLBACK_RESPONSE_HEADERS } from 'src/modules/channels/oauth/oauth-callback-page.util';
+import {
+    ArrayNotEmpty,
+    ArrayUnique,
+    IsArray,
+    IsString,
+} from 'class-validator';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -37,39 +43,30 @@ const FB_BASE = `${FB_API}/${FB_API_VERSION}`;
 
 // ─── DTOs ─────────────────────────────────────────────────────────────────────
 
-class ConnectMessengerDto {
-
-    @IsString()
-    code: string;
-
-    @IsString()
-    workspaceId: string;
-    @IsString()
-    redirectUri: string;
-}
 export class GetPagesDto {
     @IsString()
     code: string;
+
     @IsString()
-    workspaceId: string;
-    @IsString()
-    redirectUri: string;
+    state: string;
 }
 export class ConnectSelectedPagesDto {
-        @IsString()
+    @IsString()
+    selectionId: string;
 
-    workspaceId: string;
+    @IsArray()
+    @ArrayNotEmpty()
+    @ArrayUnique()
+    @IsString({ each: true })
     selectedPageIds: string[];
-
-    pages: {
-        id: string;
-        name: string;
-        category: string;
-        access_token: string;
-    }[];
 }
 
 // ─── Controller ───────────────────────────────────────────────────────────────
+
+interface WorkspaceRequest {
+    workspaceId: string;
+    user: { id: string };
+}
 
 @Controller('api/channels/messenger')
 export class MessengerController {
@@ -317,6 +314,10 @@ export class MessengerController {
             requestOrigin: this.getRequestOrigin(req),
         });
 
+        Object.entries(OAUTH_CALLBACK_RESPONSE_HEADERS).forEach(([header, value]) => {
+            res.setHeader(header, value);
+        });
+
          res.type('html').send(result.html);
     }
 
@@ -327,36 +328,13 @@ export class MessengerController {
     @Post('auth/pages')
       @WorkspaceRoute(WorkspacePermission.CHANNELS_MANAGE)
     
-    async getPages(@Body() dto: GetPagesDto) {
-        const { code, workspaceId, redirectUri } = dto;
-        if (!code || !workspaceId || !redirectUri) {
-            console.log("code, workspaceId, redirectUri are required");
-
-            throw new BadRequestException('code, workspaceId, redirectUri are required');
-        }
-
-        // Step 1: Exchange code for short-lived user token
-        const shortLivedUserToken = await this.exchangeCodeForUserToken(code, redirectUri);
-
-        // Step 2: Exchange for long-lived user token
-        const longLivedUserToken = await this.exchangeLongLivedUserToken(shortLivedUserToken);
-
-        // Step 3: Get all pages
-        const pages = await this.getUserPages(longLivedUserToken);
-        if (!pages.length) {
-            throw new BadRequestException('No Facebook Pages found.');
-        }
-
-        // Return pages + long lived token (frontend will send back selected pages)
-        return {
-            pages: pages.map(p => ({
-                id: p.id,
-                name: p.name,
-                category: p.category,
-                access_token: p.access_token,
-            })),
-            longLivedUserToken, // send back to FE, FE sends it with selected pages
-        };
+    async getPages(@Body() dto: GetPagesDto, @Req() req: WorkspaceRequest) {
+        return this.oauthService.preparePageSelection({
+            code: dto.code,
+            state: dto.state,
+            workspaceId: req.workspaceId,
+            userId: req.user.id,
+        });
     }
 
     // New DTO for connecting selected pages
@@ -366,69 +344,15 @@ export class MessengerController {
     @Post('auth/callback')
       @WorkspaceRoute(WorkspacePermission.CHANNELS_MANAGE)
     
-    async handleCallback(@Body() dto: any,@Req() req:any) {
-        const {  selectedPageIds, pages } = dto;
+    async handleCallback(@Body() dto: ConnectSelectedPagesDto, @Req() req: WorkspaceRequest) {
+        const channels = await this.oauthService.connectSelectedPages({
+            selectionId: dto.selectionId,
+            selectedPageIds: dto.selectedPageIds,
+            workspaceId: req.workspaceId,
+            userId: req.user.id,
+        });
 
-        if ( !selectedPageIds?.length || !pages?.length) {
-            throw new BadRequestException('workspaceId, selectedPageIds, pages are required');
-        }
-
-        // Only process selected pages
-        const selectedPages = pages.filter(p => selectedPageIds.includes(p.id));
-        const connectedChannels: any[] = [];
-
-        for (const page of selectedPages) {
-            try {
-                const pageToken = page.access_token;
-                const pageId = page.id;
-                const pageName = page.name;
-
-                const pageInfo = await this.getPageInfo(pageId, pageToken);
-                await this.subscribePageToWebhook(pageId, pageToken);
-
-                const channel = await this.prisma.channel.upsert({
-                    where: {
-                        workspaceId:req.workspaceId,
-                        type: 'messenger',
-                        identifier: pageId,
-                    },
-                    update: {
-                        credentials: { accessToken: pageToken, tokenLastValidatedAt: new Date() },
-                        name: pageName,
-                        status: 'connected',
-                        config: {
-                            pageName,
-                            pageCategory: page.category,
-                            pagePicture: pageInfo?.picture?.data?.url,
-                            tokenNeverExpires: true,
-                            subscribedFields: MESSENGER_WEBHOOK_FIELDS,
-                        },
-                    },
-                    create: {
-                        workspaceId:req.workspaceId,
-                        type: 'messenger',
-                        identifier: pageId,
-                        name: pageName,
-                        credentials: { accessToken: pageToken, tokenLastValidatedAt: new Date() },
-                        status: 'connected',
-                        config: {
-                            pageName,
-                            pageCategory: page.category,
-                            pagePicture: pageInfo?.picture?.data?.url,
-                            tokenNeverExpires: true,
-                            subscribedFields: MESSENGER_WEBHOOK_FIELDS,
-                        },
-                    },
-                });
-
-                connectedChannels.push(channel);
-                this.logger.log(`Messenger page connected: ${pageName} (${pageId})`);
-            } catch (e) {
-                this.logger.error(`Failed to connect page ${page.id}`, e);
-            }
-        }
-
-        return { success: true, channels: connectedChannels };
+        return { success: true, channels };
     }
     // ─────────────────────────────────────────────────────────────────────────
     // 5. DISCONNECT channel
@@ -605,43 +529,6 @@ export class MessengerController {
         if (!channel) throw new NotFoundException(`Channel ${channelId} not found`);
         if (!channel.credentials?.accessToken) throw new UnauthorizedException(`Channel ${channelId} has no access token. Please reconnect.`);
         return channel;
-    }
-
-    private async exchangeCodeForUserToken(code: string, redirectUri: string): Promise<string> {
-        const { data } = await axios.get(`${FB_BASE}/oauth/access_token`, {
-            params: {
-                client_id: process.env.MESSENGER_APP_ID!,
-                client_secret: process.env.MESSENGER_APP_SECRET!,
-                redirect_uri: redirectUri,
-                code,
-            },
-        });
-        return data.access_token;
-    }
-
-    private async exchangeLongLivedUserToken(shortLivedToken: string): Promise<string> {
-        const { data } = await axios.get(`${FB_BASE}/oauth/access_token`, {
-            params: {
-                grant_type: 'fb_exchange_token',
-                client_id: process.env.MESSENGER_APP_ID!,
-                client_secret: process.env.MESSENGER_APP_SECRET!,
-                fb_exchange_token: shortLivedToken,
-            },
-        });
-        return data.access_token;
-    }
-
-    private async getUserPages(userToken: string): Promise<any[]> {
-        // /me/accounts returns pages with their never-expiring page tokens directly
-        const { data } = await axios.get(`${FB_BASE}/me/accounts`, {
-            params: {
-                fields: 'id,name,access_token,category,tasks',
-                access_token: userToken,
-            },
-        });
-        this.logger.debug(`user Pages  found: ${JSON.stringify(data)}`)
-
-        return data.data ?? [];
     }
 
     private async getPageInfo(pageId: string, pageToken: string): Promise<any> {

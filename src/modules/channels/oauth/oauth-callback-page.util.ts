@@ -6,16 +6,36 @@ const escapeHtml = (value: string) =>
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
 
+export const OAUTH_CALLBACK_RESPONSE_HEADERS = {
+  'Content-Security-Policy':
+    "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+  'Cross-Origin-Opener-Policy': 'unsafe-none',
+} as const;
+
 export function buildOAuthCallbackPage(input: {
   provider: string;
+  providerKey?: string;
   status: 'success' | 'error';
+  title?: string;
   message: string;
   redirectUri: string;
+  payload?: Record<string, unknown>;
+  redirectPayload?: Record<string, string | undefined>;
 }) {
   const title =
-    input.status === 'success'
+    input.title ??
+    (input.status === 'success'
       ? `${input.provider} connected`
-      : `${input.provider} connection failed`;
+      : `${input.provider} connection failed`);
+  const callbackPayload = JSON.stringify({
+    type: 'OAUTH_CALLBACK',
+    provider: input.provider,
+    providerKey: input.providerKey ?? input.provider,
+    status: input.status,
+    message: input.message,
+    ...(input.payload ?? {}),
+  }).replace(/</g, '\\u003c');
+  const redirectUri = buildRedirectUri(input.redirectUri, input.redirectPayload);
 
   return `<!doctype html>
 <html lang="en">
@@ -81,30 +101,62 @@ export function buildOAuthCallbackPage(input: {
       <h1>${escapeHtml(title)}</h1>
       <p>${escapeHtml(input.message)}</p>
       <p>You can close this window if nothing happens automatically.</p>
-      <p><a href="${escapeHtml(input.redirectUri)}">Return to the app</a></p>
+      <p><a href="${escapeHtml(redirectUri)}">Return to the app</a></p>
     </main>
 <script>
+  var oauthDeliveredToOpener = false;
   try {
     if (window.opener && !window.opener.closed) {
       window.opener.postMessage(
-        {
-          type: "OAUTH_CALLBACK",
-          provider: "${input.provider}",
-          status: "${input.status}"
-        },
+        ${callbackPayload},
         "*"
       );
+      oauthDeliveredToOpener = true;
     }
   } catch (e) {}
 
   setTimeout(() => {
-    window.close();
+    if (oauthDeliveredToOpener) {
+      window.close();
+      return;
+    }
+    window.location.replace(${JSON.stringify(redirectUri)});
   }, 300);
 
   setTimeout(() => {
-    window.location.href = ${JSON.stringify(input.redirectUri)};
+    window.location.href = ${JSON.stringify(redirectUri)};
   }, 1200);
 </script>
   </body>
 </html>`;
+}
+
+function buildRedirectUri(
+  redirectUri: string,
+  payload: Record<string, string | undefined> | undefined,
+) {
+  if (!payload) {
+    return redirectUri;
+  }
+
+  try {
+    const url = new URL(redirectUri);
+    Object.entries(payload).forEach(([key, value]) => {
+      if (value) {
+        url.searchParams.set(key, value);
+      }
+    });
+    return url.toString();
+  } catch {
+    const params = new URLSearchParams();
+    Object.entries(payload).forEach(([key, value]) => {
+      if (value) {
+        params.set(key, value);
+      }
+    });
+    const query = params.toString();
+    return query
+      ? `${redirectUri}${redirectUri.includes('?') ? '&' : '?'}${query}`
+      : redirectUri;
+  }
 }

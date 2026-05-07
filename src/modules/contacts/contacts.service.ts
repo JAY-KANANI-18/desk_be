@@ -72,14 +72,7 @@ export class ContactsService {
     };
 
     if (opts.search?.trim()) {
-      const q = opts.search.trim();
-      where.OR = [
-        { firstName: { contains: q, mode: 'insensitive' } },
-        { lastName: { contains: q, mode: 'insensitive' } },
-        { email: { contains: q, mode: 'insensitive' } },
-        { phone: { contains: q, mode: 'insensitive' } },
-        { company: { contains: q, mode: 'insensitive' } },
-      ];
+      where.OR = this.buildContactSearchClauses(opts.search);
     }
 
     if (opts.lifecycle?.trim()) {
@@ -98,6 +91,51 @@ export class ContactsService {
     }
 
     return where;
+  }
+
+  private buildContactSearchClauses(search: string): Prisma.ContactWhereInput[] {
+    const normalizedSearch = search.trim().replace(/\s+/g, ' ');
+    const words = normalizedSearch.split(' ').filter(Boolean);
+    const clauses = this.buildContactSearchFieldClauses(normalizedSearch);
+
+    if (words.length > 1) {
+      clauses.push({
+        AND: words.map((word) => ({
+          OR: this.buildContactSearchFieldClauses(word),
+        })),
+      });
+
+      const firstWord = words[0];
+      const remainingWords = words.slice(1).join(' ');
+
+      clauses.push(
+        {
+          AND: [
+            { firstName: { contains: firstWord, mode: 'insensitive' } },
+            { lastName: { contains: remainingWords, mode: 'insensitive' } },
+          ],
+        },
+        {
+          AND: [
+            { lastName: { contains: firstWord, mode: 'insensitive' } },
+            { firstName: { contains: remainingWords, mode: 'insensitive' } },
+          ],
+        },
+      );
+    }
+    console.dir({clauses},{depth:null});
+    
+    return clauses;
+  }
+
+  private buildContactSearchFieldClauses(search: string): Prisma.ContactWhereInput[] {
+    return [
+      { firstName: { contains: search, mode: 'insensitive' } },
+      { lastName: { contains: search, mode: 'insensitive' } },
+      { email: { contains: search, mode: 'insensitive' } },
+      { phone: { contains: search, mode: 'insensitive' } },
+      { company: { contains: search, mode: 'insensitive' } },
+    ];
   }
 
   private listContactsOrderBy(

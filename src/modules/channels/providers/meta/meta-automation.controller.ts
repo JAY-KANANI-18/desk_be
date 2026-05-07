@@ -59,4 +59,13 @@ export class MetaAutomationController {
   listTargets(@Req() req: any, @Param('channelId') channelId: string) {
     return this.automation.listTargets(channelId, req.workspaceId);
   }
+
+  @Get('engagement-activity')
+  @WorkspaceRoute(WorkspacePermission.CHANNELS_MANAGE)
+  getEngagementActivity(
+    @Req() req: any,
+    @Param('channelId') channelId: string,
+  ) {
+    return this.automation.getEngagementActivity(channelId, req.workspaceId);
+  }
 }

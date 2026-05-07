@@ -4,7 +4,6 @@ import { PrismaService } from 'src/prisma/prisma.service';
 import { ChannelOAuthEventsService } from 'src/modules/channels/oauth/channel-oauth-events.service';
 import { ChannelOAuthStateService } from 'src/modules/channels/oauth/channel-oauth-state.service';
 import { buildOAuthCallbackPage } from 'src/modules/channels/oauth/oauth-callback-page.util';
-import { resolveCallbackUrl } from 'src/modules/channels/oauth/oauth-url.util';
 
 const IG_API = 'https://graph.instagram.com';
 const IG_API_VERSION = 'v21.0';
@@ -24,7 +23,11 @@ export class InstagramOAuthService {
     workspaceId: string;
     userId: string;
   }) {
-    const callbackUri = process.env.INSTAGRAM_REDIRECT_URI
+    const callbackUri = process.env.INSTAGRAM_REDIRECT_URI;
+    if (!callbackUri) {
+      throw new BadRequestException('Instagram redirect URI is not configured.');
+    }
+
     const oauthState = this.state.createState({
       provider: 'instagram',
       userId: input.userId,
@@ -56,7 +59,7 @@ export class InstagramOAuthService {
     state?: string;
     requestOrigin?: string;
   }) {
-    const redirectUri = this.getFallbackRedirectUri();
+    const redirectUri = this.getInstagramConnectRedirectUri(input.requestOrigin);
 
     let oauthState:
       | ReturnType<ChannelOAuthStateService['parseState']>
@@ -70,9 +73,15 @@ export class InstagramOAuthService {
       return {
         html: buildOAuthCallbackPage({
           provider: 'Instagram',
+          providerKey: 'instagram',
           status: 'error',
           message: 'This authorization link is invalid or has expired.',
           redirectUri,
+          redirectPayload: {
+            oauthProvider: 'instagram',
+            oauthStatus: 'error',
+            error: 'This authorization link is invalid or has expired.',
+          },
         }),
       };
     }
@@ -93,9 +102,15 @@ export class InstagramOAuthService {
       return {
         html: buildOAuthCallbackPage({
           provider: 'Instagram',
+          providerKey: 'instagram',
           status: 'error',
           message,
           redirectUri: redirectUri,
+          redirectPayload: {
+            oauthProvider: 'instagram',
+            oauthStatus: 'error',
+            error: message,
+          },
         }),
       };
     }
@@ -122,9 +137,14 @@ export class InstagramOAuthService {
       return {
         html: buildOAuthCallbackPage({
           provider: 'Instagram',
+          providerKey: 'instagram',
           status: 'success',
           message: 'Instagram is now connected to your workspace.',
           redirectUri: redirectUri,
+          redirectPayload: {
+            oauthProvider: 'instagram',
+            oauthStatus: 'success',
+          },
         }),
       };
     } catch (error: any) {
@@ -144,9 +164,15 @@ export class InstagramOAuthService {
       return {
         html: buildOAuthCallbackPage({
           provider: 'Instagram',
+          providerKey: 'instagram',
           status: 'error',
           message,
           redirectUri: redirectUri,
+          redirectPayload: {
+            oauthProvider: 'instagram',
+            oauthStatus: 'error',
+            error: message,
+          },
         }),
       };
     }
@@ -297,8 +323,13 @@ export class InstagramOAuthService {
     }
   }
 
-  private getFallbackRedirectUri() {
-    return this.state.getDefaultRedirectUri();
+  private getInstagramConnectRedirectUri(requestOrigin?: string) {
+    const base =
+      process.env.APP_URL ??
+      requestOrigin ??
+      'http://localhost:3000';
+
+    return `${base.replace(/\/api\/?$/, '').replace(/\/$/, '')}/channels/connect/instagram`;
   }
 
   private getErrorMessage(error: any, fallback: string) {

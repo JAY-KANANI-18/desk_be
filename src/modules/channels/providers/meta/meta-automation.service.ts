@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 import { OnEvent, EventEmitter2 } from '@nestjs/event-emitter';
 import axios from 'axios';
+import { randomUUID } from 'crypto';
 import { PrismaService } from '../../../../prisma/prisma.service';
 import { RedisService } from '../../../../redis/redis.service';
 import { OutboundService } from '../../../outbound/outbound.service';
@@ -14,10 +15,24 @@ import { WorkflowEngineService } from '../../../workflows/workflow-engine.servic
 
 const FB_GRAPH = 'https://graph.facebook.com/v22.0';
 const IG_GRAPH = 'https://graph.instagram.com/v22.0';
+const ENGAGEMENT_ACTIVITY_TTL_SECONDS = 60 * 60 * 24;
+const ENGAGEMENT_ACTIVITY_LIMIT = 100;
 
 type SupportedAutomationChannel = 'messenger' | 'instagram';
 type MenuActionKind = 'payload' | 'quick_reply';
 type PrivateReplyScope = 'all' | 'selected';
+type EngagementActivityType =
+  | 'comment_received'
+  | 'automation_triggered'
+  | 'private_reply_sent'
+  | 'conversation_created';
+type EngagementActivityStatus =
+  | 'received'
+  | 'triggered'
+  | 'sent'
+  | 'created'
+  | 'failed'
+  | 'skipped';
 
 export interface PrivateRepliesConfig {
   enabled: boolean;
@@ -55,6 +70,8 @@ export interface PrivateReplyPostMessage {
   message: string;
   target?: MetaAutomationTarget | null;
   updatedAt?: string | null;
+  commentsReceived?: number;
+  automatedRepliesSent?: number;
 }
 
 interface ChannelAutomationConfig {
@@ -71,6 +88,58 @@ interface CommentEventPayload {
   commenterId?: string | null;
   commenterName?: string | null;
   raw: any;
+}
+
+export interface MetaEngagementActivityEvent {
+  id: string;
+  lifecycleId?: string | null;
+  commentId?: string | null;
+  type: EngagementActivityType;
+  workspaceId: string;
+  channelId: string;
+  channelType: SupportedAutomationChannel;
+  pageName: string;
+  pagePictureUrl?: string | null;
+  postId?: string | null;
+  postSnippet?: string | null;
+  postThumbnailUrl?: string | null;
+  postPermalink?: string | null;
+  postCreatedAt?: string | null;
+  commenterName?: string | null;
+  commentText?: string | null;
+  status: EngagementActivityStatus;
+  timestamp: string;
+  commentReceivedAt?: string | null;
+  replyStatus?: 'pending' | 'sent' | 'failed' | null;
+  replySentAt?: string | null;
+  conversationId?: string | null;
+}
+
+export interface MetaEngagementActivitySummary {
+  commentsReceived: number;
+  automatedRepliesSent: number;
+  activePostAutomations: number;
+  engagementEventsToday: number;
+}
+
+export interface MetaEngagementActivityPost {
+  id: string | null;
+  pageName: string;
+  pagePictureUrl?: string | null;
+  postThumbnailUrl?: string | null;
+  postSnippet?: string | null;
+  createdAt?: string | null;
+  permalink?: string | null;
+  commentsReceived: number;
+  automatedRepliesSent: number;
+  identity: string;
+}
+
+export interface MetaEngagementActivityState {
+  summary: MetaEngagementActivitySummary;
+  selectedPost: MetaEngagementActivityPost | null;
+  posts: MetaEngagementActivityPost[];
+  events: MetaEngagementActivityEvent[];
 }
 
 @Injectable()
@@ -98,8 +167,9 @@ export class MetaAutomationService {
   ) {
     const channel = await this.findChannel(channelId, workspaceId);
     const automation = this.getAutomationConfig(channel);
+    const current = this.normalisePrivateReplies(automation.privateReplies);
     const scope = input.scope === 'selected' ? 'selected' : 'all';
-    const postMessages =
+    const postMessages = this.preservePrivateReplyPostStats(
       scope === 'selected'
         ? this.normalisePrivateReplyPostMessages(
             input.postMessages,
@@ -107,7 +177,9 @@ export class MetaAutomationService {
             input.message,
             true,
           )
-        : [];
+        : [],
+      current.postMessages,
+    );
     const next: PrivateRepliesConfig = {
       enabled: Boolean(input.enabled),
       scope,
@@ -194,6 +266,27 @@ export class MetaAutomationService {
     }));
   }
 
+  async getEngagementActivity(
+    channelId: string,
+    workspaceId: string,
+  ): Promise<MetaEngagementActivityState> {
+    const channel = await this.findChannel(channelId, workspaceId);
+    let config = this.normalisePrivateReplies(
+      this.getAutomationConfig(channel).privateReplies,
+    );
+    const targets = await this.safeListTargets(channelId, workspaceId);
+    const events = await this.loadEngagementActivityEvents(channel.id);
+    config = await this.backfillPrivateReplyCountersFromEvents(channel, config, events);
+    const posts = this.buildEngagementPosts(channel, config, targets);
+
+    return {
+      summary: this.buildEngagementSummary(events, config, targets),
+      selectedPost: posts[0] ?? null,
+      posts,
+      events,
+    };
+  }
+
   extractCommentEvents(body: any, channelType: SupportedAutomationChannel): CommentEventPayload[] {
     const results: CommentEventPayload[] = [];
 
@@ -256,6 +349,15 @@ export class MetaAutomationService {
       `Private reply event channel=${channel.id} type=${channel.type} comment=${payload.commentId} post=${payload.postId ?? 'none'} commenter=${payload.commenterId ?? 'unknown'} enabled=${config.enabled} scope=${config.scope} postRules=${config.postMessages.length} hasMessage=${Boolean(messageTemplate)}`,
     );
 
+    await this.recordCommentEngagementActivity(
+      channel,
+      payload,
+      config,
+      selectedRule,
+      'comment_received',
+      'received',
+    );
+
     if (!config.enabled) {
       this.logger.warn(
         `Private reply skipped reason=disabled channel=${channel.id} comment=${payload.commentId}`,
@@ -315,6 +417,15 @@ export class MetaAutomationService {
     });
 
     try {
+      await this.recordCommentEngagementActivity(
+        channel,
+        payload,
+        config,
+        selectedRule,
+        'automation_triggered',
+        'triggered',
+      );
+
       this.logger.log(
         `Private reply sending channel=${channel.id} type=${channel.type} comment=${payload.commentId} textLength=${message.length}`,
       );
@@ -326,6 +437,15 @@ export class MetaAutomationService {
 
       this.logger.log(
         `Processed ${channel.type} private reply for channel=${channel.id} comment=${payload.commentId}`,
+      );
+
+      await this.recordCommentEngagementActivity(
+        channel,
+        payload,
+        config,
+        selectedRule,
+        'private_reply_sent',
+        'sent',
       );
 
       this.events.emit('automation.triggered', {
@@ -395,6 +515,7 @@ export class MetaAutomationService {
       `Inbound automation check channel=${message.channelId} type=${message.channel.type} message=${message.id} storyReply=${hasStoryReply} menuPayload=${menuPayload ?? 'none'}`,
     );
 
+    await this.recordConversationCreatedEngagementActivity(message);
     await this.handleStoryReplyTrigger(message, automation, metadata);
     await this.handleMenuClickTrigger(message, automation, metadata);
   }
@@ -817,6 +938,10 @@ export class MetaAutomationService {
           message: String(record.message ?? '').trim(),
           target: this.normaliseTargetSnapshot(record.target),
           updatedAt: String(record.updatedAt ?? '').trim() || null,
+          commentsReceived: this.toNonNegativeInteger(record.commentsReceived),
+          automatedRepliesSent: this.toNonNegativeInteger(
+            record.automatedRepliesSent,
+          ),
         });
       }
 
@@ -834,11 +959,32 @@ export class MetaAutomationService {
           message,
           target: null,
           updatedAt: null,
+          commentsReceived: 0,
+          automatedRepliesSent: 0,
         });
       }
     }
 
     return result;
+  }
+
+  private preservePrivateReplyPostStats(
+    postMessages: PrivateReplyPostMessage[],
+    existingPostMessages: PrivateReplyPostMessage[],
+  ) {
+    return postMessages.map((item) => {
+      const existing = existingPostMessages.find((candidate) =>
+        this.postIdsMatch(candidate.postId, item.postId),
+      );
+
+      return {
+        ...item,
+        commentsReceived:
+          existing?.commentsReceived ?? item.commentsReceived ?? 0,
+        automatedRepliesSent:
+          existing?.automatedRepliesSent ?? item.automatedRepliesSent ?? 0,
+      };
+    });
   }
 
   private normaliseTargetSnapshot(input: unknown): MetaAutomationTarget | null {
@@ -873,6 +1019,647 @@ export class MetaAutomationService {
           ? null
           : String(record.createdAt),
     };
+  }
+
+  private async safeListTargets(channelId: string, workspaceId: string) {
+    try {
+      return await this.listTargets(channelId, workspaceId);
+    } catch (error: any) {
+      this.logger.warn(
+        `Engagement activity target refresh skipped channel=${channelId}: ${this.getErrorMessage(error)}`,
+      );
+      return [];
+    }
+  }
+
+  private async loadEngagementActivityEvents(channelId: string) {
+    const entries = await this.redis.client.lrange(
+      this.getEngagementActivityKey(channelId),
+      0,
+      ENGAGEMENT_ACTIVITY_LIMIT - 1,
+    );
+
+    return entries
+      .map((entry) => this.parseEngagementActivityEvent(entry))
+      .filter((event): event is MetaEngagementActivityEvent => Boolean(event))
+      .reverse();
+  }
+
+  private async backfillPrivateReplyCountersFromEvents(
+    channel: any,
+    config: PrivateRepliesConfig,
+    events: MetaEngagementActivityEvent[],
+  ) {
+    if (
+      config.postMessages.length === 0 ||
+      config.postMessages.some(
+        (item) =>
+          (item.commentsReceived ?? 0) > 0 ||
+          (item.automatedRepliesSent ?? 0) > 0,
+      )
+    ) {
+      return config;
+    }
+
+    const postMessages = config.postMessages.map((item) => {
+      const lifecycles = new Map<
+        string,
+        { commentReceived: boolean; replySent: boolean }
+      >();
+
+      for (const event of events) {
+        if (!event.postId || !this.postIdsMatch(item.postId, event.postId)) {
+          continue;
+        }
+
+        const lifecycleKey =
+          event.lifecycleId ??
+          event.commentId ??
+          [event.postId, event.commenterName, event.commentText]
+            .filter(Boolean)
+            .join(':');
+        if (!lifecycleKey) {
+          continue;
+        }
+
+        const lifecycle =
+          lifecycles.get(lifecycleKey) ?? {
+            commentReceived: false,
+            replySent: false,
+          };
+        lifecycle.commentReceived =
+          lifecycle.commentReceived ||
+          event.type === 'comment_received' ||
+          Boolean(event.commentId);
+        lifecycle.replySent =
+          lifecycle.replySent ||
+          event.type === 'private_reply_sent' ||
+          event.replyStatus === 'sent';
+        lifecycles.set(lifecycleKey, lifecycle);
+      }
+
+      return {
+        ...item,
+        commentsReceived: [...lifecycles.values()].filter(
+          (lifecycle) => lifecycle.commentReceived,
+        ).length,
+        automatedRepliesSent: [...lifecycles.values()].filter(
+          (lifecycle) => lifecycle.replySent,
+        ).length,
+      };
+    });
+
+    const hasBackfilledCounters = postMessages.some(
+      (item) =>
+        (item.commentsReceived ?? 0) > 0 ||
+        (item.automatedRepliesSent ?? 0) > 0,
+    );
+    if (!hasBackfilledCounters) {
+      return config;
+    }
+
+    const automation = this.getAutomationConfig(channel);
+    const next: PrivateRepliesConfig = {
+      ...config,
+      selectedPostIds: postMessages.map((item) => item.postId),
+      postMessages,
+    };
+    automation.privateReplies = next;
+    await this.updateAutomationConfig(channel.id, channel.config, automation);
+    return next;
+  }
+
+  private buildEngagementSummary(
+    events: MetaEngagementActivityEvent[],
+    config: PrivateRepliesConfig,
+    targets: MetaAutomationTarget[],
+  ): MetaEngagementActivitySummary {
+    return {
+      commentsReceived: config.postMessages.reduce(
+        (total, item) => total + (item.commentsReceived ?? 0),
+        0,
+      ),
+      automatedRepliesSent: config.postMessages.reduce(
+        (total, item) => total + (item.automatedRepliesSent ?? 0),
+        0,
+      ),
+      activePostAutomations: this.countActivePostAutomations(config, targets),
+      engagementEventsToday: events.filter((event) =>
+        this.isToday(event.timestamp),
+      ).length,
+    };
+  }
+
+  private countActivePostAutomations(
+    config: PrivateRepliesConfig,
+    targets: MetaAutomationTarget[],
+  ) {
+    if (!config.enabled) {
+      return 0;
+    }
+
+    if (config.scope === 'selected') {
+      return config.postMessages.filter((item) => item.message.trim()).length;
+    }
+
+    return Math.max(targets.length, 1);
+  }
+
+  private buildEngagementPosts(
+    channel: any,
+    config: PrivateRepliesConfig,
+    targets: MetaAutomationTarget[],
+  ): MetaEngagementActivityPost[] {
+    const pageName = this.getMetaPageName(channel);
+    const pagePictureUrl = this.getMetaPagePictureUrl(channel);
+
+    if (config.scope === 'selected') {
+      return config.postMessages
+        .filter((item) => item.message.trim())
+        .map((item) => {
+          const target =
+            targets.find((candidate) =>
+              this.postIdsMatch(candidate.id, item.postId),
+            ) ??
+            item.target ??
+            null;
+
+          return this.buildEngagementPost(channel, {
+            pageName,
+            pagePictureUrl,
+            postId: target?.id ?? item.postId,
+            target,
+            commentsReceived: item.commentsReceived ?? 0,
+            automatedRepliesSent: item.automatedRepliesSent ?? 0,
+          });
+        });
+    }
+
+    if (!config.enabled || !config.message.trim()) {
+      return [];
+    }
+
+    return targets.map((target) =>
+      this.buildEngagementPost(channel, {
+        pageName,
+        pagePictureUrl,
+        postId: target.id,
+        target,
+        commentsReceived: 0,
+        automatedRepliesSent: 0,
+      }),
+    );
+  }
+
+  private buildEngagementPost(
+    channel: any,
+    input: {
+      pageName: string;
+      pagePictureUrl?: string | null;
+      postId: string | null;
+      target?: MetaAutomationTarget | null;
+      commentsReceived: number;
+      automatedRepliesSent: number;
+    },
+  ): MetaEngagementActivityPost {
+    return {
+      id: input.postId,
+      pageName: input.pageName,
+      pagePictureUrl: input.pagePictureUrl,
+      postThumbnailUrl: input.target?.thumbnailUrl ?? null,
+      postSnippet:
+        this.toSnippet(input.target?.subtitle ?? input.target?.title) ??
+        (input.postId ? 'Selected Page post is being monitored.' : null),
+      createdAt: input.target?.createdAt ?? null,
+      permalink: input.target?.permalink ?? null,
+      commentsReceived: input.commentsReceived,
+      automatedRepliesSent: input.automatedRepliesSent,
+      identity: this.buildPostIdentity(channel, input.postId),
+    };
+  }
+
+  private async recordCommentEngagementActivity(
+    channel: any,
+    payload: CommentEventPayload,
+    config: PrivateRepliesConfig,
+    selectedRule: PrivateReplyPostMessage | null,
+    type: EngagementActivityType,
+    status: EngagementActivityStatus,
+  ) {
+    const target =
+      selectedRule?.target ??
+      this.findMatchingPrivateReplyPostMessage(config, payload.postId)?.target ??
+      null;
+
+    const now = new Date().toISOString();
+    const lifecycleId = `comment:${channel.id}:${payload.commentId}`;
+
+    const result = await this.upsertCommentEngagementActivity({
+      id: lifecycleId,
+      lifecycleId,
+      commentId: payload.commentId,
+      type: 'comment_received',
+      workspaceId: channel.workspaceId,
+      channelId: channel.id,
+      channelType: channel.type as SupportedAutomationChannel,
+      pageName: this.getMetaPageName(channel),
+      pagePictureUrl: this.getMetaPagePictureUrl(channel),
+      postId: payload.postId ?? target?.id ?? null,
+      postSnippet:
+        this.extractPostSnippetFromRaw(payload.raw) ??
+        this.toSnippet(target?.subtitle ?? target?.title),
+      postThumbnailUrl: target?.thumbnailUrl ?? null,
+      postPermalink: target?.permalink ?? null,
+      postCreatedAt: target?.createdAt ?? null,
+      commenterName: payload.commenterName ?? 'Facebook user',
+      commentText: this.toSnippet(payload.commentText, 220),
+      status,
+      timestamp: now,
+      commentReceivedAt: type === 'comment_received' ? now : null,
+      replyStatus:
+        type === 'private_reply_sent'
+          ? 'sent'
+          : type === 'automation_triggered'
+            ? 'pending'
+            : null,
+      replySentAt: type === 'private_reply_sent' ? now : null,
+      conversationId: null,
+    });
+
+    if (result?.commentCounted || result?.replyCounted) {
+      await this.incrementPrivateReplyPostCounters(channel, {
+        postId: selectedRule?.postId ?? payload.postId ?? target?.id ?? null,
+        commentsReceived: result.commentCounted ? 1 : 0,
+        automatedRepliesSent: result.replyCounted ? 1 : 0,
+      });
+    }
+  }
+
+  private async recordConversationCreatedEngagementActivity(message: any) {
+    if (!message.conversationId || !message.channel?.id) {
+      return;
+    }
+
+    const metadata = this.asRecord(message.metadata);
+    const storyReply = this.asRecord(metadata.storyReply);
+    const commenterName =
+      [
+        message.conversation?.contact?.firstName,
+        message.conversation?.contact?.lastName,
+      ]
+        .filter(Boolean)
+        .join(' ')
+        .trim() ||
+      message.conversation?.contact?.email ||
+      message.conversation?.contact?.phone ||
+      'Customer';
+    const postId =
+      this.toOptionalString(metadata.postId) ??
+      this.toOptionalString(metadata.mediaId) ??
+      this.toOptionalString(storyReply.storyId);
+
+    await this.persistEngagementActivity(
+      {
+        id: randomUUID(),
+        type: 'conversation_created',
+        workspaceId: message.workspaceId,
+        channelId: message.channelId,
+        channelType: message.channel.type as SupportedAutomationChannel,
+        pageName: this.getMetaPageName(message.channel),
+        pagePictureUrl: this.getMetaPagePictureUrl(message.channel),
+        postId,
+        postSnippet:
+          this.toSnippet(metadata.postSnippet) ??
+          this.toSnippet(storyReply.storyUrl) ??
+          null,
+        postThumbnailUrl: this.toOptionalString(metadata.thumbnailUrl),
+        postPermalink: this.toOptionalString(metadata.postPermalink),
+        postCreatedAt: null,
+        commenterName,
+        commentText: this.toSnippet(message.text, 220),
+        status: 'created',
+        timestamp: this.toIsoTimestamp(message.createdAt),
+        conversationId: message.conversationId,
+      },
+      `meta:engagement:conversation:${message.channelId}:${message.conversationId}`,
+    );
+  }
+
+  private async incrementPrivateReplyPostCounters(
+    channel: any,
+    delta: {
+      postId: string | null;
+      commentsReceived: number;
+      automatedRepliesSent: number;
+    },
+  ) {
+    if (
+      !delta.postId ||
+      (delta.commentsReceived <= 0 && delta.automatedRepliesSent <= 0)
+    ) {
+      return;
+    }
+
+    const freshChannel = await this.findChannel(channel.id, channel.workspaceId);
+    const automation = this.getAutomationConfig(freshChannel);
+    const config = this.normalisePrivateReplies(automation.privateReplies);
+    let matched = false;
+
+    const postMessages = config.postMessages.map((item) => {
+      if (!this.postIdsMatch(item.postId, delta.postId!)) {
+        return item;
+      }
+
+      matched = true;
+      return {
+        ...item,
+        commentsReceived:
+          (item.commentsReceived ?? 0) + delta.commentsReceived,
+        automatedRepliesSent:
+          (item.automatedRepliesSent ?? 0) + delta.automatedRepliesSent,
+      };
+    });
+
+    if (!matched) {
+      return;
+    }
+
+    automation.privateReplies = {
+      ...config,
+      selectedPostIds: postMessages.map((item) => item.postId),
+      postMessages,
+    };
+
+    await this.updateAutomationConfig(
+      freshChannel.id,
+      freshChannel.config,
+      automation,
+    );
+  }
+
+  private async persistEngagementActivity(
+    event: MetaEngagementActivityEvent,
+    dedupeKey?: string,
+  ) {
+    try {
+      if (dedupeKey) {
+        const accepted = await this.redis.client.set(
+          dedupeKey,
+          '1',
+          'EX',
+          ENGAGEMENT_ACTIVITY_TTL_SECONDS,
+          'NX',
+        );
+        if (!accepted) {
+          return;
+        }
+      }
+
+      const key = this.getEngagementActivityKey(event.channelId);
+      await this.redis.client.lpush(key, JSON.stringify(event));
+      await this.redis.client.ltrim(key, 0, ENGAGEMENT_ACTIVITY_LIMIT - 1);
+      await this.redis.client.expire(key, ENGAGEMENT_ACTIVITY_TTL_SECONDS);
+
+      this.events.emit('meta.engagement.activity', event);
+    } catch (error: any) {
+      this.logger.warn(
+        `Failed to record engagement activity channel=${event.channelId}: ${this.getErrorMessage(error)}`,
+      );
+    }
+  }
+
+  private async upsertCommentEngagementActivity(
+    event: MetaEngagementActivityEvent,
+  ): Promise<
+    | {
+        event: MetaEngagementActivityEvent;
+        commentCounted: boolean;
+        replyCounted: boolean;
+      }
+    | null
+  > {
+    try {
+      const key = this.getEngagementActivityKey(event.channelId);
+      const entries = await this.redis.client.lrange(
+        key,
+        0,
+        ENGAGEMENT_ACTIVITY_LIMIT - 1,
+      );
+      const existingIndex = entries.findIndex((entry) => {
+        const parsed = this.parseEngagementActivityEvent(entry);
+        return Boolean(
+          parsed &&
+            ((event.lifecycleId && parsed.lifecycleId === event.lifecycleId) ||
+              (event.commentId && parsed.commentId === event.commentId)),
+        );
+      });
+      const existing =
+        existingIndex >= 0
+          ? this.parseEngagementActivityEvent(entries[existingIndex])
+          : null;
+      const commentCounted = Boolean(
+        event.commentReceivedAt && !existing?.commentReceivedAt,
+      );
+      const replyCounted = Boolean(
+        event.replyStatus === 'sent' && existing?.replyStatus !== 'sent',
+      );
+      const replyStatus =
+        existing?.replyStatus === 'sent'
+          ? 'sent'
+          : event.replyStatus ?? existing?.replyStatus ?? null;
+      const next: MetaEngagementActivityEvent = {
+        ...(existing ?? event),
+        ...event,
+        type: 'comment_received',
+        timestamp: event.timestamp,
+        commentReceivedAt:
+          existing?.commentReceivedAt ?? event.commentReceivedAt ?? event.timestamp,
+        replyStatus,
+        replySentAt: event.replySentAt ?? existing?.replySentAt ?? null,
+        postSnippet: event.postSnippet ?? existing?.postSnippet ?? null,
+        postThumbnailUrl: event.postThumbnailUrl ?? existing?.postThumbnailUrl ?? null,
+        postPermalink: event.postPermalink ?? existing?.postPermalink ?? null,
+        postCreatedAt: event.postCreatedAt ?? existing?.postCreatedAt ?? null,
+      };
+
+      if (existingIndex >= 0) {
+        await this.redis.client.lrem(key, 1, entries[existingIndex]);
+      }
+
+      await this.redis.client.lpush(key, JSON.stringify(next));
+      await this.redis.client.ltrim(key, 0, ENGAGEMENT_ACTIVITY_LIMIT - 1);
+      await this.redis.client.expire(key, ENGAGEMENT_ACTIVITY_TTL_SECONDS);
+
+      this.events.emit('meta.engagement.activity', next);
+      return {
+        event: next,
+        commentCounted,
+        replyCounted,
+      };
+    } catch (error: any) {
+      this.logger.warn(
+        `Failed to upsert engagement activity channel=${event.channelId}: ${this.getErrorMessage(error)}`,
+      );
+      return null;
+    }
+  }
+
+  private getEngagementActivityKey(channelId: string) {
+    return `meta:engagement:activity:${channelId}`;
+  }
+
+  private getEngagementDedupeKey(
+    channelId: string,
+    type: EngagementActivityType,
+    externalId: string,
+  ) {
+    return `meta:engagement:dedupe:${channelId}:${type}:${externalId}`;
+  }
+
+  private parseEngagementActivityEvent(
+    value: string,
+  ): MetaEngagementActivityEvent | null {
+    try {
+      const parsed = JSON.parse(value) as Partial<MetaEngagementActivityEvent>;
+      if (
+        !parsed.id ||
+        !parsed.type ||
+        !parsed.workspaceId ||
+        !parsed.channelId ||
+        !parsed.channelType ||
+        !parsed.timestamp
+      ) {
+        return null;
+      }
+
+      return {
+        id: parsed.id,
+        lifecycleId: parsed.lifecycleId ?? null,
+        commentId: parsed.commentId ?? null,
+        type: parsed.type,
+        workspaceId: parsed.workspaceId,
+        channelId: parsed.channelId,
+        channelType: parsed.channelType,
+        pageName: parsed.pageName ?? 'Connected Page',
+        pagePictureUrl: parsed.pagePictureUrl ?? null,
+        postId: parsed.postId ?? null,
+        postSnippet: parsed.postSnippet ?? null,
+        postThumbnailUrl: parsed.postThumbnailUrl ?? null,
+        postPermalink: parsed.postPermalink ?? null,
+        postCreatedAt: parsed.postCreatedAt ?? null,
+        commenterName: parsed.commenterName ?? null,
+        commentText: parsed.commentText ?? null,
+        status: parsed.status ?? 'received',
+        timestamp: parsed.timestamp,
+        commentReceivedAt: parsed.commentReceivedAt ?? null,
+        replyStatus: parsed.replyStatus ?? null,
+        replySentAt: parsed.replySentAt ?? null,
+        conversationId: parsed.conversationId ?? null,
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  private getMetaPageName(channel: any) {
+    const config = this.asRecord(channel.config);
+    return (
+      this.toOptionalString(config.pageName) ??
+      this.toOptionalString(config.userName) ??
+      this.toOptionalString(channel.name) ??
+      'Connected Page'
+    );
+  }
+
+  private getMetaPagePictureUrl(channel: any) {
+    const config = this.asRecord(channel.config);
+    return (
+      this.toOptionalString(config.pagePicture) ??
+      this.toOptionalString(config.profilePicture) ??
+      this.toOptionalString(config.pictureUrl)
+    );
+  }
+
+  private buildPostIdentity(channel: any, postId?: string | null) {
+    if (channel.type === 'instagram') {
+      return `Instagram account ${channel.identifier} - Media ${postId ?? 'not selected'}`;
+    }
+
+    return `Facebook Page ${channel.identifier} - Post ${postId ?? 'not selected'}`;
+  }
+
+  private extractPostSnippetFromRaw(raw: unknown) {
+    const record = this.asRecord(raw);
+    const value = this.asRecord(record.value);
+    const post = this.asRecord(value.post);
+    const media = this.asRecord(value.media);
+
+    return (
+      this.toSnippet(post.message) ??
+      this.toSnippet(post.story) ??
+      this.toSnippet(media.caption) ??
+      this.toSnippet(value.post_message) ??
+      this.toSnippet(value.caption)
+    );
+  }
+
+  private isToday(timestamp: string) {
+    const date = new Date(timestamp);
+    if (Number.isNaN(date.getTime())) {
+      return false;
+    }
+
+    const start = new Date();
+    start.setHours(0, 0, 0, 0);
+    const end = new Date(start);
+    end.setDate(start.getDate() + 1);
+    return date >= start && date < end;
+  }
+
+  private toSnippet(value: unknown, maxLength = 160) {
+    const text = this.toOptionalString(value);
+    if (!text) {
+      return null;
+    }
+
+    return text.length > maxLength
+      ? `${text.slice(0, Math.max(0, maxLength - 3))}...`
+      : text;
+  }
+
+  private toOptionalString(value: unknown) {
+    if (value === null || value === undefined) {
+      return null;
+    }
+
+    const text = String(value).trim();
+    return text ? text : null;
+  }
+
+  private toIsoTimestamp(value: unknown) {
+    if (value instanceof Date) {
+      return value.toISOString();
+    }
+
+    const date = new Date(String(value ?? ''));
+    return Number.isNaN(date.getTime())
+      ? new Date().toISOString()
+      : date.toISOString();
+  }
+
+  private toNonNegativeInteger(value: unknown) {
+    const numeric = Number(value ?? 0);
+    if (!Number.isFinite(numeric) || numeric < 0) {
+      return 0;
+    }
+
+    return Math.floor(numeric);
+  }
+
+  private asRecord(value: unknown): Record<string, unknown> {
+    return value && typeof value === 'object'
+      ? (value as Record<string, unknown>)
+      : {};
   }
 
   private findMatchingPrivateReplyPostMessage(

@@ -1,5 +1,6 @@
 // src/modules/workflows/workflow-engine.service.ts
 import { Injectable, Logger } from '@nestjs/common';
+import { NotificationType } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { RedisService } from '../../redis/redis.service';
 import { workflowQueue, WorkflowJob } from '../../queues/workflow.queue';
@@ -7,6 +8,12 @@ import { OnEvent } from '@nestjs/event-emitter';
 import { WorkflowRunContext } from './workflow-run.context';
 import { log } from 'console';
 import { OutboundService } from '../outbound/outbound.service';
+import { ActivityService } from '../activity/activity.service';
+import { NotificationsService } from '../notifications/notifications.service';
+import {
+  findElseBranchConnector,
+  isElseBranchConnector,
+} from './branch-routing.util';
 
 const RUN_CTX_TTL = 60 * 60 * 24;
 const ACTIVE_RUN_KEY = (workspaceId: string, contactId: string) =>
@@ -20,6 +27,8 @@ export class WorkflowEngineService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly redis: RedisService,
+    private readonly activity?: ActivityService,
+    private readonly notifications?: NotificationsService,
   ) { }
 
   // ── Event listeners ──────────────────────────────────────────────────────
@@ -956,8 +965,8 @@ export class WorkflowEngineService {
       (s) => s.parentId === step.id && s.type === 'branch_connector',
     );
     this.logger.debug(`Evaluating branch step ${step.id} with connectors ${connectors.map((c) => c.name).join(', ')}`, { ctx, connectors });
-    for (const connector of connectors) {
-      if (connector.name === 'Else') continue;
+    for (const [index, connector] of connectors.entries()) {
+      if (isElseBranchConnector(connector, index, connectors)) continue;
 
       const conditions: any[] = connector.data?.conditions ?? [];
       const match = this.evaluateBranchConditions(conditions, ctx);
@@ -971,7 +980,7 @@ export class WorkflowEngineService {
     }
 
     // Fallback to Else
-    const elseConnector = connectors.find((c) => c.name === 'Else');
+    const elseConnector = findElseBranchConnector(connectors);
     return {
       output: { matchedBranch: 'Else' },
       branchConnectorId: elseConnector?.id ?? null,
@@ -1084,7 +1093,7 @@ export class WorkflowEngineService {
       where: {
         contactId: ctx.contactId,
         workspaceId: ctx.workspaceId,
-        contact: { status: { not: 'closed' } },
+        contact: { OR: [{ status: { not: 'closed' } }, { status: null }] },
       },
     });
     if (!conversation) return { output: { skipped: true } };
@@ -1139,26 +1148,51 @@ export class WorkflowEngineService {
       where: {
         contactId: ctx.contactId,
         workspaceId: ctx.workspaceId,
-        contact: { status: { not: 'closed' } },
+        contact: { OR: [{ status: { not: 'closed' } }, { status: null }] },
       },
     });
     if (!conversation) return { output: { skipped: true, reason: 'no open conversation' } };
 
-    await this.prisma.message.create({
-      data: {
+    const mentionedUserIds = await this.resolveMentionedUserIds(
+      ctx.workspaceId,
+      text,
+      step.data.mentionedUserIds,
+    );
+
+    const noteActivity = this.activity
+      ? await this.activity.record({
         workspaceId: ctx.workspaceId,
         conversationId: conversation.id,
-        channelId: null,
-        channelType: 'system',
-        type: 'note',
-        direction: 'outgoing',
-        text,
-        status: 'sent',
-        sentAt: new Date(),
-      },
+        eventType: 'note',
+        actorType: 'automation',
+        metadata: {
+          text,
+          mentionedUserIds,
+        },
+      })
+      : await this.prisma.conversationActivity.create({
+        data: {
+          workspaceId: ctx.workspaceId,
+          conversationId: conversation.id,
+          eventType: 'note',
+          actorType: 'automation',
+          metadata: {
+            text,
+            mentionedUserIds,
+          },
+        },
+      });
+
+    await this.notifyMentionedUsers({
+      workspaceId: ctx.workspaceId,
+      contactId: ctx.contactId,
+      conversationId: conversation.id,
+      noteId: noteActivity.id,
+      text,
+      mentionedUserIds,
     });
 
-    return { output: { commented: true, text } };
+    return { output: { commented: true, text, mentionedUserIds } };
   }
 
   // date_time — routes to In Range / Out of Range connector
@@ -1561,6 +1595,83 @@ export class WorkflowEngineService {
       for (const p of parts) val = val?.[p];
       return val != null ? String(val) : '';
     });
+  }
+
+  private async resolveMentionedUserIds(
+    workspaceId: string,
+    text: string,
+    explicitMentionIds?: string[],
+  ): Promise<string[]> {
+    const parsedIds = Array.from(text.matchAll(/@\[([^|\]]+)\|[^\]]+\]/g))
+      .map((match) => match[1]?.trim())
+      .filter((id): id is string => Boolean(id));
+    const candidateIds = Array.from(
+      new Set([
+        ...parsedIds,
+        ...((explicitMentionIds ?? []).filter(Boolean)),
+      ]),
+    );
+
+    if (candidateIds.length === 0) {
+      return [];
+    }
+
+    const members = await this.prisma.workspaceMember.findMany({
+      where: {
+        workspaceId,
+        userId: { in: candidateIds },
+      },
+      select: { userId: true },
+    });
+
+    return members.map((member) => member.userId);
+  }
+
+  private async notifyMentionedUsers(params: {
+    workspaceId: string;
+    contactId: string;
+    conversationId: string;
+    noteId: string;
+    text: string;
+    mentionedUserIds: string[];
+  }) {
+    if (!this.notifications || params.mentionedUserIds.length === 0) {
+      return;
+    }
+
+    const notePreview = params.text
+      .replace(/@\[([^|\]]+)\|([^\]]+)\]/g, '@$2')
+      .trim();
+    const body = notePreview
+      ? `Automation mentioned you in a workflow note: ${notePreview.slice(0, 180)}`
+      : 'Automation mentioned you in a workflow note.';
+
+    await Promise.all(
+      params.mentionedUserIds.map((userId) =>
+        this.notifications!.ingest({
+          userId,
+          workspaceId: params.workspaceId,
+          type: NotificationType.COMMENT_MENTION,
+          title: 'You were mentioned in a note',
+          body,
+          metadata: {
+            contactId: params.contactId,
+            conversationId: params.conversationId,
+            noteId: params.noteId,
+            mentionedUserIds: params.mentionedUserIds,
+            source: 'workflow',
+          },
+          sourceEntityType: 'conversation_activity',
+          sourceEntityId: params.noteId,
+          dedupeKey: `workflow-note-mention:${params.noteId}:${userId}`,
+          target: {
+            contactId: params.contactId,
+            conversationId: params.conversationId,
+            mentionedUserIds: params.mentionedUserIds,
+          },
+        }),
+      ),
+    );
   }
 
   private getNestedValue(obj: any, path: string): any {

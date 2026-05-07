@@ -60,7 +60,9 @@ export class WhatsAppOAuthService {
     state?: string;
     requestOrigin?: string;
   }) {
-    const fallbackRedirectUri = this.state.getDefaultRedirectUri();
+    const fallbackRedirectUri = this.getWhatsAppConnectRedirectUri(
+      input.requestOrigin,
+    );
 
     let oauthState: ParsedOAuthState | null = null;
 
@@ -70,9 +72,15 @@ export class WhatsAppOAuthService {
       return {
         html: buildOAuthCallbackPage({
           provider: 'WhatsApp',
+          providerKey: 'whatsapp',
           status: 'error',
           message: 'This authorization link is invalid or has expired.',
           redirectUri: fallbackRedirectUri,
+          redirectPayload: {
+            oauthProvider: 'whatsapp',
+            oauthStatus: 'error',
+            error: 'This authorization link is invalid or has expired.',
+          },
         }),
       };
     }
@@ -93,9 +101,15 @@ export class WhatsAppOAuthService {
       return {
         html: buildOAuthCallbackPage({
           provider: 'WhatsApp',
+          providerKey: 'whatsapp',
           status: 'error',
           message,
           redirectUri: fallbackRedirectUri,
+          redirectPayload: {
+            oauthProvider: 'whatsapp',
+            oauthStatus: 'error',
+            error: message,
+          },
         }),
       };
     }
@@ -130,9 +144,14 @@ export class WhatsAppOAuthService {
       return {
         html: buildOAuthCallbackPage({
           provider: 'WhatsApp',
+          providerKey: 'whatsapp',
           status: 'success',
           message: `Connected ${channels.length} WhatsApp number${channels.length > 1 ? 's' : ''}.`,
           redirectUri: fallbackRedirectUri,
+          redirectPayload: {
+            oauthProvider: 'whatsapp',
+            oauthStatus: 'success',
+          },
         }),
       };
     } catch (error: any) {
@@ -151,9 +170,15 @@ export class WhatsAppOAuthService {
       return {
         html: buildOAuthCallbackPage({
           provider: 'WhatsApp',
+          providerKey: 'whatsapp',
           status: 'error',
           message,
           redirectUri: fallbackRedirectUri,
+          redirectPayload: {
+            oauthProvider: 'whatsapp',
+            oauthStatus: 'error',
+            error: message,
+          },
         }),
       };
     }
@@ -547,6 +572,15 @@ export class WhatsAppOAuthService {
       process.env.WHATSAPP_EMBEDDED_SIGNUP_REDIRECT_URI ??
       process.env.WHATSAPP_REDIRECT_URI!
     );
+  }
+
+  private getWhatsAppConnectRedirectUri(requestOrigin?: string) {
+    const base =
+      process.env.APP_URL ??
+      requestOrigin ??
+      'http://localhost:3000';
+
+    return `${base.replace(/\/api\/?$/, '').replace(/\/$/, '')}/channels/connect/whatsapp_cloud`;
   }
 
   private getErrorMessage(error: any, fallback: string) {

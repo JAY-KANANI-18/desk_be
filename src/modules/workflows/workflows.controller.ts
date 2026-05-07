@@ -60,14 +60,14 @@ export class WorkflowsController {
 
     @Post(':id/clone')
     @WorkspaceRoute(WorkspacePermission.WORKFLOWS_MANAGE)
-    clone(@Req() req: any, @Body() dto: any) {
-        return this.service.clone(req.workspaceId, dto, req.user.id);
+    clone(@Req() req: any, @Param('id') id: string, @Body() dto: any) {
+        return this.service.clone(req.workspaceId, id, dto ?? {}, req.user.id);
     }
 
     @Patch(':id/publish')
     @WorkspaceRoute(WorkspacePermission.WORKFLOWS_MANAGE)
     publish(@Req() req: any, @Param('id') id: string) {
-        return this.service.publish(req.workspaceId, id);
+        return this.service.publish(req.workspaceId, id, req.user.id);
     }
 
     @Patch(':id/stop')

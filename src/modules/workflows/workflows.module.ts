@@ -6,9 +6,11 @@ import { WorkflowEngineService } from './workflow-engine.service';
 import { WorkflowsController } from './workflows.controller';
 import { ChannelAdaptersModule } from '../channel-adapters/channel-adapters.module';
 import { OutboundModule } from '../outbound/outbound.module';
+import { ActivityModule } from '../activity/activity.module';
+import { NotificationsModule } from '../notifications/notifications.module';
 
 @Module({
-    imports: [PrismaModule, ConversationsModule,OutboundModule],
+    imports: [PrismaModule, ConversationsModule,OutboundModule, ActivityModule, NotificationsModule],
     controllers: [WorkflowsController],
     providers: [WorkflowsService, WorkflowEngineService],
     exports: [WorkflowEngineService],

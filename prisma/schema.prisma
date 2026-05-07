@@ -919,8 +919,8 @@ model OutboundQueue {
   updatedAt   DateTime  @updatedAt
 
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  channel   Channel   @relation(fields: [channelId], references: [id])
-  message   Message   @relation(fields: [messageId], references: [id])
+  channel   Channel   @relation(fields: [channelId], references: [id],onDelete: Cascade)
+  message   Message   @relation(fields: [messageId], references: [id],onDelete: Cascade)
 
   @@index([status, scheduledAt])
   @@index([workspaceId, channelId])

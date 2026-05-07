@@ -1385,7 +1385,7 @@ export class OutboundService {
             where: {
                 workspaceId,
                 contactId,
-                contact: { status: { not: 'closed' } },
+                contact: { OR: [{ status: { not: 'closed' } }, { status: null }] },
             },
             orderBy: { updatedAt: 'desc' },
         });

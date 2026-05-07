@@ -19,6 +19,7 @@ import { WorkspacePermission } from 'src/common/constants/permissions';
 import { MessageProcessingQueueService } from 'src/modules/outbound/message-processing-queue.service';
 import { InstagramOAuthService } from './instagram-oauth.service';
 import { MetaAutomationService } from '../meta-automation.service';
+import { OAUTH_CALLBACK_RESPONSE_HEADERS } from 'src/modules/channels/oauth/oauth-callback-page.util';
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -339,6 +340,10 @@ export class InstagramController {
       errorDescription,
       state,
       requestOrigin: this.getRequestOrigin(req),
+    });
+
+    Object.entries(OAUTH_CALLBACK_RESPONSE_HEADERS).forEach(([header, value]) => {
+      res.setHeader(header, value);
     });
 
      res.type('html').send(result.html);

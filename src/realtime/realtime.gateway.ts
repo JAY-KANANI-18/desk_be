@@ -415,4 +415,14 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
             .to(`workspace:${event.workspaceId}`)
             .emit('automation:error', event);
     }
+
+    @OnEvent('meta.engagement.activity')
+    handleMetaEngagementActivity(event: {
+        workspaceId: string;
+        [key: string]: any;
+    }) {
+        this.server
+            .to(`workspace:${event.workspaceId}`)
+            .emit('meta:engagement:activity', event);
+    }
 }

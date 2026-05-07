@@ -3,7 +3,15 @@ import {
     NotFoundException,
     BadRequestException,
 } from '@nestjs/common';
+import type { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
+
+type WorkflowListOptions = {
+    search?: string;
+    status?: string;
+    page?: number;
+    limit?: number;
+};
 
 @Injectable()
 export class WorkflowsService {
@@ -54,7 +62,7 @@ export class WorkflowsService {
         });
     }
 
-    async publish(workspaceId: string, id: string) {
+    async publish(workspaceId: string, id: string, userId: string) {
         const workflow = await this.prisma.workflow.findFirst({
             where: { id, workspaceId },
         });
@@ -65,7 +73,11 @@ export class WorkflowsService {
 
         return this.prisma.workflow.update({
             where: { id },
-            data: { status: "published" },
+            data: {
+                status: "published",
+                publishedAt: new Date(),
+                publishedBy: userId,
+            },
         });
     }
 
@@ -75,9 +87,9 @@ export class WorkflowsService {
             data: { status: "stopped" },
         });
     }
-    async clone(workspaceId: string, dto: any, userId: string) {
+    async clone(workspaceId: string, id: string, dto: { name?: string }, userId: string) {
         const workflow = await this.prisma.workflow.findFirst({
-            where: { id: dto.id, workspaceId },
+            where: { id, workspaceId },
         });
         
         if (!workflow) {
@@ -111,9 +123,9 @@ export class WorkflowsService {
 
     async list(
         workspaceId: string,
-        opts?: { search?: string; status?: string; page?: number; limit?: number },
+        opts?: WorkflowListOptions,
     ) {
-        const where: any = {
+        const where: Prisma.WorkflowWhereInput = {
             workspaceId,
             ...(opts?.status && opts.status !== 'all' ? { status: opts.status } : {}),
             ...(opts?.search?.trim()
@@ -160,6 +172,7 @@ export class WorkflowsService {
             },
         };
     }
+
     async get(workspaceId: string, id: string) {
         const workflow = await this.prisma.workflow.findFirst({
             where: { id, workspaceId },

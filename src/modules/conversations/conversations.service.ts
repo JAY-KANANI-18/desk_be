@@ -108,6 +108,8 @@ export interface AddNoteDto {
   mentionedUserIds?: string[];
 }
 
+type MessageVariableContext = Record<string, unknown>;
+
 export interface ChangePriorityDto {
   priority: 'low' | 'normal' | 'high' | 'urgent';
   actorId?: string;
@@ -270,13 +272,7 @@ export class ConversationsService {
 
     // Search by contact name / email / phone
     if (search?.trim()) {
-      const q = search.trim();
-      contactWhere.OR = [
-        { firstName: { contains: q, mode: 'insensitive' } },
-        { lastName: { contains: q, mode: 'insensitive' } },
-        { email: { contains: q, mode: 'insensitive' } },
-        { phone: { contains: q, mode: 'insensitive' } },
-      ];
+      contactWhere.OR = this.buildContactSearchClauses(search);
     }
 
     if (Object.keys(contactWhere).length > 0) {
@@ -300,6 +296,50 @@ export class ConversationsService {
     const nextCursor = hasMore ? data[data.length - 1].id : undefined;
 
     return { data, nextCursor, total };
+  }
+
+  private buildContactSearchClauses(search: string): Prisma.ContactWhereInput[] {
+    const normalizedSearch = search.trim().replace(/\s+/g, ' ');
+    const words = normalizedSearch.split(' ').filter(Boolean);
+    const clauses = this.buildContactSearchFieldClauses(normalizedSearch);
+
+    if (words.length > 1) {
+      clauses.push({
+        AND: words.map((word) => ({
+          OR: this.buildContactSearchFieldClauses(word),
+        })),
+      });
+
+      const firstWord = words[0];
+      const remainingWords = words.slice(1).join(' ');
+
+      clauses.push(
+        {
+          AND: [
+            { firstName: { contains: firstWord, mode: 'insensitive' } },
+            { lastName: { contains: remainingWords, mode: 'insensitive' } },
+          ],
+        },
+        {
+          AND: [
+            { lastName: { contains: firstWord, mode: 'insensitive' } },
+            { firstName: { contains: remainingWords, mode: 'insensitive' } },
+          ],
+        },
+      );
+    }
+
+    return clauses;
+  }
+
+  private buildContactSearchFieldClauses(search: string): Prisma.ContactWhereInput[] {
+    return [
+      { firstName: { contains: search, mode: 'insensitive' } },
+      { lastName: { contains: search, mode: 'insensitive' } },
+      { email: { contains: search, mode: 'insensitive' } },
+      { phone: { contains: search, mode: 'insensitive' } },
+      { company: { contains: search, mode: 'insensitive' } },
+    ];
   }
 
   /**
@@ -505,25 +545,33 @@ export class ConversationsService {
       );
     }
 
+    const variableContext = await this.buildMessageVariableContext(conv, dto.actorId);
+    const deliveryDto: SendMessageDto = {
+      ...dto,
+      text: this.renderMessageVariables(dto.text, variableContext),
+      subject: this.renderMessageVariables(dto.subject, variableContext),
+      metadata: this.renderMessageMetadata(dto.metadata, variableContext),
+    };
+
     // Create Message row
     const message = await this.prisma.message.create({
       data: {
-        workspaceId: dto.workspaceId,
-        conversationId: dto.conversationId,
-        channelId: dto.channelId,
+        workspaceId: deliveryDto.workspaceId,
+        conversationId: deliveryDto.conversationId,
+        channelId: deliveryDto.channelId,
         channelType: channel.type,
-        type: dto.metadata?.template
+        type: deliveryDto.metadata?.template
           ? 'template'
-          : dto.attachments?.length
-          ? dto.attachments[0].type
+          : deliveryDto.attachments?.length
+          ? deliveryDto.attachments[0].type
           : 'text',
         direction: 'outgoing',
-        text: dto.text ?? null,
-        subject: dto.subject ?? null,
+        text: deliveryDto.text ?? null,
+        subject: deliveryDto.subject ?? null,
         status: 'pending',
-        authorId: dto.actorId,
-        replyToChannelMsgId: dto.replyToMessageId ?? dto.metadata?.replyToMessageId ?? null,
-        metadata: dto.metadata ? (dto.metadata as any) : undefined,
+        authorId: deliveryDto.actorId,
+        replyToChannelMsgId: deliveryDto.replyToMessageId ?? deliveryDto.metadata?.replyToMessageId ?? null,
+        metadata: deliveryDto.metadata ? (deliveryDto.metadata as any) : undefined,
         sentAt: new Date(),
       },
       include: {
@@ -534,9 +582,9 @@ export class ConversationsService {
     });
 
     // Persist attachments
-    if (dto.attachments?.length) {
+    if (deliveryDto.attachments?.length) {
       await this.prisma.messageAttachment.createMany({
-        data: dto.attachments.map(a => ({
+        data: deliveryDto.attachments.map(a => ({
           messageId: message.id,
           type: a.type,
           name: a.name,
@@ -556,11 +604,11 @@ export class ConversationsService {
     });
 
     // Enqueue for delivery
-    const payload = this.buildQueuePayload(channel.type, to, dto);
+    const payload = this.buildQueuePayload(channel.type, to, deliveryDto);
     const queueEntry = await this.prisma.outboundQueue.create({
       data: {
-        workspaceId: dto.workspaceId,
-        channelId: dto.channelId,
+        workspaceId: deliveryDto.workspaceId,
+        channelId: deliveryDto.channelId,
         messageId: message.id,
         to,
         payload,
@@ -571,8 +619,8 @@ export class ConversationsService {
 
     // Emit for real-time FE delivery
     this.emitter.emit('message.outbound', {
-      workspaceId: dto.workspaceId,
-      conversationId: dto.conversationId,
+      workspaceId: deliveryDto.workspaceId,
+      conversationId: deliveryDto.conversationId,
       message: this.formatMessage(message),
     });
 
@@ -850,7 +898,9 @@ export class ConversationsService {
 
   async addNote(conversationId: string, dto: AddNoteDto) {
     const conv = await this.findOrFail(conversationId);
-    const parsedMentionIds = this.mentionParser.extractUserIds(dto.text);
+    const variableContext = await this.buildMessageVariableContext(conv, dto.actorId);
+    const text = this.renderMessageVariables(dto.text, variableContext) ?? '';
+    const parsedMentionIds = this.mentionParser.extractUserIds(text);
     const candidateMentionIds = Array.from(
       new Set([...(parsedMentionIds ?? []), ...(dto.mentionedUserIds ?? [])]),
     ).filter((id) => id && id !== dto.actorId);
@@ -872,7 +922,7 @@ export class ConversationsService {
       actorId: dto.actorId,
       actorType: 'user',
       metadata: {
-        text: dto.text,
+        text,
         mentionedUserIds: validMentionIds,
       },
     });
@@ -884,7 +934,7 @@ export class ConversationsService {
       });
       const actorName = [actor?.firstName, actor?.lastName].filter(Boolean).join(' ').trim() || 'A teammate';
       const contactName = this.getContactDisplayName(conv.contact);
-      const notePreview = this.mentionParser.toPlainText(dto.text).trim();
+      const notePreview = this.mentionParser.toPlainText(text).trim();
       const body = notePreview
         ? `${actorName} mentioned you in a note on ${contactName}: ${notePreview.slice(0, 180)}`
         : `${actorName} mentioned you in a note on ${contactName}.`;
@@ -1263,9 +1313,131 @@ export class ConversationsService {
     lastName?: string | null;
     email?: string | null;
     phone?: string | null;
+    company?: string | null;
   } | null) {
     const fullName = [contact?.firstName, contact?.lastName].filter(Boolean).join(' ').trim();
     return fullName || contact?.email || contact?.phone || 'this contact';
+  }
+
+  private async buildMessageVariableContext(
+    conversation: {
+      id: string;
+      workspaceId: string;
+      contact?: {
+        firstName?: string | null;
+        lastName?: string | null;
+        email?: string | null;
+        phone?: string | null;
+        company?: string | null;
+      } | null;
+    },
+    actorId?: string | null,
+  ): Promise<MessageVariableContext> {
+    const [actor, workspace] = await Promise.all([
+      actorId
+        ? this.prisma.user.findUnique({
+          where: { id: actorId },
+          select: { firstName: true, lastName: true, email: true },
+        })
+        : Promise.resolve(null),
+      this.prisma.workspace.findUnique({
+        where: { id: conversation.workspaceId },
+        select: { name: true, timeZone: true },
+      }),
+    ]);
+
+    const contact = conversation.contact;
+    const contactName = this.getContactDisplayName(contact);
+    const agentName = [actor?.firstName, actor?.lastName].filter(Boolean).join(' ').trim();
+    const todayDate = new Intl.DateTimeFormat('en-US', {
+      timeZone: workspace?.timeZone ?? 'UTC',
+      year: 'numeric',
+      month: 'short',
+      day: '2-digit',
+    }).format(new Date());
+
+    return {
+      contact: {
+        name: contactName,
+        firstName: contact?.firstName ?? '',
+        first_name: contact?.firstName ?? '',
+        firstname: contact?.firstName ?? '',
+        lastName: contact?.lastName ?? '',
+        last_name: contact?.lastName ?? '',
+        lastname: contact?.lastName ?? '',
+        email: contact?.email ?? '',
+        phone: contact?.phone ?? '',
+        company: contact?.company ?? '',
+      },
+      agent: {
+        name: agentName,
+        email: actor?.email ?? '',
+      },
+      company: {
+        name: workspace?.name ?? '',
+      },
+      conversation: {
+        id: conversation.id,
+      },
+      today: {
+        date: todayDate,
+      },
+    };
+  }
+
+  private renderMessageVariables(
+    value: string | null | undefined,
+    context: MessageVariableContext,
+  ): string | undefined {
+    if (value === null || value === undefined) return undefined;
+
+    return value.replace(
+      /\{\{\s*\$?([a-zA-Z0-9._-]+)\s*\}\}/g,
+      (_match, key: string) => {
+        const resolved = this.getMessageVariableValue(context, key);
+        return resolved === null || resolved === undefined ? '' : String(resolved);
+      },
+    );
+  }
+
+  private renderMessageMetadata(
+    metadata: Record<string, any> | undefined,
+    context: MessageVariableContext,
+  ) {
+    if (!metadata) return undefined;
+
+    const next = { ...metadata };
+
+    if (typeof next.htmlBody === 'string') {
+      next.htmlBody = this.renderMessageVariables(next.htmlBody, context);
+    }
+
+    if (next.email && typeof next.email === 'object') {
+      next.email = { ...next.email };
+      if (typeof next.email.subject === 'string') {
+        next.email.subject = this.renderMessageVariables(next.email.subject, context);
+      }
+      if (typeof next.email.htmlBody === 'string') {
+        next.email.htmlBody = this.renderMessageVariables(next.email.htmlBody, context);
+      }
+    }
+
+    return next;
+  }
+
+  private getMessageVariableValue(context: MessageVariableContext, key: string): unknown {
+    const normalizedKey = key.trim().replace(/^\$/, '');
+    if (Object.prototype.hasOwnProperty.call(context, normalizedKey)) {
+      return context[normalizedKey];
+    }
+
+    return normalizedKey.split('.').reduce<unknown>((current, part) => {
+      if (current && typeof current === 'object' && Object.prototype.hasOwnProperty.call(current, part)) {
+        return (current as Record<string, unknown>)[part];
+      }
+
+      return undefined;
+    }, context);
   }
 
   private async getLatestTimeline(
