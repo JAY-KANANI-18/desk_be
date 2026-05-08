@@ -1,5 +1,6 @@
-import { BadRequestException } from '@nestjs/common';
+import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
+import { AiGatewayService } from '../ai-agents/gateway/ai-gateway.service';
 import { WorkflowsService } from './workflows.service';
 
 type WorkflowDelegateMock = {
@@ -16,6 +17,10 @@ type PrismaMock = {
     $transaction: jest.Mock;
 };
 
+type AiGatewayMock = {
+    completeJson: jest.Mock;
+};
+
 function createPrismaMock(): PrismaMock {
     return {
         workflow: {
@@ -30,9 +35,12 @@ function createPrismaMock(): PrismaMock {
     };
 }
 
-function createService() {
+function createService(aiGateway?: AiGatewayMock) {
     const prisma = createPrismaMock();
-    const service = new WorkflowsService(prisma as unknown as PrismaService);
+    const service = new WorkflowsService(
+        prisma as unknown as PrismaService,
+        aiGateway as unknown as AiGatewayService,
+    );
 
     return { prisma, service };
 }
@@ -73,6 +81,122 @@ function createValidConfig() {
 }
 
 describe('WorkflowsService', () => {
+    describe('AI builder', () => {
+        const originalWorkflowAiBuilderEnabled = process.env.WORKFLOW_AI_BUILDER_ENABLED;
+
+        beforeEach(() => {
+            delete process.env.WORKFLOW_AI_BUILDER_ENABLED;
+        });
+
+        afterEach(() => {
+            if (originalWorkflowAiBuilderEnabled === undefined) {
+                delete process.env.WORKFLOW_AI_BUILDER_ENABLED;
+            } else {
+                process.env.WORKFLOW_AI_BUILDER_ENABLED = originalWorkflowAiBuilderEnabled;
+            }
+        });
+
+        it('keeps the workflow AI builder disabled unless the env flag is enabled', async () => {
+            const { service } = createService({
+                completeJson: jest.fn(),
+            });
+
+            expect(() => service.getAiBuilderContext()).toThrow(NotFoundException);
+            await expect(
+                service.buildWithAi('workspace-1', 'workflow-1', {
+                    message: 'Build a rating flow',
+                }),
+            ).rejects.toBeInstanceOf(NotFoundException);
+        });
+
+        it('exposes the workflow AI builder source of truth', () => {
+            process.env.WORKFLOW_AI_BUILDER_ENABLED = 'true';
+            const { service } = createService();
+
+            expect(service.getAiBuilderContext()).toEqual(
+                expect.objectContaining({
+                    systemPrompt: expect.stringContaining('AxoDesk Workflow Builder AI'),
+                    context: expect.objectContaining({
+                        feature: 'workflow_build_with_ai',
+                        steps: expect.arrayContaining([
+                            expect.objectContaining({ type: 'trigger_another_workflow' }),
+                            expect.objectContaining({ type: 'ask_question' }),
+                        ]),
+                    }),
+                }),
+            );
+        });
+
+        it('uses the AI gateway with sanitized workflow builder context', async () => {
+            process.env.WORKFLOW_AI_BUILDER_ENABLED = 'true';
+            const aiGateway: AiGatewayMock = {
+                completeJson: jest.fn().mockResolvedValue({
+                    data: {
+                        mode: 'clarify',
+                        assistantMessage: 'Which channel should I use?',
+                        questions: ['Which channel should I use?'],
+                        suggestions: [],
+                        warnings: [],
+                        confidence: 0.7,
+                    },
+                    raw: {
+                        provider: 'mistral',
+                        model: 'mistral-small-latest',
+                        latencyMs: 42,
+                    },
+                }),
+            };
+            const { prisma, service } = createService(aiGateway);
+            prisma.workflow.findFirst.mockResolvedValue({
+                id: 'workflow-1',
+                name: 'Lead follow up',
+                description: null,
+                status: 'draft',
+                config: createValidConfig(),
+            });
+
+            await expect(
+                service.buildWithAi('workspace-1', 'workflow-1', {
+                    message: 'Build a rating flow',
+                    workspaceFacts: {
+                        channels: [{ id: 'channel-1', name: 'Instagram' }],
+                        apiKey: 'secret-value',
+                    },
+                }),
+            ).resolves.toEqual(
+                expect.objectContaining({
+                    mode: 'clarify',
+                    contextVersion: expect.any(String),
+                    model: {
+                        provider: 'mistral',
+                        name: 'mistral-small-latest',
+                        latencyMs: 42,
+                    },
+                }),
+            );
+            expect(aiGateway.completeJson).toHaveBeenCalledWith(
+                expect.objectContaining({
+                    workspaceId: 'workspace-1',
+                    operation: 'decision',
+                    metadata: expect.objectContaining({
+                        feature: 'workflow_ai_builder',
+                        workflowId: 'workflow-1',
+                    }),
+                }),
+            );
+            const messages = aiGateway.completeJson.mock.calls[0][0].messages;
+            expect(JSON.stringify(messages)).not.toContain('secret-value');
+            expect(JSON.stringify(messages)).not.toContain('apiKey');
+            expect(aiGateway.completeJson).toHaveBeenCalledWith(
+                expect.objectContaining({
+                    model: 'mistral-small-latest',
+                    maxTokens: 2200,
+                    timeoutMs: expect.any(Number),
+                }),
+            );
+        });
+    });
+
     describe('update', () => {
         it('rejects steps that reference a missing parent', async () => {
             const { prisma, service } = createService();

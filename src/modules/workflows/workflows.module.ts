@@ -8,9 +8,10 @@ import { ChannelAdaptersModule } from '../channel-adapters/channel-adapters.modu
 import { OutboundModule } from '../outbound/outbound.module';
 import { ActivityModule } from '../activity/activity.module';
 import { NotificationsModule } from '../notifications/notifications.module';
+import { AiAgentsModule } from '../ai-agents/ai-agents.module';
 
 @Module({
-    imports: [PrismaModule, ConversationsModule,OutboundModule, ActivityModule, NotificationsModule],
+    imports: [PrismaModule, ConversationsModule,OutboundModule, ActivityModule, NotificationsModule, AiAgentsModule],
     controllers: [WorkflowsController],
     providers: [WorkflowsService, WorkflowEngineService],
     exports: [WorkflowEngineService],

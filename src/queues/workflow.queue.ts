@@ -34,4 +34,10 @@ export interface ExecuteStepJob {
     stepId: string;
 }
 
-export type WorkflowJob = TriggerWorkflowJob | ResumeWorkflowJob | ExecuteStepJob;
+export interface AskQuestionTimeoutJob {
+    type: 'ASK_QUESTION_TIMEOUT';
+    runId: string;
+    stepId: string;
+}
+
+export type WorkflowJob = TriggerWorkflowJob | ResumeWorkflowJob | ExecuteStepJob | AskQuestionTimeoutJob;

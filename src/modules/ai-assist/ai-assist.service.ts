@@ -424,6 +424,9 @@ export class AiAssistService {
   }
 
   private async ensureWorkspaceAiSetup(workspaceId: string) {
+    const provider = process.env.AI_PROVIDER || 'mistral';
+    const model = this.defaultWorkspaceAiModelFor(provider);
+
     await this.prisma.$executeRaw`
       INSERT INTO "WorkspaceAiSettings"
       ("id","workspaceId","enabled","provider","model","autoSuggest","smartReply","summarize","sentiment","translate","defaultLanguage","createdAt","updatedAt")
@@ -431,8 +434,8 @@ export class AiAssistService {
         ${crypto.randomUUID()}::uuid,
         ${workspaceId}::uuid,
         true,
-        'cohere',
-        'command-a-03-2025',
+        ${provider},
+        ${model},
         false,
         true,
         true,
@@ -523,6 +526,25 @@ export class AiAssistService {
       return kind;
     }
     return 'rewrite';
+  }
+
+  private defaultWorkspaceAiModelFor(provider: string) {
+    console.log(` Resolving default model for provider2: ${provider}`);
+    
+    switch (provider.trim().toLowerCase()) {
+      case 'cohere':
+        return process.env.COHERE_MODEL || 'command-a-03-2025';
+      case 'anthropic':
+      case 'claude':
+        return process.env.ANTHROPIC_MODEL || 'claude-3-5-sonnet-latest';
+      case 'openai':
+        return process.env.OPENAI_MODEL || process.env.AI_MODEL || 'gpt-4.1-mini';
+      case 'mistral':
+                return process.env.MISTRAL_MODEL || process.env.AI_MODEL || 'mistral-large-2512';
+
+      default:
+        return process.env.MISTRAL_MODEL || process.env.AI_MODEL || 'mistral-large-2512';
+    }
   }
 
   private async findSettings(workspaceId: string) {

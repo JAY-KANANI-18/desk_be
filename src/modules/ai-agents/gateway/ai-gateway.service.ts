@@ -1,8 +1,11 @@
 import { BadRequestException, Injectable, Logger } from '@nestjs/common';
-import { PrismaService } from 'src/prisma/prisma.service';
+import { PrismaService } from '../../../prisma/prisma.service';
 import { aiAgentsDebug } from '../ai-agents-debug.logger';
 
-export type AiProviderName = 'openai' | 'cohere' | 'anthropic' | 'claude' | 'gemini';
+export type AiProviderName = 'openai' | 'cohere' | 'anthropic' | 'claude' | 'gemini' | 'mistral';
+
+const DEFAULT_AI_PROVIDER: AiProviderName = 'mistral';
+const DEFAULT_MISTRAL_MODEL = 'mistral-large-2512';
 
 export interface AiGatewayMessage {
   role: 'system' | 'user' | 'assistant' | 'tool';
@@ -21,6 +24,7 @@ export interface AiGatewayRequest {
   maxTokens?: number;
   timeoutMs?: number;
   metadata?: Record<string, any>;
+  responseFormat?: 'json_object';
 }
 
 export interface AiGatewayResponse {
@@ -41,6 +45,7 @@ export class AiGatewayService {
 
   async completeText(input: AiGatewayRequest): Promise<AiGatewayResponse> {
     const providers = this.resolveProviderOrder(input);
+    const requestedProvider = this.normalizeProvider(input.provider);
     const errors: string[] = [];
     aiAgentsDebug.log('gateway', 'completeText start', {
       workspaceId: input.workspaceId,
@@ -56,7 +61,7 @@ export class AiGatewayService {
       messages: input.messages.map((message) => ({
         role: message.role,
         chars: message.content?.length || 0,
-        content: message.content,
+        preview: this.previewText(message.content),
       })),
       metadata: input.metadata,
     });
@@ -73,7 +78,10 @@ export class AiGatewayService {
         continue;
       }
 
-      const model = input.model || this.defaultModelFor(provider);
+      const model =
+        input.model && (!requestedProvider || provider === requestedProvider)
+          ? input.model
+          : this.defaultModelFor(provider);
       const started = Date.now();
       aiAgentsDebug.log('gateway', 'provider attempt start', {
         workspaceId: input.workspaceId,
@@ -119,7 +127,7 @@ export class AiGatewayService {
           completionTokens: result.completionTokens,
           totalTokens: result.totalTokens,
           contentChars: result.content.length,
-          content: result.content,
+          contentPreview: this.previewText(result.content),
         });
         return result;
       } catch (error) {
@@ -157,9 +165,14 @@ export class AiGatewayService {
     });
     const raw = await this.completeText({
       ...input,
+      responseFormat: 'json_object',
       messages: [
         ...input.messages,
-        { role: 'system', content: 'Return strict JSON only. Do not wrap it in Markdown.' },
+        {
+          role: 'system',
+          content:
+            'Return exactly one valid JSON object. Do not wrap it in Markdown. Do not include comments, trailing commas, or any text outside the JSON object.',
+        },
       ],
     });
 
@@ -175,15 +188,16 @@ export class AiGatewayService {
       });
       return { data, raw };
     } catch (error) {
-      aiAgentsDebug.error('gateway', 'completeJson parse failed', error, {
+      aiAgentsDebug.warn('gateway', 'completeJson parse failed; attempting repair', {
         workspaceId: input.workspaceId,
         runId: input.runId,
         operation: input.operation,
         provider: raw.provider,
         model: raw.model,
-        rawContent: raw.content,
+        rawContent: this.previewText(raw.content, 1500),
+        error: this.errorSummary(error),
       });
-      throw error;
+      return this.repairJsonCompletion<T>(input, raw, error);
     }
   }
 
@@ -282,13 +296,14 @@ export class AiGatewayService {
       input.provider,
       ...(input.providerOrder || []),
       process.env.AI_PROVIDER as AiProviderName,
+      DEFAULT_AI_PROVIDER,
       'cohere',
       'openai',
       'anthropic',
       'gemini',
     ].filter(Boolean) as AiProviderName[];
 
-    return [...new Set(configured.map((provider) => (provider === 'claude' ? 'anthropic' : provider)))];
+    return [...new Set(configured.map((provider) => this.normalizeProvider(provider)).filter(Boolean))] as AiProviderName[];
   }
 
   private resolveEmbeddingProviderOrder(provider?: AiProviderName): AiProviderName[] {
@@ -309,6 +324,11 @@ export class AiGatewayService {
           .filter((item) => embeddingProviders.has(item)),
       ),
     ] as AiProviderName[];
+  }
+
+  private normalizeProvider(provider?: AiProviderName) {
+    if (!provider) return undefined;
+    return provider === 'claude' ? 'anthropic' : provider;
   }
 
   private async withRetries<T>(
@@ -345,6 +365,7 @@ export class AiGatewayService {
 
   private async callProvider(provider: AiProviderName, model: string, input: AiGatewayRequest) {
     if (provider === 'cohere') return this.callCohere(model, input);
+    if (provider === 'mistral') return this.callMistral(model, input);
     if (provider === 'anthropic' || provider === 'claude') return this.callAnthropic(model, input);
     if (provider === 'gemini') return this.callGemini(model, input);
     return this.callOpenAi(model, input);
@@ -362,12 +383,40 @@ export class AiGatewayService {
         model,
         temperature: input.temperature ?? 0.2,
         max_tokens: input.maxTokens,
+        ...(input.responseFormat === 'json_object'
+          ? { response_format: { type: 'json_object' } }
+          : {}),
         messages: input.messages,
       },
     });
 
     return {
       content: response?.choices?.[0]?.message?.content || '',
+      usage: response?.usage,
+    };
+  }
+
+  private async callMistral(model: string, input: AiGatewayRequest) {
+    const baseUrl = (process.env.MISTRAL_BASE_URL || 'https://api.mistral.ai/v1').replace(/\/$/, '');
+    const response = await this.postJson(`${baseUrl}/chat/completions`, {
+      timeoutMs: input.timeoutMs,
+      headers: { Authorization: `Bearer ${this.apiKeyFor('mistral')}` },
+      body: {
+        model,
+        temperature: input.temperature ?? 0.2,
+        max_tokens: input.maxTokens,
+        ...(input.responseFormat === 'json_object'
+          ? { response_format: { type: 'json_object' } }
+          : {}),
+        messages: input.messages.map((message) => ({
+          role: message.role === 'assistant' ? 'assistant' : message.role === 'system' ? 'system' : 'user',
+          content: message.content,
+        })),
+      },
+    });
+
+    return {
+      content: this.extractContentText(response?.choices?.[0]?.message?.content),
       usage: response?.usage,
     };
   }
@@ -443,6 +492,9 @@ export class AiGatewayService {
         generationConfig: {
           temperature: input.temperature ?? 0.2,
           maxOutputTokens: input.maxTokens,
+          ...(input.responseFormat === 'json_object'
+            ? { responseMimeType: 'application/json' }
+            : {}),
         },
       },
     });
@@ -494,8 +546,8 @@ export class AiGatewayService {
     aiAgentsDebug.log('gateway.http', 'request start', {
       url: this.safeUrl(url),
       timeoutMs: input.timeoutMs || Number(process.env.AI_TIMEOUT_MS || 20000),
-      headers: input.headers,
-      body: input.body,
+      headers: this.safeHeaders(input.headers),
+      body: this.safeBody(input.body),
     });
 
     try {
@@ -611,20 +663,143 @@ export class AiGatewayService {
 
   private extractJson<T>(text: string): T {
     const trimmed = text.trim();
-    try {
-      return JSON.parse(trimmed) as T;
-    } catch {
-      const start = trimmed.indexOf('{');
-      const end = trimmed.lastIndexOf('}');
-      if (start >= 0 && end > start) {
-        return JSON.parse(trimmed.slice(start, end + 1)) as T;
-      }
-      throw new BadRequestException('AI provider returned invalid JSON');
+    const candidates = [trimmed];
+
+    const objectStart = trimmed.indexOf('{');
+    const objectEnd = trimmed.lastIndexOf('}');
+    if (objectStart >= 0 && objectEnd > objectStart) {
+      candidates.push(trimmed.slice(objectStart, objectEnd + 1));
     }
+
+    const arrayStart = trimmed.indexOf('[');
+    const arrayEnd = trimmed.lastIndexOf(']');
+    if (arrayStart >= 0 && arrayEnd > arrayStart) {
+      candidates.push(trimmed.slice(arrayStart, arrayEnd + 1));
+    }
+
+    let lastError: unknown;
+    for (const candidate of candidates) {
+      try {
+        return JSON.parse(candidate) as T;
+      } catch (error) {
+        lastError = error;
+      }
+    }
+
+    throw new BadRequestException(
+      `AI provider returned invalid JSON${lastError instanceof Error ? `: ${lastError.message}` : ''}`,
+    );
+  }
+
+  private async repairJsonCompletion<T>(
+    input: AiGatewayRequest,
+    raw: AiGatewayResponse,
+    parseError: unknown,
+  ): Promise<{ data: T; raw: AiGatewayResponse }> {
+    const provider = this.normalizeProvider(raw.provider as AiProviderName);
+    const repairRaw = await this.completeText({
+      workspaceId: input.workspaceId,
+      runId: input.runId,
+      operation: input.operation,
+      provider,
+      model: raw.model,
+      temperature: 0,
+      maxTokens: Math.max(input.maxTokens ?? 900, Math.min(6000, this.estimateTokens(raw.content) + 500)),
+      timeoutMs: input.timeoutMs,
+      responseFormat: 'json_object',
+      metadata: {
+        ...(input.metadata || {}),
+        jsonRepair: true,
+      },
+      messages: [
+        {
+          role: 'system',
+          content:
+            'You repair invalid JSON. Return exactly one valid JSON object and nothing else. Preserve the same fields and meaning. Remove markdown, comments, trailing commas, and broken array/object syntax.',
+        },
+        {
+          role: 'user',
+          content: [
+            'The previous assistant response was invalid JSON.',
+            `Parser error: ${this.errorSummary(parseError).message}`,
+            'Repair it into valid JSON only:',
+            raw.content,
+          ].join('\n\n'),
+        },
+      ],
+    });
+
+    try {
+      const data = this.extractJson<T>(repairRaw.content);
+      const combinedRaw = this.combineJsonRepairResponse(raw, repairRaw);
+      aiAgentsDebug.log('gateway', 'completeJson repaired and parsed', {
+        workspaceId: input.workspaceId,
+        runId: input.runId,
+        operation: input.operation,
+        provider: repairRaw.provider,
+        model: repairRaw.model,
+        data,
+      });
+      return { data, raw: combinedRaw };
+    } catch (repairError) {
+      aiAgentsDebug.error('gateway', 'completeJson repair failed', repairError, {
+        workspaceId: input.workspaceId,
+        runId: input.runId,
+        operation: input.operation,
+        provider: repairRaw.provider,
+        model: repairRaw.model,
+        rawContent: this.previewText(repairRaw.content, 1500),
+        originalError: this.errorSummary(parseError),
+      });
+      throw new BadRequestException('AI provider returned invalid JSON after repair attempt');
+    }
+  }
+
+  private combineJsonRepairResponse(raw: AiGatewayResponse, repairRaw: AiGatewayResponse): AiGatewayResponse {
+    return {
+      ...repairRaw,
+      promptTokens: raw.promptTokens + repairRaw.promptTokens,
+      completionTokens: raw.completionTokens + repairRaw.completionTokens,
+      totalTokens: raw.totalTokens + repairRaw.totalTokens,
+      latencyMs: raw.latencyMs + repairRaw.latencyMs,
+    };
+  }
+
+  private errorSummary(error: unknown) {
+    if (error instanceof Error) {
+      return {
+        name: error.name,
+        message: error.message,
+      };
+    }
+
+    return {
+      name: typeof error,
+      message: String(error),
+    };
   }
 
   private estimateTokens(text: string) {
     return Math.max(1, Math.ceil((text || '').length / 4));
+  }
+
+  private previewText(text: string, max = 500) {
+    if (!text) return '';
+    return text.length > max ? `${text.slice(0, max)}...[truncated]` : text;
+  }
+
+  private extractContentText(content: unknown) {
+    if (typeof content === 'string') return content;
+    if (!Array.isArray(content)) return '';
+
+    return content
+      .map((item) => {
+        if (typeof item === 'string') return item;
+        if (!item || typeof item !== 'object') return '';
+        const maybeText = (item as { text?: unknown }).text;
+        return typeof maybeText === 'string' ? maybeText : '';
+      })
+      .join('');
   }
 
   private safeUrl(url: string) {
@@ -636,8 +811,38 @@ export class AiGatewayService {
     }
   }
 
+  private safeHeaders(headers?: Record<string, string | undefined>) {
+    if (!headers) return undefined;
+
+    return Object.fromEntries(
+      Object.entries(headers).map(([key, value]) => [
+        key,
+        value && ['authorization', 'x-api-key', 'api-key'].includes(key.toLowerCase()) ? '[redacted]' : value,
+      ]),
+    );
+  }
+
+  private safeBody(body: Record<string, any>) {
+    return {
+      ...body,
+      messages: Array.isArray(body.messages)
+        ? body.messages.map((message: any) => ({
+            role: message?.role,
+            chars: typeof message?.content === 'string' ? message.content.length : 0,
+            preview:
+              typeof message?.content === 'string'
+                ? this.previewText(message.content)
+                : '[non-string content]',
+          }))
+        : body.messages,
+      input: typeof body.input === 'string' ? this.previewText(body.input) : body.input,
+    };
+  }
+
   private apiKeyFor(provider: AiProviderName) {
     switch (provider) {
+      case 'mistral':
+        return process.env.MISTRAL_API_KEY;
       case 'cohere':
         return process.env.COHERE_API_KEY || process.env.AI_API_KEY;
       case 'anthropic':
@@ -652,6 +857,8 @@ export class AiGatewayService {
 
   private defaultModelFor(provider: AiProviderName) {
     switch (provider) {
+      case 'mistral':
+        return process.env.MISTRAL_MODEL || process.env.AI_MODEL || DEFAULT_MISTRAL_MODEL;
       case 'cohere':
         return process.env.COHERE_MODEL || 'command-a-03-2025';
       case 'anthropic':

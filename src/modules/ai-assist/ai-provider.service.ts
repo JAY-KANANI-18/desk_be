@@ -1,4 +1,5 @@
 import { BadRequestException, Injectable, Logger } from '@nestjs/common';
+import { log } from 'console';
 
 export type ProviderUrgency = 'low' | 'normal' | 'high';
 
@@ -70,13 +71,24 @@ export interface WorkspaceAiRuntimeSettings {
   model: string;
 }
 
+const DEFAULT_AI_PROVIDER = 'mistral';
+const DEFAULT_MISTRAL_MODEL = 'mistral-large-2512';
+
 @Injectable()
 export class AiProviderService {
   private readonly logger = new Logger(AiProviderService.name);
 
   getProviderMeta(settings?: Partial<WorkspaceAiRuntimeSettings>) {
-    const provider = (settings?.provider || process.env.AI_PROVIDER || 'cohere').toLowerCase();
-    const model = settings?.model || this.defaultModelFor(provider);
+    console.log({settings});
+    
+    const requestedProvider = this.normalizeProvider(settings?.provider);
+    const provider = this.resolveProvider(requestedProvider);
+    console.log(`Resolved AI provider: ${provider} (requested: ${requestedProvider || 'none'})`);
+    
+    const model =
+      settings?.model && (!requestedProvider || provider === requestedProvider)
+        ? settings.model
+        : this.defaultModelFor(provider);
 
     return {
       provider,
@@ -98,6 +110,7 @@ export class AiProviderService {
     systemPrompt: string;
     userPrompt: string;
     temperature?: number;
+    responseFormat?: 'json_object';
   }) {
     const meta = this.ensureConfigured(input.settings);
     const provider = meta.provider;
@@ -106,11 +119,27 @@ export class AiProviderService {
       return this.generateWithCohere(meta.model, input.systemPrompt, input.userPrompt, input.temperature);
     }
 
+    if (provider === 'mistral') {
+      return this.generateWithMistral(
+        meta.model,
+        input.systemPrompt,
+        input.userPrompt,
+        input.temperature,
+        input.responseFormat,
+      );
+    }
+
     if (provider === 'anthropic' || provider === 'claude') {
       return this.generateWithAnthropic(meta.model, input.systemPrompt, input.userPrompt, input.temperature);
     }
 
-    return this.generateWithOpenAi(meta.model, input.systemPrompt, input.userPrompt, input.temperature);
+    return this.generateWithOpenAi(
+      meta.model,
+      input.systemPrompt,
+      input.userPrompt,
+      input.temperature,
+      input.responseFormat,
+    );
   }
 
   async generateStructuredObject<T>(input: {
@@ -122,8 +151,9 @@ export class AiProviderService {
     const text = await this.generateText({
       ...input,
       systemPrompt: `${input.systemPrompt}\nReturn valid JSON only.`,
+      responseFormat: 'json_object',
     });
-
+    log(`Raw AI output: ${text}`);
     return this.extractJson<T>(text);
   }
 
@@ -161,8 +191,26 @@ export class AiProviderService {
     return Boolean(this.apiKeyFor(provider));
   }
 
+  private resolveProvider(requestedProvider?: string) {
+    const configured = [
+      requestedProvider,
+      this.normalizeProvider(process.env.AI_PROVIDER),
+      DEFAULT_AI_PROVIDER,
+    ].filter(Boolean) as string[];
+
+    return configured.find((provider) => this.isConfigured(provider)) || configured[0] || DEFAULT_AI_PROVIDER;
+  }
+
+  private normalizeProvider(provider?: string) {
+    const normalized = provider?.trim().toLowerCase();
+    if (!normalized) return undefined;
+    return normalized === 'claude' ? 'anthropic' : normalized;
+  }
+
   private apiKeyFor(provider: string) {
     switch (provider) {
+      case 'mistral':
+        return process.env.MISTRAL_API_KEY;
       case 'cohere':
         return process.env.COHERE_API_KEY || process.env.AI_API_KEY;
       case 'anthropic':
@@ -174,7 +222,11 @@ export class AiProviderService {
   }
 
   private defaultModelFor(provider: string) {
+    console.log(` Getting default model for provider: ${provider}`);
+    
     switch (provider) {
+      case 'mistral':
+        return process.env.MISTRAL_MODEL || process.env.AI_MODEL || DEFAULT_MISTRAL_MODEL;
       case 'cohere':
         return process.env.COHERE_MODEL || 'command-a-03-2025';
       case 'anthropic':
@@ -190,6 +242,7 @@ export class AiProviderService {
     systemPrompt: string,
     userPrompt: string,
     temperature = 0.2,
+    responseFormat?: 'json_object',
   ) {
     const baseUrl = (process.env.OPENAI_BASE_URL || process.env.AI_BASE_URL || 'https://api.openai.com/v1').replace(/\/$/, '');
     const response = await this.postJson(`${baseUrl}/chat/completions`, {
@@ -200,6 +253,9 @@ export class AiProviderService {
       body: {
         model,
         temperature,
+        ...(responseFormat === 'json_object'
+          ? { response_format: { type: 'json_object' } }
+          : {}),
         messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: userPrompt },
@@ -208,6 +264,34 @@ export class AiProviderService {
     });
 
     return response?.choices?.[0]?.message?.content?.trim() || '';
+  }
+
+  private async generateWithMistral(
+    model: string,
+    systemPrompt: string,
+    userPrompt: string,
+    temperature = 0.2,
+    responseFormat?: 'json_object',
+  ) {
+    const baseUrl = (process.env.MISTRAL_BASE_URL || 'https://api.mistral.ai/v1').replace(/\/$/, '');
+    const response = await this.postJson(`${baseUrl}/chat/completions`, {
+      headers: {
+        Authorization: `Bearer ${this.apiKeyFor('mistral')}`,
+      },
+      body: {
+        model,
+        temperature,
+        ...(responseFormat === 'json_object'
+          ? { response_format: { type: 'json_object' } }
+          : {}),
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userPrompt },
+        ],
+      },
+    });
+
+    return this.extractContentText(response?.choices?.[0]?.message?.content);
   }
 
   private async generateWithCohere(
@@ -295,15 +379,46 @@ export class AiProviderService {
 
   private extractJson<T>(text: string): T {
     const trimmed = text.trim();
-    try {
-      return JSON.parse(trimmed) as T;
-    } catch {
-      const start = trimmed.indexOf('{');
-      const end = trimmed.lastIndexOf('}');
-      if (start >= 0 && end > start) {
-        return JSON.parse(trimmed.slice(start, end + 1)) as T;
-      }
-      throw new BadRequestException('AI provider returned invalid JSON');
+    const candidates = [trimmed];
+
+    const objectStart = trimmed.indexOf('{');
+    const objectEnd = trimmed.lastIndexOf('}');
+    if (objectStart >= 0 && objectEnd > objectStart) {
+      candidates.push(trimmed.slice(objectStart, objectEnd + 1));
     }
+
+    const arrayStart = trimmed.indexOf('[');
+    const arrayEnd = trimmed.lastIndexOf(']');
+    if (arrayStart >= 0 && arrayEnd > arrayStart) {
+      candidates.push(trimmed.slice(arrayStart, arrayEnd + 1));
+    }
+
+    let lastError: unknown;
+    for (const candidate of candidates) {
+      try {
+        return JSON.parse(candidate) as T;
+      } catch (error) {
+        lastError = error;
+      }
+    }
+
+    throw new BadRequestException(
+      `AI provider returned invalid JSON${lastError instanceof Error ? `: ${lastError.message}` : ''}`,
+    );
+  }
+
+  private extractContentText(content: unknown) {
+    if (typeof content === 'string') return content.trim();
+    if (!Array.isArray(content)) return '';
+
+    return content
+      .map((item) => {
+        if (typeof item === 'string') return item;
+        if (!item || typeof item !== 'object') return '';
+        const maybeText = (item as { text?: unknown }).text;
+        return typeof maybeText === 'string' ? maybeText : '';
+      })
+      .join('')
+      .trim();
   }
 }

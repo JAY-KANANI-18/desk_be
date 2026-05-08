@@ -2,9 +2,16 @@ import {
     Injectable,
     NotFoundException,
     BadRequestException,
+    Optional,
 } from '@nestjs/common';
 import type { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
+import { AiGatewayService, type AiGatewayMessage } from '../ai-agents/gateway/ai-gateway.service';
+import {
+    getWorkflowAiBuilderPromptPayload,
+    getWorkflowAiBuilderRuntimePromptPayload,
+    type WorkflowAiBuilderResponse,
+} from './workflow-ai-builder.context';
 
 type WorkflowListOptions = {
     search?: string;
@@ -19,15 +26,32 @@ type WorkflowMutationDto = {
     config?: unknown;
 };
 
+type WorkflowAiBuilderChatDto = {
+    message?: unknown;
+    history?: unknown;
+    currentConfig?: unknown;
+    workspaceFacts?: unknown;
+};
+
+type WorkflowAiBuilderHistoryMessage = {
+    role: 'user' | 'assistant';
+    content: string;
+};
+
 type WorkflowStepPayload = {
     id: string;
     type: string;
     parentId: string;
 };
 
+const ENABLED_ENV_VALUES = new Set(['1', 'true', 'yes', 'on', 'enabled']);
+
 @Injectable()
 export class WorkflowsService {
-    constructor(private prisma: PrismaService) { }
+    constructor(
+        private prisma: PrismaService,
+        @Optional() private readonly aiGateway?: AiGatewayService,
+    ) { }
 
     async create(workspaceId: string, dto: WorkflowMutationDto, userId: string) {
         this.validateWorkflow(dto, { requireName: true });
@@ -215,6 +239,85 @@ export class WorkflowsService {
         return workflow;
     }
 
+    getAiBuilderContext() {
+        this.assertAiBuilderEnabled();
+        return getWorkflowAiBuilderPromptPayload();
+    }
+
+    async buildWithAi(workspaceId: string, id: string, dto: WorkflowAiBuilderChatDto) {
+        this.assertAiBuilderEnabled();
+
+        if (!this.aiGateway) {
+            throw new BadRequestException('Workflow AI builder is not configured');
+        }
+
+        const workflow = await this.prisma.workflow.findFirst({
+            where: { id, workspaceId },
+        });
+        if (!workflow) {
+            throw new NotFoundException('Workflow not found');
+        }
+
+        const message = this.getRequiredString(dto.message, 'Message is required');
+        const promptPayload = getWorkflowAiBuilderRuntimePromptPayload();
+        const currentConfig = this.isRecord(dto.currentConfig)
+            ? dto.currentConfig
+            : workflow.config;
+        const history = this.parseAiBuilderHistory(dto.history);
+        const requestContext = {
+            userRequest: message,
+            currentWorkflow: {
+                id: workflow.id,
+                name: workflow.name,
+                description: workflow.description,
+                status: workflow.status,
+                config: currentConfig,
+            },
+            workspaceFacts: this.compactWorkspaceFactsForAi(dto.workspaceFacts),
+        };
+
+        const messages: AiGatewayMessage[] = [
+            { role: 'system', content: promptPayload.systemPrompt },
+            {
+                role: 'system',
+                content: `Workflow builder source of truth:\n${JSON.stringify({
+                    context: promptPayload.context,
+                    responseSchema: promptPayload.responseSchema,
+                })}`,
+            },
+            ...history,
+            {
+                role: 'user',
+                content: JSON.stringify(requestContext),
+            },
+        ];
+
+        const result = await this.aiGateway.completeJson<WorkflowAiBuilderResponse>({
+            workspaceId,
+            operation: 'decision',
+            messages,
+            temperature: 0.2,
+            maxTokens: 2200,
+            timeoutMs: Number(process.env.WORKFLOW_AI_BUILDER_TIMEOUT_MS || 60_000),
+            model: process.env.WORKFLOW_AI_BUILDER_MODEL || process.env.MISTRAL_FAST_MODEL || 'mistral-small-latest',
+            metadata: {
+                feature: 'workflow_ai_builder',
+                workflowId: id,
+                contextVersion: promptPayload.context.version,
+            },
+        });
+
+        return {
+            ...result.data,
+            contextVersion: promptPayload.context.version,
+            model: {
+                provider: result.raw.provider,
+                name: result.raw.model,
+                latencyMs: result.raw.latencyMs,
+            },
+        };
+    }
+
     private validateWorkflow(
         dto: WorkflowMutationDto,
         options: { requireName?: boolean } = {},
@@ -317,6 +420,124 @@ export class WorkflowsService {
             type: step.type,
             parentId: step.parentId,
         };
+    }
+
+    private parseAiBuilderHistory(value: unknown): WorkflowAiBuilderHistoryMessage[] {
+        if (!Array.isArray(value)) return [];
+
+        return value
+            .slice(-6)
+            .map((message): WorkflowAiBuilderHistoryMessage | null => {
+                if (!this.isRecord(message)) return null;
+                const role = message.role;
+                const content = message.content;
+
+                if ((role !== 'user' && role !== 'assistant') || typeof content !== 'string') {
+                    return null;
+                }
+
+                return {
+                    role,
+                    content: content.slice(0, 1200),
+                };
+            })
+            .filter((message): message is WorkflowAiBuilderHistoryMessage => message !== null);
+    }
+
+    private compactWorkspaceFactsForAi(value: unknown) {
+        const facts = this.isRecord(value) ? value : {};
+        return this.sanitizeAiBuilderInput({
+            channels: this.compactAiFactList(facts.channels, ['id', 'type', 'name', 'status']),
+            tags: this.compactAiFactList(facts.tags, ['id', 'value', 'name', 'label', 'color', 'emoji']),
+            users: this.compactAiFactList(facts.users, ['id', 'userId', 'name', 'label', 'email', 'availability']),
+            teams: this.compactAiFactList(facts.teams, ['id', 'name']),
+            lifecycleStages: this.compactAiFactList(facts.lifecycleStages, ['id', 'name', 'label']),
+            existingWorkflows: this.compactAiFactList(facts.existingWorkflows, ['id', 'name', 'status']),
+            selectedNodeId: facts.selectedNodeId,
+            selectedStep: this.compactWorkflowStepForAi(facts.selectedStep),
+            validationWarnings: this.compactAiFactList(facts.validationWarnings, ['nodeId', 'title', 'message']),
+        });
+    }
+
+    private compactAiFactList(value: unknown, allowedKeys: string[]) {
+        if (!Array.isArray(value)) return [];
+        return value.slice(0, 30).map((item) => {
+            if (!this.isRecord(item)) return item;
+            const compact: Record<string, unknown> = {};
+            for (const key of allowedKeys) {
+                if (item[key] !== undefined) compact[key] = item[key];
+            }
+            return compact;
+        });
+    }
+
+    private compactWorkflowStepForAi(value: unknown) {
+        if (!this.isRecord(value)) return null;
+        return {
+            id: value.id,
+            type: value.type,
+            name: value.name,
+            parentId: value.parentId,
+            data: value.data,
+        };
+    }
+
+    private sanitizeAiBuilderInput(value: unknown, depth = 0): unknown {
+        if (depth > 3) return '[omitted]';
+        if (value === null) return null;
+
+        if (typeof value === 'string') {
+            return value.slice(0, 500);
+        }
+
+        if (typeof value === 'number' || typeof value === 'boolean') {
+            return value;
+        }
+
+        if (Array.isArray(value)) {
+            return value
+                .slice(0, 30)
+                .map((item) => this.sanitizeAiBuilderInput(item, depth + 1));
+        }
+
+        if (!this.isRecord(value)) {
+            return undefined;
+        }
+
+        const sanitized: Record<string, unknown> = {};
+        for (const [key, item] of Object.entries(value).slice(0, 40)) {
+            if (this.isSensitiveAiBuilderKey(key)) {
+                sanitized[key] = '[redacted]';
+                continue;
+            }
+            sanitized[key] = this.sanitizeAiBuilderInput(item, depth + 1);
+        }
+
+        return sanitized;
+    }
+
+    private assertAiBuilderEnabled() {
+        if (!this.isAiBuilderEnabled()) {
+            throw new NotFoundException('Workflow AI builder is disabled');
+        }
+    }
+
+    private isAiBuilderEnabled() {
+        const value = process.env.WORKFLOW_AI_BUILDER_ENABLED;
+        return typeof value === 'string' && ENABLED_ENV_VALUES.has(value.trim().toLowerCase());
+    }
+
+    private isSensitiveAiBuilderKey(key: string) {
+        const normalized = key.toLowerCase();
+        return (
+            normalized.includes('secret') ||
+            normalized.includes('token') ||
+            normalized.includes('password') ||
+            normalized.includes('apikey') ||
+            normalized.includes('api_key') ||
+            normalized.includes('cookie') ||
+            normalized.includes('authorization')
+        );
     }
 
     private isRecord(value: unknown): value is Record<string, unknown> {

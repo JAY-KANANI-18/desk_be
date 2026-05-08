@@ -43,6 +43,15 @@ type ContactWorkflowField =
   | 'company'
   | 'status';
 
+type BranchContactWorkflowField =
+  | ContactWorkflowField
+  | 'createdAt'
+  | 'updatedAt'
+  | 'lifecycleId'
+  | 'lifecycleName'
+  | 'assigneeId'
+  | 'teamId';
+
 const CONTACT_FIELD_ALIASES: Record<string, ContactWorkflowField> = {
   firstName: 'firstName',
   first_name: 'firstName',
@@ -52,6 +61,25 @@ const CONTACT_FIELD_ALIASES: Record<string, ContactWorkflowField> = {
   phone: 'phone',
   company: 'company',
   status: 'status',
+};
+
+const BRANCH_CONTACT_FIELD_ALIASES: Record<string, BranchContactWorkflowField> = {
+  ...CONTACT_FIELD_ALIASES,
+  createdAt: 'createdAt',
+  created_at: 'createdAt',
+  updatedAt: 'updatedAt',
+  updated_at: 'updatedAt',
+  lifecycle: 'lifecycleId',
+  lifecycleId: 'lifecycleId',
+  lifecycle_id: 'lifecycleId',
+  lifecycleName: 'lifecycleName',
+  lifecycle_name: 'lifecycleName',
+  assignee: 'assigneeId',
+  assigneeId: 'assigneeId',
+  assignee_id: 'assigneeId',
+  team: 'teamId',
+  teamId: 'teamId',
+  team_id: 'teamId',
 };
 
 @Injectable()
@@ -404,7 +432,7 @@ export class WorkflowEngineService {
   }) {
     const { workspaceId, workflowId, contactId, conversationId, triggerData } = job;
 
-    const workflow = await this.prisma.workflow.findUnique({ where: { id: workflowId } });
+    const workflow = await this.prisma.workflow.findFirst({ where: { id: workflowId, workspaceId } });
     if (!workflow || workflow.status !== 'published') return;
 
     const config = workflow.config as any;
@@ -431,14 +459,12 @@ export class WorkflowEngineService {
     await this.saveContext(ctx);
     await this.recordWorkflowLifecycleActivity(ctx, 'workflow_started');
 
-    await this.redis.client.setex(
-      ACTIVE_RUN_KEY(workspaceId, contactId),
-      RUN_CTX_TTL,
-      JSON.stringify({ runId: run.id, workflowId }),
-    );
+    if (!this.isTriggeredSubWorkflow(triggerData)) {
+      await this.markActiveRun(ctx);
+    }
 
-    // First step: parentId === 'trigger'
-    const firstStep = (config.steps ?? []).find((s: any) => s.parentId === 'trigger');
+    const steps = config.steps ?? [];
+    const firstStep = this.resolveInitialStep(steps, triggerData);
     if (!firstStep) {
       await this.completeRun(run.id, ctx);
       return;
@@ -448,6 +474,16 @@ export class WorkflowEngineService {
   }
 
   // ── Execute step ─────────────────────────────────────────────────────────
+
+  private resolveInitialStep(steps: any[], triggerData: Record<string, any>) {
+    if (triggerData?.startFrom === 'specific_step' && triggerData.targetStepId) {
+      return steps.find(
+        (step) => step.id === triggerData.targetStepId && step.type !== 'branch_connector',
+      );
+    }
+
+    return steps.find((step) => step.parentId === 'trigger');
+  }
 
   async executeStep(runId: string, stepId: string) {
     this.logger.debug(`Executing step ${stepId} for run ${runId}`);
@@ -512,6 +548,9 @@ export class WorkflowEngineService {
           where: { id: runId },
           data: { status: 'waiting' },
         });
+        if (step.type === 'ask_question') {
+          await this.markActiveRun(ctx);
+        }
         return;
       }
 
@@ -546,7 +585,8 @@ export class WorkflowEngineService {
       return;
     }
 
-    ctx.vars = { ...ctx.vars, ...resumeData };
+    const { nextStepId, ...vars } = resumeData ?? {};
+    ctx.vars = { ...ctx.vars, ...vars };
     await this.saveContext(ctx);
 
     await this.prisma.workflowRun.update({
@@ -554,18 +594,60 @@ export class WorkflowEngineService {
       data: { status: 'running' },
     });
 
-    if (run.currentStepId) {
-      await this.enqueueStep(runId, run.currentStepId);
+    const resumeStepId =
+      typeof nextStepId === 'string' && nextStepId.trim()
+        ? nextStepId
+        : run.currentStepId;
+
+    if (resumeStepId) {
+      await this.enqueueStep(runId, resumeStepId);
     }
   }
 
   // ── Step router ──────────────────────────────────────────────────────────
 
+  async handleAskQuestionTimeout(runId: string, stepId: string) {
+    const run = await this.prisma.workflowRun.findUnique({ where: { id: runId } });
+    if (!run || run.status !== 'waiting' || run.currentStepId !== stepId) return;
+
+    const ctx = await this.loadContext(runId);
+    if (!ctx) return;
+
+    const workflow = await this.prisma.workflow.findUnique({ where: { id: run.workflowId } });
+    if (!workflow) return;
+
+    const config = workflow.config as any;
+    const steps: any[] = config.steps ?? [];
+    const step = steps.find((candidate) => candidate.id === stepId && candidate.type === 'ask_question');
+    if (!step || !step.data?.addTimeoutBranch) return;
+
+    const timeoutConnector = this.findAskQuestionConnector(step, config, 'Timeout');
+    if (!timeoutConnector) return;
+
+    delete ctx.vars.lastAnswer;
+    delete ctx.vars.lastAnswerMessageId;
+    ctx.steps[stepId] = { output: { timedOut: true }, status: 'completed' };
+    await this.saveContext(ctx);
+
+    await this.prisma.workflowRun.update({
+      where: { id: runId },
+      data: { status: 'running' },
+    });
+
+    const nextStepId = this.findNextStep(stepId, steps, timeoutConnector.id);
+    if (!nextStepId) {
+      await this.completeRun(runId, ctx);
+      return;
+    }
+
+    await this.enqueueStep(runId, nextStepId);
+  }
+
   private async runStepHandler(step: any, ctx: WorkflowRunContext, config: any) {
     this.logger.debug(`Executing step type=${step.type} id=${step.id} run=${ctx.runId}`);
 
     switch (step.type) {
-      case 'send_message': return this.handleSendMessage(step, ctx);
+      case 'send_message': return this.handleSendMessage(step, ctx, config);
       case 'ask_question': return this.handleAskQuestion(step, ctx, config);
       case 'assign_to': return this.handleAssignTo(step, ctx);
       case 'update_contact_tag': return this.handleUpdateContactTag(step, ctx);
@@ -578,7 +660,7 @@ export class WorkflowEngineService {
       case 'close_conversation': return this.handleCloseConversation(step, ctx);
       case 'add_comment': return this.handleAddComment(step, ctx);
       case 'date_time': return this.handleDateTime(step, ctx, config);
-      case 'trigger_another_workflow': return this.handleTriggerAnotherWorkflow(step, ctx);
+      case 'trigger_another_workflow': return this.handleTriggerAnotherWorkflow(step, ctx, config);
       case 'branch_connector': return this.handleBranchConnector(step, ctx, config);
       default:
         this.logger.warn(`No handler for step type: ${step.type}`);
@@ -589,19 +671,19 @@ export class WorkflowEngineService {
   // ── Handlers ─────────────────────────────────────────────────────────────
 
   // send_message
-  private async handleSendMessage(step: any, ctx: WorkflowRunContext) {
+  private async handleSendMessage(step: any, ctx: WorkflowRunContext, config?: any) {
   const { defaultMessage, attachments = [], metadata = {} } = step.data;
 
   // Require either text or attachments
   if (!defaultMessage?.text && attachments.length === 0) {
-    return { output: { skipped: true, reason: 'no message content' } };
+    return this.sendMessageFailureResult(step, config, 'no message content');
   }
 
   const conversation = await this.prisma.conversation.findFirst({
     where: { contactId: ctx.contactId },
     include: { lastMessage: true },
   });
-  if (!conversation) return { output: { skipped: true, reason: 'no open conversation' } };
+  if (!conversation) return this.sendMessageFailureResult(step, config, 'no open conversation');
 
   const text = this.interpolate(defaultMessage?.text ?? '', ctx);
 
@@ -619,7 +701,7 @@ export class WorkflowEngineService {
   }
 
   if (!channelId) {
-    return { output: { skipped: true, reason: 'no channel resolved' } };
+    return this.sendMessageFailureResult(step, config, 'no channel resolved');
   }
 
   const outboundPayload: SendMessageDto = {
@@ -662,11 +744,48 @@ export class WorkflowEngineService {
         },
       };
     }
+    const failureResult = this.sendMessageFailureResult(step, config, message);
+    if ('branchConnectorId' in failureResult && failureResult.branchConnectorId) return failureResult;
     throw err;
   }
 
-  return { output: { sent: true, text, attachments: attachments.length } };
+  return this.sendMessageSuccessResult(step, config, {
+    sent: true,
+    text,
+    attachments: attachments.length,
+  });
 }
+
+  private sendMessageSuccessResult(step: any, config: any, output: Record<string, any>) {
+    const connector = this.findSendMessageConnector(step, config, 'Success');
+    return connector ? { output, branchConnectorId: connector.id } : { output };
+  }
+
+  private sendMessageFailureResult(step: any, config: any, reason: string) {
+    const connector = this.findSendMessageConnector(step, config, 'Failure');
+    if (!connector) {
+      return { output: { skipped: true, reason } };
+    }
+
+    return {
+      output: { failed: true, reason },
+      branchConnectorId: connector.id,
+    };
+  }
+
+  private findSendMessageConnector(step: any, config: any, name: 'Success' | 'Failure') {
+    if (!step.data?.addMessageFailureBranch) return null;
+    const connectorIds = Array.isArray(step.data.connectors) ? step.data.connectors : [];
+    const connectorIdForName = name === 'Success' ? connectorIds[0] : connectorIds[1];
+    const steps: any[] = config?.steps ?? [];
+
+    return steps.find(
+      (candidate) =>
+        candidate.parentId === step.id &&
+        candidate.type === 'branch_connector' &&
+        (candidate.name === name || candidate.id === connectorIdForName),
+    ) ?? null;
+  }
 
 
   // ask_question
@@ -675,24 +794,38 @@ export class WorkflowEngineService {
   const steps: any[] = config.steps ?? [];
 
   const findConnector = (name: string) =>
-    steps.find(
-      (s) => s.parentId === step.id &&
-             s.type === 'branch_connector' &&
-             s.name === name,
-    );
+    this.findAskQuestionConnector(step, config, name);
 
   if (rawAnswer === undefined) {
     const quickReplies = this.buildQuestionQuickReplies(step.data);
-    await this.handleSendMessage(
-      {
-        data: {
-          channel: 'last_interacted',
-          defaultMessage: { text: step.data.questionText },
-          metadata: quickReplies.length > 0 ? { quickReplies } : {},
+    try {
+      const sendResult = await this.handleSendMessage(
+        {
+          data: {
+            channel: 'last_interacted',
+            defaultMessage: { text: step.data.questionText },
+            metadata: quickReplies.length > 0 ? { quickReplies } : {},
+          },
         },
-      },
-      ctx,
-    );
+        ctx,
+      );
+
+      if (sendResult.output?.skipped || sendResult.output?.failed) {
+        return this.askQuestionMessageFailureResult(
+          step,
+          config,
+          String(sendResult.output.reason ?? 'question message failed'),
+        );
+      }
+    } catch (err: any) {
+      return this.askQuestionMessageFailureResult(
+        step,
+        config,
+        err?.message ?? String(err),
+      );
+    }
+
+    await this.scheduleAskQuestionTimeout(step, ctx);
     return { output: { waiting: true, quickReplies: quickReplies.length }, suspend: true };
   }
 
@@ -736,16 +869,14 @@ export class WorkflowEngineService {
   }
 
   if (step.data.saveAsTag && step.data.questionType === 'multiple_choice') {
-    const tag = await this.prisma.tag.findFirst({
-      where: { workspaceId: ctx.workspaceId, name: lastAnswer },
+    const tag = await this.findOrCreateWorkflowTag(ctx.workspaceId, lastAnswer);
+    await this.prisma.contactTag.upsert({
+      where: { contactId_tagId: { contactId: ctx.contactId, tagId: tag.id } },
+      create: { contactId: ctx.contactId, tagId: tag.id },
+      update: {},
     });
-    if (tag) {
-      await this.prisma.contactTag.upsert({
-        where: { contactId_tagId: { contactId: ctx.contactId, tagId: tag.id } },
-        create: { contactId: ctx.contactId, tagId: tag.id },
-        update: {},
-      });
-    }
+    output.tagId = tag.id;
+    output.tagName = tag.name;
   }
 
   this.markProcessedAnswerMessage(ctx, ctx.vars?.lastAnswerMessageId);
@@ -763,6 +894,91 @@ export class WorkflowEngineService {
 }
 
   // ── Answer validator ──────────────────────────────────────────────────────
+
+  private askQuestionMessageFailureResult(step: any, config: any, reason: string) {
+    const connector = step.data?.addMessageFailureBranch
+      ? this.findAskQuestionConnector(step, config, 'Message Failure')
+      : null;
+
+    if (!connector) {
+      throw new Error(reason);
+    }
+
+    return {
+      output: { messageFailed: true, reason },
+      branchConnectorId: connector.id,
+    };
+  }
+
+  private findAskQuestionConnector(step: any, config: any, name: string) {
+    const connectorIds = Array.isArray(step.data?.connectors) ? step.data.connectors : [];
+    const connectorNames = ['Success', 'Failure', 'Timeout', 'Message Failure'];
+    const connectorIdForName = connectorIds[connectorNames.indexOf(name)];
+    const steps: any[] = config?.steps ?? [];
+
+    return steps.find(
+      (candidate) =>
+        candidate.parentId === step.id &&
+        candidate.type === 'branch_connector' &&
+        (candidate.name === name || candidate.id === connectorIdForName),
+    ) ?? null;
+  }
+
+  private async scheduleAskQuestionTimeout(step: any, ctx: WorkflowRunContext) {
+    if (!step.data?.addTimeoutBranch) return;
+
+    const delay = this.askQuestionTimeoutDelayMs(step.data);
+    if (!delay) return;
+
+    await workflowQueue.add(
+      'ask-question-timeout',
+      {
+        type: 'ASK_QUESTION_TIMEOUT',
+        runId: ctx.runId,
+        stepId: step.id,
+      } satisfies WorkflowJob,
+      {
+        delay,
+        jobId: `ask-timeout-${ctx.runId}-${step.id}`,
+      },
+    );
+  }
+
+  private askQuestionTimeoutDelayMs(stepData: any) {
+    const value = Number(stepData?.timeoutValue);
+    if (!Number.isFinite(value) || value <= 0) return null;
+
+    const unitMs: Record<string, number> = {
+      seconds: 1000,
+      minutes: 60_000,
+      hours: 3_600_000,
+      days: 86_400_000,
+    };
+    const unit = unitMs[stepData?.timeoutUnit] ?? unitMs.days;
+    return Math.min(value * unit, 7 * unitMs.days);
+  }
+
+  private async findOrCreateWorkflowTag(workspaceId: string, name: string) {
+    const tagName = name.trim();
+    const existing = await this.prisma.tag.findFirst({
+      where: {
+        workspaceId,
+        name: {
+          equals: tagName,
+          mode: 'insensitive',
+        },
+      },
+    });
+    if (existing) return existing;
+
+    return this.prisma.tag.create({
+      data: {
+        workspaceId,
+        name: tagName,
+        createdBy: 'workflow',
+      },
+    });
+  }
 
   private validateAnswer(
     answer: string,
@@ -935,29 +1151,66 @@ export class WorkflowEngineService {
 
   // assign_to
   private async handleAssignTo(step: any, ctx: WorkflowRunContext) {
-    const { action, userId, teamId, assignmentLogic, onlyOnlineUsers } = step.data;
-    this.logger.debug(`Handling assign_to action=${action} userId=${userId} teamId=${teamId} logic=${assignmentLogic} onlyOnline=${onlyOnlineUsers}`, { ctx });
+    const {
+      action,
+      userId,
+      teamId,
+      assignmentLogic = 'round_robin',
+      onlyOnlineUsers,
+      maxOpenContacts,
+    } = step.data ?? {};
+    this.logger.debug(
+      `Handling assign_to action=${action} userId=${userId} teamId=${teamId} logic=${assignmentLogic} onlyOnline=${onlyOnlineUsers}`,
+      { ctx },
+    );
+
+    if (!['specific_user', 'user_in_team', 'user_in_workspace', 'unassign'].includes(action)) {
+      return { output: { skipped: true, reason: 'no assignment action configured' } };
+    }
+
     const conversation = await this.prisma.conversation.findFirst({
       where: { contactId: ctx.contactId },
     });
-    console.log({ conversation });
 
-    this.logger.debug(`Found conversation for contact ${conversation.contactId !== ctx.contactId}: ${conversation?.id}`);
-    // if (!conversation) return { output: { skipped: true, reason: 'no open conversation' } };
+    this.logger.debug(`Found conversation for contact ${ctx.contactId}: ${conversation?.id ?? 'none'}`);
 
     let assigneeId: string | null = null;
     let assignedTeamId: string | null = null;
 
     switch (action) {
       case 'specific_user': {
-        assigneeId = userId ?? null;
+        if (!userId) {
+          return { output: { skipped: true, reason: 'no user selected', action } };
+        }
+
+        const member = await this.prisma.workspaceMember.findFirst({
+          where: {
+            workspaceId: ctx.workspaceId,
+            userId,
+            status: 'active',
+          },
+          select: { userId: true },
+        });
+
+        if (!member) {
+          return { output: { skipped: true, reason: 'selected user is not an active workspace member', action } };
+        }
+
+        assigneeId = userId;
         break;
       }
 
       case 'user_in_team': {
+        if (!teamId) {
+          return { output: { skipped: true, reason: 'no team selected', action } };
+        }
+
         assignedTeamId = teamId ?? null;
         const members = await this.getEligibleAgents(
-          ctx.workspaceId, teamId, onlyOnlineUsers,
+          ctx.workspaceId,
+          teamId,
+          onlyOnlineUsers,
+          maxOpenContacts,
         );
         assigneeId = await this.pickAgent(members, ctx.workspaceId, assignmentLogic);
         break;
@@ -965,7 +1218,10 @@ export class WorkflowEngineService {
 
       case 'user_in_workspace': {
         const members = await this.getEligibleAgents(
-          ctx.workspaceId, null, onlyOnlineUsers,
+          ctx.workspaceId,
+          null,
+          onlyOnlineUsers,
+          maxOpenContacts,
         );
         assigneeId = await this.pickAgent(members, ctx.workspaceId, assignmentLogic);
         break;
@@ -978,38 +1234,39 @@ export class WorkflowEngineService {
       }
     }
 
-    // Update contact assignment
-    let updatedContact = await this.prisma.contact.update({
+    if (action !== 'unassign' && !assigneeId) {
+      return { output: { skipped: true, reason: 'no eligible assignee found', action } };
+    }
+
+    await this.prisma.contact.update({
       where: { id: ctx.contactId },
       data: {
         assigneeId,
         teamId: assignedTeamId,
       },
     });
-    console.log({ updatedContact });
 
+    if (conversation) {
+      await this.prisma.conversationActivity.create({
+        data: {
+          workspaceId: ctx.workspaceId,
+          conversationId: conversation.id,
+          eventType: action === 'unassign' ? 'unassigned' : 'assigned',
+          actorType: 'automation',
+          subjectUserId: assigneeId,
+          subjectTeamId: assignedTeamId,
+        },
+      });
+    }
 
-    // Log activity
-    let conversationActivity = await this.prisma.conversationActivity.create({
-      data: {
-        workspaceId: ctx.workspaceId,
-        conversationId: conversation.id!,
-        eventType: action === 'unassign' ? 'unassigned' : 'assigned',
-        actorType: 'automation',
-        subjectUserId: assigneeId,
-        subjectTeamId: assignedTeamId,
-      },
-    });
-    console.log({ conversationActivity });
-
-
-    return { output: { assigned: true, assigneeId, teamId: assignedTeamId, action } };
+    return { output: { assigned: assigneeId !== null, assigneeId, teamId: assignedTeamId, action } };
   }
 
   private async getEligibleAgents(
     workspaceId: string,
     teamId: string | null,
     onlyOnline: boolean,
+    maxOpenContacts?: number,
   ): Promise<string[]> {
     const where: any = {
       workspaceId,
@@ -1032,7 +1289,20 @@ export class WorkflowEngineService {
       select: { userId: true },
     });
 
-    return members.map((m) => m.userId);
+    const memberIds = members.map((m) => m.userId);
+    const maxOpen = Number(maxOpenContacts);
+    if (!Number.isFinite(maxOpen) || maxOpen <= 0) return memberIds;
+
+    const availability = await Promise.all(
+      memberIds.map(async (id) => ({
+        id,
+        openCount: await this.countAssignedOpenContacts(workspaceId, id),
+      })),
+    );
+
+    return availability
+      .filter((candidate) => candidate.openCount < maxOpen)
+      .map((candidate) => candidate.id);
   }
 
   private async pickAgent(
@@ -1052,13 +1322,21 @@ export class WorkflowEngineService {
     const workloads = await Promise.all(
       agentIds.map(async (id) => ({
         id,
-        count: await this.prisma.contact.count({
-          where: { workspaceId, assigneeId: id },
-        }),
+        count: await this.countAssignedOpenContacts(workspaceId, id),
       })),
     );
     workloads.sort((a, b) => a.count - b.count);
     return workloads[0]?.id ?? null;
+  }
+
+  private async countAssignedOpenContacts(workspaceId: string, assigneeId: string) {
+    return this.prisma.contact.count({
+      where: {
+        workspaceId,
+        assigneeId,
+        status: 'open',
+      },
+    });
   }
 
   // update_contact_tag
@@ -1407,16 +1685,32 @@ export class WorkflowEngineService {
   }
 
   // trigger_another_workflow
-  private async handleTriggerAnotherWorkflow(step: any, ctx: WorkflowRunContext) {
+  private async handleTriggerAnotherWorkflow(step: any, ctx: WorkflowRunContext, config?: any) {
     const { targetWorkflowId, startFrom, targetStepId } = step.data;
     if (!targetWorkflowId) return { output: { skipped: true, reason: 'no targetWorkflowId' } };
 
-    const targetWorkflow = await this.prisma.workflow.findUnique({
-      where: { id: targetWorkflowId },
+    const targetWorkflow = await this.prisma.workflow.findFirst({
+      where: { id: targetWorkflowId, workspaceId: ctx.workspaceId },
     });
     if (!targetWorkflow || targetWorkflow.status !== 'published') {
       return { output: { skipped: true, reason: 'target workflow not published' } };
     }
+
+    const targetConfig = targetWorkflow.config as any;
+    if (targetConfig?.trigger?.type !== 'manual_trigger') {
+      return { output: { skipped: true, reason: 'target workflow must use manual trigger' } };
+    }
+
+    if (startFrom === 'specific_step') {
+      const targetStep = (targetConfig.steps ?? []).find(
+        (candidate: any) => candidate.id === targetStepId && candidate.type !== 'branch_connector',
+      );
+      if (!targetStep) {
+        return { output: { skipped: true, reason: 'target step not found' } };
+      }
+    }
+
+    const parentNextStepId = this.findNextStep(step.id, config?.steps ?? []);
 
     await workflowQueue.add('trigger', {
       type: 'TRIGGER',
@@ -1427,12 +1721,24 @@ export class WorkflowEngineService {
       triggerData: {
         ...ctx.trigger,
         triggeredByWorkflow: ctx.workflowId,
+        triggeredByRunId: ctx.runId,
+        triggeredByStepId: step.id,
+        resumeParentStepId: parentNextStepId,
         startFrom,
         targetStepId: startFrom === 'specific_step' ? targetStepId : undefined,
       },
     } satisfies WorkflowJob);
 
-    return { output: { triggered: true, targetWorkflowId } };
+    return {
+      output: {
+        triggered: true,
+        waitForCompletion: true,
+        targetWorkflowId,
+        targetStepId: startFrom === 'specific_step' ? targetStepId : undefined,
+        resumeParentStepId: parentNextStepId,
+      },
+      suspend: true,
+    };
   }
 
   // ── Condition evaluators ─────────────────────────────────────────────────
@@ -1506,7 +1812,7 @@ export class WorkflowEngineService {
 
     switch (category) {
       case 'contact_field': {
-        const contactField = this.resolveContactWorkflowField(String(field ?? ''));
+        const contactField = this.resolveBranchContactWorkflowField(String(field ?? ''));
         return contactField ? contact?.[contactField] ?? contact?.[field] : contact?.[field];
       }
 
@@ -1517,31 +1823,36 @@ export class WorkflowEngineService {
         return ctx.vars?.[field] ?? trigger?.[field];
 
       case 'assignee_status': {
-        // Resolve from workspace member availability
-        // Stored in context from loadContactData
         return contact?.assigneeAvailability ?? null;
       }
 
       case 'last_interacted_channel':
-        return trigger?.channel ?? null;
+        return this.compactBranchValues(
+          trigger?.channelId,
+          trigger?.channel,
+          contact?.lastInteractedChannelId,
+          contact?.lastInteractedChannelType,
+        );
 
       case 'last_incoming_message':
-        return trigger?.lastIncomingMessage ?? null;
+        return trigger?.lastIncomingMessage ?? contact?.lastIncomingMessage ?? null;
 
       case 'last_outgoing_message':
-        return trigger?.lastOutgoingMessage ?? null;
+        return trigger?.lastOutgoingMessage ?? contact?.lastOutgoingMessage ?? null;
 
       case 'last_outgoing_message_source':
-        return trigger?.lastOutgoingMessageSource ?? null;
+        return trigger?.lastOutgoingMessageSource ?? contact?.lastOutgoingMessageSource ?? null;
 
       case 'time_since_last_incoming': {
-        if (!trigger?.lastIncomingAt) return null;
-        return Date.now() - new Date(trigger.lastIncomingAt).getTime(); // ms
+        const lastIncomingAt = trigger?.lastIncomingAt ?? contact?.lastIncomingAt;
+        if (!lastIncomingAt) return null;
+        return Date.now() - new Date(lastIncomingAt).getTime(); // ms
       }
 
       case 'time_since_last_outgoing': {
-        if (!trigger?.lastOutgoingAt) return null;
-        return Date.now() - new Date(trigger.lastOutgoingAt).getTime(); // ms
+        const lastOutgoingAt = trigger?.lastOutgoingAt ?? contact?.lastOutgoingAt;
+        if (!lastOutgoingAt) return null;
+        return Date.now() - new Date(lastOutgoingAt).getTime(); // ms
       }
 
       default:
@@ -1553,7 +1864,10 @@ export class WorkflowEngineService {
     // Handle array-based operators first
     if (['has_any_of', 'has_all_of', 'has_none_of'].includes(operator)) {
       const arr = Array.isArray(value) ? value : [value];
-      const vals = Array.isArray(condValue) ? condValue : [condValue];
+      const vals = (Array.isArray(condValue) ? condValue : [condValue])
+        .filter((item) => item !== null && item !== undefined && String(item).trim() !== '');
+
+      if (vals.length === 0) return false;
 
       switch (operator) {
         case 'has_any_of': return arr.some((a) => vals.includes(a));
@@ -1563,7 +1877,9 @@ export class WorkflowEngineService {
     }
 
     // Null / existence checks
-    const isEmpty = value === null || value === undefined || value === '';
+    const isEmpty = Array.isArray(value)
+      ? value.length === 0
+      : value === null || value === undefined || value === '';
     if (operator === 'exists') return !isEmpty;
     if (operator === 'does_not_exist') return isEmpty;
     if (isEmpty) return false;
@@ -1618,14 +1934,15 @@ export class WorkflowEngineService {
     }
 
     // String operators
-    const v = String(value).toLowerCase();
     const cv = String(condValue).toLowerCase();
+    const values = Array.isArray(value) ? value : [value];
+    const stringValues = values.map((item) => String(item).toLowerCase());
 
     switch (operator) {
-      case 'is_equal_to': return v === cv;
-      case 'is_not_equal_to': return v !== cv;
-      case 'contains': return v.includes(cv);
-      case 'does_not_contain': return !v.includes(cv);
+      case 'is_equal_to': return stringValues.some((item) => item === cv);
+      case 'is_not_equal_to': return stringValues.every((item) => item !== cv);
+      case 'contains': return stringValues.some((item) => item.includes(cv));
+      case 'does_not_contain': return stringValues.every((item) => !item.includes(cv));
       default:
         this.logger.warn(`Unknown operator: ${operator}`);
         return false;
@@ -1663,6 +1980,7 @@ export class WorkflowEngineService {
     });
     await this.recordWorkflowLifecycleActivity(ctx, 'workflow_ended');
     await this.cleanupRun(runId, ctx);
+    await this.resumeParentWorkflowAfterChild(ctx, 'completed');
     this.logger.log(`Run completed runId=${runId}`);
   }
 
@@ -1673,6 +1991,7 @@ export class WorkflowEngineService {
     });
     await this.recordWorkflowLifecycleActivity(ctx, 'workflow_failed', { error });
     await this.cleanupRun(runId, ctx);
+    await this.resumeParentWorkflowAfterChild(ctx, 'failed', error);
     this.logger.error(`Run failed runId=${runId} error=${error}`);
   }
 
@@ -1713,7 +2032,65 @@ export class WorkflowEngineService {
 
   private async cleanupRun(runId: string, ctx: WorkflowRunContext) {
     await this.redis.client.del(RUN_CTX_KEY(runId));
-    await this.redis.client.del(ACTIVE_RUN_KEY(ctx.workspaceId, ctx.contactId));
+    const activeRunData = await this.redis.getJSON(
+      ACTIVE_RUN_KEY(ctx.workspaceId, ctx.contactId),
+    );
+    if (activeRunData?.runId === runId) {
+      await this.redis.client.del(ACTIVE_RUN_KEY(ctx.workspaceId, ctx.contactId));
+    }
+  }
+
+  private async resumeParentWorkflowAfterChild(
+    childCtx: WorkflowRunContext,
+    childStatus: 'completed' | 'failed',
+    error?: string,
+  ) {
+    const parentRunId = childCtx.trigger?.triggeredByRunId;
+    if (typeof parentRunId !== 'string' || !parentRunId.trim()) return;
+
+    const parentRun = await this.prisma.workflowRun.findUnique({
+      where: { id: parentRunId },
+    });
+    if (!parentRun || parentRun.status !== 'waiting') return;
+
+    const resumeParentStepId = childCtx.trigger?.resumeParentStepId;
+    const resumeData = {
+      triggeredWorkflowId: childCtx.workflowId,
+      triggeredWorkflowRunId: childCtx.runId,
+      triggeredWorkflowStatus: childStatus,
+      ...(error ? { triggeredWorkflowError: error } : {}),
+    };
+
+    if (typeof resumeParentStepId === 'string' && resumeParentStepId.trim()) {
+      await workflowQueue.add('resume', {
+        type: 'RESUME',
+        runId: parentRunId,
+        resumeData: {
+          ...resumeData,
+          nextStepId: resumeParentStepId,
+        },
+      } satisfies WorkflowJob);
+      return;
+    }
+
+    const parentCtx = await this.loadContext(parentRunId);
+    if (!parentCtx) return;
+
+    parentCtx.vars = { ...parentCtx.vars, ...resumeData };
+    await this.saveContext(parentCtx);
+    await this.completeRun(parentRunId, parentCtx);
+  }
+
+  private isTriggeredSubWorkflow(triggerData: Record<string, any>) {
+    return Boolean(triggerData?.triggeredByWorkflow || triggerData?.triggeredByRunId);
+  }
+
+  private async markActiveRun(ctx: WorkflowRunContext) {
+    await this.redis.client.setex(
+      ACTIVE_RUN_KEY(ctx.workspaceId, ctx.contactId),
+      RUN_CTX_TTL,
+      JSON.stringify({ runId: ctx.runId, workflowId: ctx.workflowId }),
+    );
   }
 
   private async handleStepError(
@@ -1808,10 +2185,21 @@ export class WorkflowEngineService {
 
     if (!contact) return {};
 
+    const assigneeMembership = contact.assigneeId
+      ? await this.prisma.workspaceMember.findFirst({
+        where: {
+          workspaceId: contact.workspaceId,
+          userId: contact.assigneeId,
+        },
+        select: { availability: true },
+      })
+      : null;
+
     return {
       ...contact,
       tags: contact.tags.map((t) => t.tagId),
       assigneeId: contact.assigneeId,
+      assigneeAvailability: assigneeMembership?.availability ?? null,
       teamId: contact.teamId,
       lifecycleId: contact.lifecycleId,
       lifecycleName: contact.lifecycle?.name,
@@ -1820,6 +2208,18 @@ export class WorkflowEngineService {
 
   private resolveContactWorkflowField(fieldId: string): ContactWorkflowField | null {
     return CONTACT_FIELD_ALIASES[fieldId] ?? null;
+  }
+
+  private resolveBranchContactWorkflowField(fieldId: string): BranchContactWorkflowField | null {
+    return BRANCH_CONTACT_FIELD_ALIASES[fieldId] ?? null;
+  }
+
+  private compactBranchValues(...values: unknown[]) {
+    return values.filter(
+      (value): value is string | number =>
+        (typeof value === 'string' && value.trim().length > 0) ||
+        typeof value === 'number',
+    );
   }
 
   private findDateTimeConnector(

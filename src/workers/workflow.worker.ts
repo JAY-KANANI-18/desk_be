@@ -22,6 +22,10 @@ export function createWorkflowWorker(engine: WorkflowEngineService) {
                 case 'RESUME':
                     await engine.resumeRun(data.runId, data.resumeData);
                     break;
+
+                case 'ASK_QUESTION_TIMEOUT':
+                    await engine.handleAskQuestionTimeout(data.runId, data.stepId);
+                    break;
             }
         },
         {

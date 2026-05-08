@@ -34,10 +34,22 @@ export class WorkflowsController {
         });
     }
 
+    @Get('ai-builder/context')
+    @WorkspaceRoute(WorkspacePermission.WORKFLOWS_VIEW)
+    getAiBuilderContext() {
+        return this.service.getAiBuilderContext();
+    }
+
     @Get(':id')
     @WorkspaceRoute(WorkspacePermission.WORKFLOWS_VIEW)
     get(@Req() req: any, @Param('id') id: string) {
         return this.service.get(req.workspaceId, id);
+    }
+
+    @Post(':id/ai-builder/chat')
+    @WorkspaceRoute(WorkspacePermission.WORKFLOWS_MANAGE)
+    buildWithAi(@Req() req: any, @Param('id') id: string, @Body() dto: any) {
+        return this.service.buildWithAi(req.workspaceId, id, dto ?? {});
     }
 
     @Post()

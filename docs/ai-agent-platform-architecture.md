@@ -34,12 +34,12 @@ Agent Runtime Engine
         |                    |
         v                    v
 AI Gateway             Tool Registry
- OpenAI/Cohere          createLead
- Anthropic/Claude       assignConversation
- Gemini                 updateContactField
- retries/failover       changeLifecycleStage
- timeout/accounting     triggerWorkflow
-                        escalateHuman
+ Mistral default        createLead
+ OpenAI/Cohere          assignConversation
+ Anthropic/Claude       updateContactField
+ Gemini                 changeLifecycleStage
+ retries/failover       triggerWorkflow
+ timeout/accounting     escalateHuman
         |
         v
 Knowledge Service
@@ -140,8 +140,9 @@ Key design choices:
 
 MVP:
 
+- Default chat/generation provider: `mistral` via `MISTRAL_API_KEY`.
 - Use one embedding dimension: `1536`.
-- Default embedding model: `text-embedding-3-small`.
+- Default embedding provider/model: `openai` / `text-embedding-3-small`.
 - Store source-level provider/model/dim in `ai_knowledge_sources`.
 - Store chunk-level provider/model/dim in `ai_knowledge_chunks`.
 - Use HNSW cosine index:
