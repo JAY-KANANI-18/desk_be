@@ -1,15 +1,26 @@
 import { Injectable } from '@nestjs/common';
+import { createHash } from 'crypto';
 import { messageProcessingQueue } from '../../queues/message-processing.queue';
 import { ExternalOutboundDto, SendMessageDto } from './outbound.service';
 import { InboundDto } from '../inbound/inbound.service';
 
 @Injectable()
 export class MessageProcessingQueueService {
+  private queueJobId(prefix: string, value: string) {
+    return `${prefix}-${createHash('sha256').update(value).digest('hex')}`;
+  }
+
   async enqueueSendMessage(params: SendMessageDto) {
-    await messageProcessingQueue.add('outbound.send_message', {
-      kind: 'outbound.send_message',
-      payload: params,
-    });
+    await messageProcessingQueue.add(
+      'outbound.send_message',
+      {
+        kind: 'outbound.send_message',
+        payload: params,
+      },
+      params.idempotencyKey
+        ? { jobId: this.queueJobId('broadcast-send', params.idempotencyKey) }
+        : undefined,
+    );
   }
 
   async enqueueQueueEntry(queueEntryId: string) {
@@ -47,6 +58,21 @@ export class MessageProcessingQueueService {
       kind: 'outbound.process_whatsapp_status',
       payload,
     });
+  }
+
+  async enqueueEmailStatusUpdate(payload: {
+    externalId: string;
+    status: 'delivered' | 'read' | 'failed' | 'bounced' | 'unsubscribed';
+    recipient?: string;
+  }) {
+    await messageProcessingQueue.add(
+      'outbound.process_email_status',
+      {
+        kind: 'outbound.process_email_status',
+        payload,
+      },
+      { jobId: this.queueJobId('email-status', `${payload.externalId}:${payload.status}`) },
+    );
   }
 
   async enqueueMessengerDelivery(payload: {

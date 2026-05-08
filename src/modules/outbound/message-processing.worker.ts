@@ -29,7 +29,11 @@ export class MessageProcessingWorker
 
         switch (kind) {
           case 'outbound.send_message':
-            await this.outbound.sendMessage(payload);
+            await this.outbound.sendMessage({
+              ...payload,
+              queueAttempt: job.attemptsMade + 1,
+              queueMaxRetries: job.opts.attempts ?? 1,
+            });
             return;
           case 'outbound.deliver_queue_entry':
             await this.outbound.processQueueEntry(
@@ -47,6 +51,9 @@ export class MessageProcessingWorker
           case 'outbound.process_whatsapp_status':
             await this.outbound.processWhatsappStatusUpdate(payload);
             return;
+          case 'outbound.process_email_status':
+            await this.outbound.processEmailStatusUpdate(payload);
+            return;
           case 'outbound.process_messenger_delivery':
             await this.outbound.processMessengerDelivery(payload);
             return;
@@ -62,8 +69,6 @@ export class MessageProcessingWorker
     );
 
     this.worker.on('failed', (job, err) => {
-      console.dir({err});
-      
       this.logger.error(
         `message-processing job failed kind=${job?.name} id=${job?.id}: ${err.message}`,
       );

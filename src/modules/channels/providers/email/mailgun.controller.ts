@@ -27,10 +27,15 @@ export class MailgunController {
     @UploadedFiles() files: Express.Multer.File[],
   ) {
     const body = req.body;
-    console.dir({ body }, { depth: null });
 
     if (!this.verifySignature(body)) {
       return { status: 'invalid_signature' };
+    }
+
+    const deliveryEvent = this.extractDeliveryEvent(body);
+    if (deliveryEvent) {
+      await this.processingQueue.enqueueEmailStatusUpdate(deliveryEvent);
+      return { status: 'ok', kind: 'delivery_event' };
     }
 
     const recipient: string = body.recipient ?? body.To ?? '';
@@ -71,7 +76,8 @@ export class MailgunController {
     const key = process.env.MAILGUN_WEBHOOK_SIGNING_KEY;
     if (!key) return true; // skip if not configured
 
-    const { timestamp, token, signature } = body ?? {};
+    const signatureInput = body?.signature ?? body ?? {};
+    const { timestamp, token, signature } = signatureInput;
     if (!timestamp || !token || !signature) return false;
 
     const hash = crypto
@@ -80,5 +86,58 @@ export class MailgunController {
       .digest('hex');
 
     return hash === signature;
+  }
+
+  private extractDeliveryEvent(body: any):
+    | {
+        externalId: string;
+        status: 'delivered' | 'read' | 'failed' | 'bounced' | 'unsubscribed';
+        recipient?: string;
+      }
+    | null {
+    const rawEventData = body?.['event-data'] ?? body?.eventData ?? body;
+    const eventData =
+      typeof rawEventData === 'string' ? this.safeJson(rawEventData) : rawEventData;
+    const rawEvent = String(eventData?.event ?? body?.event ?? '').toLowerCase();
+    const externalId =
+      eventData?.message?.headers?.['message-id'] ??
+      eventData?.message?.headers?.['Message-Id'] ??
+      body?.['message-id'] ??
+      body?.MessageID ??
+      body?.['Message-Id'];
+
+    if (!rawEvent || !externalId) return null;
+
+    const status = this.mapDeliveryStatus(rawEvent, eventData);
+    if (!status) return null;
+
+    return {
+      externalId: String(externalId),
+      status,
+      recipient: eventData?.recipient ?? body?.recipient,
+    };
+  }
+
+  private mapDeliveryStatus(
+    event: string,
+    eventData: any,
+  ): 'delivered' | 'read' | 'failed' | 'bounced' | 'unsubscribed' | null {
+    if (event === 'delivered') return 'delivered';
+    if (event === 'opened' || event === 'clicked') return 'read';
+    if (event === 'unsubscribed') return 'unsubscribed';
+    if (event === 'complained' || event === 'rejected') return 'failed';
+    if (event === 'failed') {
+      const reason = String(eventData?.reason ?? eventData?.severity ?? '').toLowerCase();
+      return reason.includes('bounce') || reason.includes('permanent') ? 'bounced' : 'failed';
+    }
+    return null;
+  }
+
+  private safeJson(value: string): any {
+    try {
+      return JSON.parse(value);
+    } catch {
+      return {};
+    }
   }
 }

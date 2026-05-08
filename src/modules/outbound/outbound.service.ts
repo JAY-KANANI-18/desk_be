@@ -68,6 +68,13 @@ export interface SendMessageDto {
     replyToMessageId?: string;
     /** Links outbound rows to a broadcast batch for delivery analytics */
     broadcastRunId?: string;
+    /** Links to the per-recipient broadcast ledger row for idempotency/reconciliation */
+    broadcastRecipientId?: string;
+    /** Stable queue/provider idempotency key, usually broadcastRunId:contactChannelId */
+    idempotencyKey?: string;
+    /** BullMQ attempt info, used to move exhausted jobs into dead_letter */
+    queueAttempt?: number;
+    queueMaxRetries?: number;
     metadata?: {
         template?: {
             id?: string;
@@ -80,6 +87,10 @@ export interface SendMessageDto {
         };
         htmlBody?: string;
         quickReplies?: QuickReplyOption[];
+        emailUnsubscribe?: {
+            token?: string;
+            url: string;
+        };
         [key: string]: any;
     };
 }
@@ -118,6 +129,34 @@ export interface ExternalAttachment {
     mimeType?: string;
 }
 
+type BroadcastRecipientClaim =
+    | { skip: true; message?: any }
+    | { skip: false };
+
+const BROADCAST_RECIPIENT_TERMINAL_STATUSES = new Set([
+    'sent',
+    'delivered',
+    'read',
+    'bounced',
+    'unsubscribed',
+    'dead_letter',
+]);
+
+const BROADCAST_RECIPIENT_STATUS_RANK: Record<string, number> = {
+    pending: 0,
+    queued: 1,
+    sending: 2,
+    sent: 3,
+    delivered: 4,
+    read: 5,
+    failed: 6,
+    bounced: 6,
+    unsubscribed: 6,
+    dead_letter: 6,
+};
+
+const BROADCAST_SENDING_LOCK_STALE_MS = 5 * 60 * 1000;
+
 // ─── Place this method inside OutboundService ─────────────────────────────────
 // It needs access to: this.prisma, this.media, this.events, this.logger
 // Make sure MediaService is injected: add it to constructor + OutboundModule
@@ -135,7 +174,7 @@ export class OutboundService {
     ) { }
 
     async sendMessage(params: SendMessageDto) {
-        this.logger.debug('Initiating sendMessage with params', { params });
+        this.logger.debug(`Initiating sendMessage channel=${params.channelId} conversation=${params.conversationId}`);
         /* ── 1. Load conversation + contact ──────────────────────────────────── */
 
         const conversation = await this.prisma.conversation.findUnique({
@@ -146,6 +185,9 @@ export class OutboundService {
 
         const contact = conversation.contact;
         const workspaceId = params.workspaceId ?? conversation.workspaceId;
+        if (params.workspaceId && conversation.workspaceId !== params.workspaceId) {
+            throw new BadRequestException('Conversation does not belong to this workspace');
+        }
         const [author, latestMessage] = await Promise.all([
             params.authorId
                 ? this.prisma.user.findUnique({
@@ -172,9 +214,16 @@ export class OutboundService {
         const channel = await this.prisma.channel.findUnique({
             where: { id: params.channelId },
         });
-        console.log({ channel, conversation });
 
         if (!channel) throw new NotFoundException('Channel not found');
+        if (channel.workspaceId !== workspaceId) {
+            throw new BadRequestException('Channel does not belong to this workspace');
+        }
+
+        const broadcastClaim = await this.claimBroadcastRecipient(params, workspaceId);
+        if (broadcastClaim.skip) {
+            return broadcastClaim.message;
+        }
 
         const provider = this.registry.getProviderByType(channel.type);
         if (!provider.sendMessage) {
@@ -213,16 +262,21 @@ export class OutboundService {
 
 
         // webchat has no phone/PSID/email — sessionId is the identifier, no window restrictions
-        if (channel.type !== 'webchat') {
-            SendValidator.validateContact({
-                channelType: channel.type,
-                channelStatus: channel.status,
-                credentials: channel.config as any,
-                contactChannel,
-                contactPhone: contact.phone,
-                contactEmail: contact.email,
-                hasTemplate: !!params.metadata?.template,
-            });
+        try {
+            if (channel.type !== 'webchat') {
+                SendValidator.validateContact({
+                    channelType: channel.type,
+                    channelStatus: channel.status,
+                    credentials: channel.config as any,
+                    contactChannel,
+                    contactPhone: contact.phone,
+                    contactEmail: contact.email,
+                    hasTemplate: !!params.metadata?.template,
+                });
+            }
+        } catch (err: any) {
+            await this.failBroadcastRecipientForSend(params, workspaceId, err);
+            throw err;
         }
 
         // Safe to resolve `to` now — validation guarantees one of these exists
@@ -243,10 +297,21 @@ export class OutboundService {
             : replyTarget?.channelMsgId ?? undefined;
         const quotedMessage = this.buildQuotedMessagePreview(replyTarget);
         const quickReplies = this.normaliseQuickReplies(params.metadata?.quickReplies);
-        const outboundText = this.applyQuickReplyTextFallback(channel.type, renderedText, quickReplies);
-        const outboundHtmlBody = channel.type === 'email'
+        let outboundText = this.applyQuickReplyTextFallback(channel.type, renderedText, quickReplies);
+        let outboundHtmlBody = channel.type === 'email'
             ? this.appendQuickRepliesToHtml(renderedHtmlBody, quickReplies)
             : renderedHtmlBody;
+        let emailHeaders = emailThreadMeta?.headers ?? null;
+        const emailUnsubscribe = this.normaliseEmailUnsubscribe(params.metadata?.emailUnsubscribe);
+        if (channel.type === 'email' && emailUnsubscribe) {
+            outboundText = this.appendUnsubscribeText(outboundText, emailUnsubscribe.url);
+            outboundHtmlBody = this.appendUnsubscribeHtml(outboundHtmlBody, emailUnsubscribe.url);
+            emailHeaders = {
+                ...(emailHeaders ?? {}),
+                'List-Unsubscribe': `<${emailUnsubscribe.url}>`,
+                'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click',
+            };
+        }
         const outboundMetadata: Record<string, unknown> = { ...(params.metadata ?? {}) };
         delete outboundMetadata.quickReplies;
         delete outboundMetadata.htmlBody;
@@ -257,34 +322,49 @@ export class OutboundService {
             ? 'template'
             : params.attachments?.length ? params.attachments[0].type : 'text';
 
-        let message = await this.prisma.message.create({
-            data: {
-                workspaceId,
-                conversationId: conversation.id,
-                channelId: channel.id,
-                channelType: channel.type,
-                type: messageType,
-                text: outboundText,
-                subject: emailThreadMeta?.subject ?? renderedSubject,
-                direction: 'outgoing',
-                status: 'pending',
-                authorId: params.authorId ?? null,
-                broadcastRunId: params.broadcastRunId ?? null,
-                replyToChannelMsgId: providerReplyToId ?? null,
-                metadata: {
-                    contactIdentifier: contactChannel?.identifier ?? null,
-                    ...outboundMetadata,
-                    ...(quickReplies.length > 0 ? { quickReplies } : {}),
-                    ...(quotedMessage ? { quotedMessage } : {}),
-                    ...(outboundHtmlBody ? { htmlBody: outboundHtmlBody } : {}),
-                    ...(emailThreadMeta ?? {}),
-                },
+        const messageData = {
+            workspaceId,
+            conversationId: conversation.id,
+            channelId: channel.id,
+            channelType: channel.type,
+            type: messageType,
+            text: outboundText,
+            subject: emailThreadMeta?.subject ?? renderedSubject,
+            direction: 'outgoing',
+            status: 'pending',
+            authorId: params.authorId ?? null,
+            broadcastRunId: params.broadcastRunId ?? null,
+            broadcastRecipientId: params.broadcastRecipientId ?? null,
+            replyToChannelMsgId: providerReplyToId ?? null,
+            channelMsgId: null,
+            sentAt: null,
+            metadata: {
+                contactIdentifier: contactChannel?.identifier ?? null,
+                ...outboundMetadata,
+                ...(quickReplies.length > 0 ? { quickReplies } : {}),
+                ...(quotedMessage ? { quotedMessage } : {}),
+                ...(outboundHtmlBody ? { htmlBody: outboundHtmlBody } : {}),
+                ...(emailThreadMeta ? { ...emailThreadMeta, headers: emailHeaders } : {}),
             },
-            include: {
-                channel: true,
-                author:true
-            }
-        });
+        };
+
+        const existingBroadcastMessage = params.broadcastRecipientId
+            ? await this.prisma.message.findFirst({
+                where: { broadcastRecipientId: params.broadcastRecipientId },
+                include: { channel: true, author: true },
+            })
+            : null;
+
+        let message = existingBroadcastMessage
+            ? await this.prisma.message.update({
+                where: { id: existingBroadcastMessage.id },
+                data: messageData,
+                include: { channel: true, author: true },
+            })
+            : await this.prisma.message.create({
+                data: messageData,
+                include: { channel: true, author: true },
+            });
 
         try {
 
@@ -296,19 +376,24 @@ export class OutboundService {
                     templateMeta: params.metadata.template,
                     workspaceId,
                 });
-                await this.finalise(message.id, result?.externalId ?? result?.id, conversation.id, workspaceId, channel.id);
+                const sentMessage = await this.finalise(
+                    message.id,
+                    result?.externalId ?? result?.id,
+                    conversation.id,
+                    workspaceId,
+                    channel.id,
+                    {
+                        renderedText: outboundText ?? null,
+                        renderedSubject: emailThreadMeta?.subject ?? renderedSubject ?? null,
+                    },
+                );
                 await this.updateContactChannelWindowForOutbound({
                     contactChannelId: contactChannel?.id,
                     channelType: channel.type,
                     eventTimestamp: Date.now(),
                     metadata: params.metadata,
                 });
-                 this.events.emit('message.outbound', {
-                workspaceId, channelId: channel.id,
-                conversationId: conversation.id,
-                message: message
-            });
-                return message;
+                return sentMessage;
             }
 
             /* ── 7b. Resolve attachments ─────────────────────────────────────────── */
@@ -331,13 +416,12 @@ export class OutboundService {
                 quickReplyTextPrepared: true,
                 attachments: resolvedAttachments,
                 replyToMessageId: providerReplyToId,
-                emailHeaders: emailThreadMeta?.headers ?? null,
+                emailHeaders,
             });
 
             /* ── 7d. Send ────────────────────────────────────────────────────────── */
 
             const result: any = await provider.sendMessage(channel, providerPayload);
-            console.log({ result });
             this.events.emit('message.outbound', {
                 workspaceId, channelId: channel.id,
                 conversationId: conversation.id,
@@ -370,8 +454,19 @@ export class OutboundService {
 
             message = await this.prisma.message.update({
                 where: { id: message.id },
-                data: { status: 'sent', channelMsgId: result?.externalId ?? result?.id ?? null, metadata: updatedMeta },
+                data: {
+                    status: 'sent',
+                    channelMsgId: result?.externalId ?? result?.id ?? null,
+                    sentAt: new Date(),
+                    metadata: updatedMeta,
+                },
                 include: { channel: true ,author:true }
+            });
+
+            await this.reconcileBroadcastRecipientFromMessage(message, 'sent', {
+                providerMessageId: result?.externalId ?? result?.id ?? null,
+                renderedText: outboundText ?? null,
+                renderedSubject: emailThreadMeta?.subject ?? renderedSubject ?? null,
             });
 
             await this.prisma.conversation.update({
@@ -395,19 +490,28 @@ export class OutboundService {
 
             return message;
 
-        } catch (err) {
+        } catch (err: any) {
 
             // Mark the pending message as failed
             const msg: any = await this.prisma.message.update({
                 where: { id: message.id },
-                data: { status: 'failed', metadata: { ...(params.metadata ?? {}), error: err.message } },
-            }).catch(() => { });
-            this.events.emit('message.status_updated', {
-                workspaceId: msg.workspaceId,
-                conversationId: msg.conversationId,
-                messageId: msg.id,
-                status: msg.status,
-            });
+                data: {
+                    status: 'failed',
+                    metadata: {
+                        ...((message.metadata as Record<string, any>) ?? {}),
+                        error: err.message,
+                    },
+                },
+            }).catch(() => null);
+            await this.failBroadcastRecipientForSend(params, workspaceId, err, message.id);
+            if (msg) {
+                this.events.emit('message.status_updated', {
+                    workspaceId: msg.workspaceId,
+                    conversationId: msg.conversationId,
+                    messageId: msg.id,
+                    status: msg.status,
+                });
+            }
             // Normalise provider errors → structured SendError → BadRequestException
             ProviderErrorNormaliser.normalise(err, channel.type);
         }
@@ -498,6 +602,7 @@ export class OutboundService {
                     data: {
                         status: 'sent',
                         channelMsgId: result?.externalId ?? result?.id ?? null,
+                        sentAt: new Date(),
                         metadata,
                     },
                 }),
@@ -517,6 +622,19 @@ export class OutboundService {
                     },
                 }),
             ]);
+
+            await this.reconcileBroadcastRecipientFromMessage(
+                {
+                    ...message,
+                    channelMsgId: result?.externalId ?? result?.id ?? null,
+                },
+                'sent',
+                {
+                    providerMessageId: result?.externalId ?? result?.id ?? null,
+                    renderedText: message.text ?? null,
+                    renderedSubject: message.subject ?? null,
+                },
+            );
 
             const contactChannel = await this.prisma.contactChannel.findFirst({
                 where: {
@@ -567,6 +685,15 @@ export class OutboundService {
                     },
                 },
             });
+            await this.reconcileBroadcastRecipientFromMessage(
+                message,
+                attempt >= maxRetries ? 'dead_letter' : 'failed',
+                {
+                    lastError: err.message,
+                    attempts: attempt,
+                    maxRetries,
+                },
+            );
             this.events.emit('message.status_updated', {
                 workspaceId: message.workspaceId,
                 conversationId: message.conversationId,
@@ -586,8 +713,7 @@ export class OutboundService {
         workspaceId: string;
     }) {
 
-        const { channel, provider, conversation, to, templateMeta, workspaceId } = opts;
-        console.log({ templateMeta });
+        const { channel, provider, to, templateMeta, workspaceId } = opts;
 
         if (channel.type === 'messenger') {
             return this.sendMessengerTemplate({
@@ -603,15 +729,24 @@ export class OutboundService {
             throw new BadRequestException(`Templates are not supported for ${channel.type}`);
         }
 
-        const template = await this.prisma.whatsAppTemplate.findFirst({
-            where: {
-                workspaceId,
-                channelId: channel.id,
+        const snapshotComponents = Array.isArray(templateMeta.components)
+            ? templateMeta.components
+            : null;
+        const template = snapshotComponents
+            ? {
                 name: templateMeta.name,
                 language: templateMeta.language,
-                status: "APPROVED",
-            },
-        });
+                components: snapshotComponents,
+            }
+            : await this.prisma.whatsAppTemplate.findFirst({
+                where: {
+                    workspaceId,
+                    channelId: channel.id,
+                    name: templateMeta.name,
+                    language: templateMeta.language,
+                    status: "APPROVED",
+                },
+            });
 
         if (!template) {
             throw new BadRequestException(
@@ -621,9 +756,10 @@ export class OutboundService {
 
         const variables = this.normaliseTemplateVariables(templateMeta.variables);
 
-        validateTemplateVariables(template.components as any[], variables);
+        const templateComponents = template.components as any[];
+        validateTemplateVariables(templateComponents, variables);
 
-        const components = buildTemplateComponents(template.components as any[], variables);
+        const components = buildTemplateComponents(templateComponents, variables);
 
         const payload: any = {
             messaging_product: "whatsapp",
@@ -973,6 +1109,33 @@ export class OutboundService {
         return `${htmlBody}<p><strong>Options:</strong></p><ol>${options}</ol>`;
     }
 
+    private normaliseEmailUnsubscribe(value: unknown): { url: string; token?: string } | null {
+        if (!value || typeof value !== 'object') return null;
+        const raw = value as Record<string, unknown>;
+        const url = typeof raw.url === 'string' ? raw.url.trim() : '';
+        if (!url) return null;
+        const token = typeof raw.token === 'string' ? raw.token : undefined;
+        return { url, token };
+    }
+
+    private appendUnsubscribeText(
+        text: string | null | undefined,
+        url: string,
+    ): string | null | undefined {
+        const base = text ?? '';
+        const footer = `Unsubscribe: ${url}`;
+        return base.includes(url) ? base : `${base}${base.trim() ? '\n\n' : ''}${footer}`;
+    }
+
+    private appendUnsubscribeHtml(
+        htmlBody: string | null | undefined,
+        url: string,
+    ): string | null | undefined {
+        if (!htmlBody || htmlBody.includes(url)) return htmlBody;
+        const escapedUrl = this.escapeHtml(url);
+        return `${htmlBody}<p style="font-size:12px;color:#667085;margin-top:24px"><a href="${escapedUrl}">Unsubscribe</a></p>`;
+    }
+
     private buildWhatsAppReplyId(reply: QuickReplyOption, index: number): string {
         const id = (reply.payload || reply.title || `option_${index + 1}`).trim();
         return this.truncate(id || `option_${index + 1}`, WHATSAPP_INTERACTIVE_ID_LIMIT);
@@ -994,10 +1157,161 @@ export class OutboundService {
 
     // ─── Helpers ───────────────────────────────────────────────────────────────
 
-    private async finalise(messageId: string, externalId: string | undefined, conversationId: string, workspaceId: string, channelId: string) {
-        await this.prisma.message.update({ where: { id: messageId }, data: { status: 'sent', channelMsgId: externalId ?? null }, include: { channel: true } });
+    private async claimBroadcastRecipient(
+        params: SendMessageDto,
+        workspaceId: string,
+    ): Promise<BroadcastRecipientClaim> {
+        if (!params.broadcastRecipientId) return { skip: false };
+
+        const recipient = await this.prisma.broadcastRecipient.findFirst({
+            where: { id: params.broadcastRecipientId, workspaceId },
+            include: { message: true },
+        });
+        if (!recipient) {
+            throw new NotFoundException('Broadcast recipient not found');
+        }
+
+        if (BROADCAST_RECIPIENT_TERMINAL_STATUSES.has(recipient.status)) {
+            return { skip: true, message: recipient.message ?? undefined };
+        }
+
+        const staleBefore = new Date(Date.now() - BROADCAST_SENDING_LOCK_STALE_MS);
+        const claimed = await this.prisma.broadcastRecipient.updateMany({
+            where: {
+                id: recipient.id,
+                workspaceId,
+                OR: [
+                    { status: { in: ['pending', 'queued', 'failed'] } },
+                    ...(params.queueAttempt
+                        ? [{ status: 'sending', attempts: { lt: params.queueAttempt } }]
+                        : []),
+                    { status: 'sending', updatedAt: { lt: staleBefore } },
+                ],
+            },
+            data: {
+                status: 'sending',
+                attempts: params.queueAttempt ?? recipient.attempts + 1,
+                maxRetries: params.queueMaxRetries ?? recipient.maxRetries,
+                lastError: null,
+            },
+        });
+
+        if (!claimed.count) {
+            const current = await this.prisma.broadcastRecipient.findFirst({
+                where: { id: recipient.id, workspaceId },
+                include: { message: true },
+            });
+            return { skip: true, message: current?.message ?? undefined };
+        }
+
+        return { skip: false };
+    }
+
+    private async failBroadcastRecipientForSend(
+        params: SendMessageDto,
+        workspaceId: string,
+        err: any,
+        _messageId?: string,
+    ) {
+        if (!params.broadcastRecipientId) return;
+        const isFinalAttempt =
+            !!params.queueAttempt &&
+            !!params.queueMaxRetries &&
+            params.queueAttempt >= params.queueMaxRetries;
+        await this.prisma.broadcastRecipient.updateMany({
+            where: { id: params.broadcastRecipientId, workspaceId },
+            data: {
+                status: isFinalAttempt ? 'dead_letter' : 'failed',
+                failedAt: new Date(),
+                attempts: params.queueAttempt ?? undefined,
+                maxRetries: params.queueMaxRetries ?? undefined,
+                lastError: err?.message ?? String(err),
+            },
+        });
+    }
+
+    private async finalise(
+        messageId: string,
+        externalId: string | undefined,
+        conversationId: string,
+        workspaceId: string,
+        channelId: string,
+        opts: { renderedText?: string | null; renderedSubject?: string | null } = {},
+    ) {
+        const message = await this.prisma.message.update({
+            where: { id: messageId },
+            data: {
+                status: 'sent',
+                channelMsgId: externalId ?? null,
+                sentAt: new Date(),
+            },
+            include: { channel: true, author: true },
+        });
         await this.prisma.conversation.update({ where: { id: conversationId }, data: { lastMessageId: messageId, lastMessageAt: new Date() } });
         this.events.emit('message.outbound', { workspaceId, channelId, conversationId, messageId, externalId });
+        this.events.emit('message.status_updated', {
+            workspaceId,
+            conversationId,
+            messageId,
+            status: 'sent',
+        });
+        await this.reconcileBroadcastRecipientFromMessage(message, 'sent', {
+            providerMessageId: externalId ?? null,
+            renderedText: opts.renderedText,
+            renderedSubject: opts.renderedSubject,
+        });
+        return message;
+    }
+
+    private async reconcileBroadcastRecipientFromMessage(
+        message: {
+            id: string;
+            workspaceId: string;
+            broadcastRecipientId?: string | null;
+            channelMsgId?: string | null;
+        },
+        status: 'sent' | 'delivered' | 'read' | 'failed' | 'bounced' | 'unsubscribed' | 'dead_letter',
+        opts: {
+            providerMessageId?: string | null;
+            lastError?: string | null;
+            attempts?: number;
+            maxRetries?: number;
+            renderedText?: string | null;
+            renderedSubject?: string | null;
+        } = {},
+    ) {
+        if (!message.broadcastRecipientId) return;
+
+        const recipient = await this.prisma.broadcastRecipient.findFirst({
+            where: { id: message.broadcastRecipientId, workspaceId: message.workspaceId },
+            select: { status: true },
+        });
+        if (!recipient) return;
+
+        const currentRank = BROADCAST_RECIPIENT_STATUS_RANK[recipient.status] ?? 0;
+        const nextRank = BROADCAST_RECIPIENT_STATUS_RANK[status] ?? 0;
+        if (nextRank < currentRank) return;
+
+        const now = new Date();
+        await this.prisma.broadcastRecipient.updateMany({
+            where: { id: message.broadcastRecipientId, workspaceId: message.workspaceId },
+            data: {
+                status,
+                providerMessageId: opts.providerMessageId ?? message.channelMsgId ?? undefined,
+                lastError: opts.lastError ?? null,
+                attempts: opts.attempts ?? undefined,
+                maxRetries: opts.maxRetries ?? undefined,
+                renderedText: opts.renderedText ?? undefined,
+                renderedSubject: opts.renderedSubject ?? undefined,
+                ...(status === 'sent' ? { sentAt: now } : {}),
+                ...(status === 'delivered' ? { deliveredAt: now } : {}),
+                ...(status === 'read' ? { readAt: now, deliveredAt: now } : {}),
+                ...(status === 'failed' || status === 'bounced' || status === 'dead_letter'
+                    ? { failedAt: now }
+                    : {}),
+                ...(status === 'unsubscribed' ? { unsubscribedAt: now } : {}),
+            },
+        });
     }
 
     private async updateContactChannelWindowForOutbound(opts: {
@@ -1241,13 +1555,16 @@ export class OutboundService {
             return;
         }
 
-        // 2. Update message status
-        await this.prisma.message.update({
+        const updated = await this.prisma.message.update({
             where: { id: message.id },
             data: { status, metadata: { ...message.metadata, status } },
         });
 
-
+        await this.reconcileBroadcastRecipientFromMessage(
+            updated,
+            status,
+            status === 'failed' ? { lastError: 'Provider reported failed delivery' } : {},
+        );
 
         // 4. Emit event
         this.events.emit('message.status_updated', {
@@ -1275,13 +1592,15 @@ export class OutboundService {
             return;
         }
 
-        await this.prisma.message.update({
+        const updated = await this.prisma.message.update({
             where: { id: message.id },
             data: {
                 status: 'delivered',
                 metadata: { ...message.metadata, status: 'delivered' },
             },
         });
+
+        await this.reconcileBroadcastRecipientFromMessage(updated, 'delivered');
 
         this.events.emit('message.status_updated', {
             workspaceId: message.workspaceId,
@@ -1290,6 +1609,74 @@ export class OutboundService {
             status: 'delivered',
         });
     }
+
+    async processEmailStatusUpdate(params: {
+        externalId: string;
+        status: 'delivered' | 'read' | 'failed' | 'bounced' | 'unsubscribed';
+        recipient?: string;
+    }): Promise<void> {
+        const candidates = this.emailMessageIdCandidates(params.externalId);
+        const message: any = await this.prisma.message.findFirst({
+            where: {
+                channelType: 'email',
+                channelMsgId: { in: candidates },
+            },
+            include: {
+                conversation: { select: { contactId: true } },
+            },
+        });
+
+        if (!message) {
+            this.logger.warn(
+                `Email status for unknown message. externalId=${params.externalId} status=${params.status}`,
+            );
+            return;
+        }
+
+        const messageStatus =
+            params.status === 'bounced' || params.status === 'unsubscribed'
+                ? 'failed'
+                : params.status;
+        const updated = await this.prisma.message.update({
+            where: { id: message.id },
+            data: {
+                status: messageStatus,
+                metadata: {
+                    ...((message.metadata as Record<string, any>) ?? {}),
+                    status: params.status,
+                    statusRecipient: params.recipient ?? null,
+                },
+            },
+        });
+
+        await this.reconcileBroadcastRecipientFromMessage(updated, params.status, {
+            lastError:
+                params.status === 'failed' || params.status === 'bounced'
+                    ? `Email provider reported ${params.status}`
+                    : null,
+        });
+
+        if (params.status === 'unsubscribed' && message.conversation?.contactId) {
+            await this.prisma.contact.update({
+                where: { id: message.conversation.contactId },
+                data: { marketingOptOut: true },
+            });
+        }
+
+        this.events.emit('message.status_updated', {
+            workspaceId: message.workspaceId,
+            conversationId: message.conversationId,
+            messageId: message.id,
+            status: messageStatus,
+        });
+    }
+
+    private emailMessageIdCandidates(externalId: string): string[] {
+        const trimmed = externalId.trim();
+        const withoutAngles = trimmed.replace(/^<|>$/g, '');
+        return Array.from(new Set([trimmed, withoutAngles, `<${withoutAngles}>`])).filter(Boolean);
+    }
+
     async processMessengerRead(params: {
         channelId: string;
         contactIdentifier: string;
@@ -1314,6 +1701,8 @@ export class OutboundService {
                 id: true,
                 workspaceId: true,
                 conversationId: true,
+                broadcastRecipientId: true,
+                channelMsgId: true,
                 metadata: true,
             },
         });
@@ -1330,6 +1719,7 @@ export class OutboundService {
         });
 
         for (const message of messages) {
+            await this.reconcileBroadcastRecipientFromMessage(message, 'read');
             this.events.emit('message.status_updated', {
                 workspaceId: message.workspaceId,
                 conversationId: message.conversationId,
@@ -1362,7 +1752,7 @@ export class OutboundService {
                 select: { metadata: true },
             });
 
-            let m = await this.prisma.message.update({
+            await this.prisma.message.update({
                 where: { id: existing.id },
                 data: {
                     sentAt: timestamp ? new Date(timestamp) : new Date(),
@@ -1373,7 +1763,6 @@ export class OutboundService {
                     },
                 },
             });
-            console.log({ m });
 
             this.logger.debug(
                 `ExternalOutbound: already stored channelMsgId=${channelMsgId} —${timestamp} Updating echo timestamp`,

@@ -1,5 +1,5 @@
 import { Body, Controller, Get, Param, Patch, Post, Query, Req } from '@nestjs/common';
-import { WorkspaceRoute } from 'src/common/auth/route-access.decorator';
+import { Public, WorkspaceRoute } from 'src/common/auth/route-access.decorator';
 import { WorkspacePermission } from 'src/common/constants/permissions';
 import { BroadcastsService } from './broadcasts.service';
 
@@ -97,6 +97,18 @@ export class BroadcastsController {
       scheduledAt: dto.scheduledAt,
       authorId: req.user?.id,
     });
+  }
+
+  @Get('unsubscribe/:token')
+  @Public()
+  async unsubscribeGet(@Param('token') token: string) {
+    return this.broadcasts.unsubscribeEmailToken(token);
+  }
+
+  @Post('unsubscribe/:token')
+  @Public()
+  async unsubscribePost(@Param('token') token: string) {
+    return this.broadcasts.unsubscribeEmailToken(token);
   }
 
   @Get(':id/trace')

@@ -499,6 +499,8 @@ model Workspace {
   workflows              Workflow[]
   whatsAppTemplates      WhatsAppTemplate[]
   contactChannels        ContactChannel[]
+  broadcastRecipients    BroadcastRecipient[]
+  emailUnsubscribeTokens EmailUnsubscribeToken[]
   mediaAssets            MediaAsset[]
   outboundQueue          OutboundQueue[]
   messageTemplates       MessageTemplate[]
@@ -611,6 +613,8 @@ model Contact {
   mergedContacts    Contact[]      @relation("ContactMergedInto")
   conversations   Conversation[]
   contactChannels ContactChannel[]
+  broadcastRecipients BroadcastRecipient[]
+  emailUnsubscribeTokens EmailUnsubscribeToken[]
   tags            ContactTag[]
   primaryMergeRuns ContactMergeRun[] @relation("PrimaryContactMergeRuns")
   secondaryMergeRuns ContactMergeRun[] @relation("SecondaryContactMergeRuns")
@@ -708,6 +712,7 @@ model Conversation {
   messages    Message[]              @relation("ConversationMessages")
   lastMessage Message?               @relation("LastMessage", fields: [lastMessageId], references: [id])
   activities  ConversationActivity[]
+  broadcastRecipients BroadcastRecipient[]
 
   @@index([workspaceId])
   @@index([contactId])
@@ -762,6 +767,8 @@ model Message {
 
   broadcastRunId String?       @db.Uuid
   broadcastRun   BroadcastRun? @relation(fields: [broadcastRunId], references: [id], onDelete: SetNull)
+  broadcastRecipientId String?             @unique @db.Uuid
+  broadcastRecipient   BroadcastRecipient? @relation(fields: [broadcastRecipientId], references: [id], onDelete: SetNull)
 
   createdAt DateTime  @default(now())
   sentAt    DateTime?
@@ -781,6 +788,7 @@ model Message {
   @@index([channelMsgId])
   @@index([status])
   @@index([broadcastRunId])
+  @@index([broadcastRecipientId])
 }
 
 // ============================================================
@@ -811,6 +819,7 @@ model Channel {
   contactChannels ContactChannel[]
   outboundQueue   OutboundQueue[]
   broadcastRuns   BroadcastRun[]
+  broadcastRecipients BroadcastRecipient[]
 
   @@index([workspaceId])
   @@index([type, identifier])
@@ -879,6 +888,8 @@ model ContactChannel {
   contact   Contact   @relation(fields: [contactId], references: [id], onDelete: Cascade)
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   channel   Channel   @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  broadcastRecipients BroadcastRecipient[]
+  emailUnsubscribeTokens EmailUnsubscribeToken[]
 
   @@unique([workspaceId, channelId, identifier])
   @@index([workspaceId, identifier])
@@ -1130,8 +1141,11 @@ model BroadcastRun {
   templateName     String?
   templateLanguage String?
   templateVariables Json?
+  templateSnapshot  Json?
   messageText      String?
   textPreview      String?
+  audienceSnapshotStrategy String @default("snapshot")
+  dedupeKey        String?
   totalAudience    Int
   queuedCount      Int
   failedEnqueue    Int
@@ -1145,10 +1159,86 @@ model BroadcastRun {
   channel   Channel   @relation(fields: [channelId], references: [id], onDelete: Cascade)
   createdBy User?     @relation(fields: [createdById], references: [id], onDelete: SetNull)
   messages  Message[]
+  recipients BroadcastRecipient[]
+  emailUnsubscribeTokens EmailUnsubscribeToken[]
 
   @@index([workspaceId, createdAt])
+  @@index([workspaceId, dedupeKey, createdAt])
   @@index([status, scheduledAt])
   @@index([channelId])
+}
+
+model BroadcastRecipient {
+  id               String   @id @default(uuid()) @db.Uuid
+  workspaceId      String   @db.Uuid
+  broadcastRunId   String   @db.Uuid
+  contactId        String   @db.Uuid
+  contactChannelId String   @db.Uuid
+  channelId        String   @db.Uuid
+  conversationId   String?  @db.Uuid
+  identifier       String
+  recipientName    String?
+  status           String   @default("pending")
+  idempotencyKey   String
+  providerMessageId String?
+  attempts         Int      @default(0)
+  maxRetries       Int      @default(3)
+  lastError        String?
+  renderedText     String?
+  renderedSubject  String?
+  templateSnapshot Json?
+  metadata         Json?
+  queuedAt         DateTime?
+  sentAt           DateTime?
+  deliveredAt      DateTime?
+  readAt           DateTime?
+  failedAt         DateTime?
+  unsubscribedAt   DateTime?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  workspace      Workspace      @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  broadcastRun   BroadcastRun   @relation(fields: [broadcastRunId], references: [id], onDelete: Cascade)
+  contact        Contact        @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  contactChannel ContactChannel @relation(fields: [contactChannelId], references: [id], onDelete: Cascade)
+  channel        Channel        @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  conversation   Conversation?  @relation(fields: [conversationId], references: [id], onDelete: SetNull)
+  message        Message?
+  emailUnsubscribeTokens EmailUnsubscribeToken[]
+
+  @@unique([workspaceId, idempotencyKey])
+  @@unique([broadcastRunId, contactChannelId])
+  @@index([workspaceId, broadcastRunId, status])
+  @@index([workspaceId, status, createdAt])
+  @@index([channelId, providerMessageId])
+  @@index([contactChannelId])
+}
+
+model EmailUnsubscribeToken {
+  id                   String   @id @default(uuid()) @db.Uuid
+  workspaceId          String   @db.Uuid
+  contactId            String   @db.Uuid
+  contactChannelId     String?  @db.Uuid
+  broadcastRunId       String?  @db.Uuid
+  broadcastRecipientId String?  @db.Uuid
+  email                String
+  token                String   @unique
+  status               String   @default("active")
+  source               String   @default("broadcast")
+  expiresAt            DateTime?
+  usedAt               DateTime?
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  workspace          Workspace           @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  contact            Contact             @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  contactChannel     ContactChannel?     @relation(fields: [contactChannelId], references: [id], onDelete: SetNull)
+  broadcastRun       BroadcastRun?       @relation(fields: [broadcastRunId], references: [id], onDelete: SetNull)
+  broadcastRecipient BroadcastRecipient? @relation(fields: [broadcastRecipientId], references: [id], onDelete: SetNull)
+
+  @@index([workspaceId, contactId, status])
+  @@index([workspaceId, email, status])
+  @@index([broadcastRecipientId])
 }
 
 // ============================================================
