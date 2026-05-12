@@ -14,6 +14,7 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 import { MergeContactsDto } from './dto/merge-contact.dto';
 import { ActivityService } from '../activity/activity.service';
 import { resolveContactAvatarUrl } from '../../common/contacts/static-contact-avatar';
+import { normalizePhoneIdentifier } from '../../common/utils/contact-identifier.util';
 
 const CONTACT_INCLUDE = {
   tags: { include: { tag: true } },
@@ -1088,14 +1089,7 @@ async removeTag(workspaceId: string, contactId: string, tagId: string) {
   }
 
   private normalizeOptionalPhone(value?: string | null) {
-    const raw = value?.trim();
-    if (!raw) return null;
-
-    const hasPlus = raw.startsWith('+');
-    const digits = raw.replace(/[^\d]/g, '');
-    if (!digits) return null;
-
-    return `${hasPlus ? '+' : ''}${digits}`;
+    return normalizePhoneIdentifier(value);
   }
 
   private normalizeName(value?: string | null) {

@@ -16,10 +16,22 @@ export class HttpExceptionFilter implements ExceptionFilter {
         const status =
             exception instanceof HttpException ? exception.getStatus() : 500;
 
-        const message =
-            exception instanceof HttpException
-                ? exception.message
-                : 'Internal Server Error';
+        const exceptionResponse =
+            exception instanceof HttpException ? exception.getResponse() : null;
+        const exceptionBody =
+            exceptionResponse && typeof exceptionResponse === 'object'
+                ? exceptionResponse as Record<string, unknown>
+                : {};
+        const rawMessage =
+            exceptionBody.message ??
+            (typeof exceptionResponse === 'string' ? exceptionResponse : null) ??
+            (exception instanceof HttpException ? exception.message : null) ??
+            'Internal Server Error';
+        const message = Array.isArray(rawMessage) ? rawMessage.join(', ') : String(rawMessage);
+        const code =
+            typeof exceptionBody.code === 'string' && exceptionBody.code.trim()
+                ? exceptionBody.code
+                : exception.name || 'SERVER_ERROR';
 
         response.status(status).json({
             success: false,
@@ -28,7 +40,8 @@ export class HttpExceptionFilter implements ExceptionFilter {
                 timestamp: new Date().toISOString(),
             },
             error: {
-                code: exception.name || 'SERVER_ERROR',
+                ...exceptionBody,
+                code,
                 message,
             },
         });

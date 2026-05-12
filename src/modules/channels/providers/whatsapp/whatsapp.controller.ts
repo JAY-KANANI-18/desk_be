@@ -171,7 +171,7 @@ export class WhatsAppController implements OnModuleInit {
         }
 
         const body = req.body;
-        console.dir({ whatsappWebhook: body }), { depth: null };
+    console.dir({ body }, { depth: null });
         const phoneNumberId: string =
             body?.entry?.[0]?.changes?.[0]?.value?.metadata?.phone_number_id;
 

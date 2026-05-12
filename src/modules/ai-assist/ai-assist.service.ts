@@ -540,10 +540,10 @@ export class AiAssistService {
       case 'openai':
         return process.env.OPENAI_MODEL || process.env.AI_MODEL || 'gpt-4.1-mini';
       case 'mistral':
-                return process.env.MISTRAL_MODEL || process.env.AI_MODEL || 'mistral-large-2512';
+                return process.env.MISTRAL_MODEL || process.env.AI_MODEL || 'mistral-small-latest';
 
       default:
-        return process.env.MISTRAL_MODEL || process.env.AI_MODEL || 'mistral-large-2512';
+        return process.env.MISTRAL_MODEL || process.env.AI_MODEL || 'mistral-small-latest';
     }
   }
 

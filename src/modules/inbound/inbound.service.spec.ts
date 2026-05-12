@@ -123,4 +123,76 @@ describe('InboundService workflow trigger events', () => {
       message,
     });
   });
+
+  it('reuses the existing contact conversation even when an email subject changes', async () => {
+    const { prisma, service } = createService();
+    const contact = {
+      id: 'contact-1',
+      workspaceId: 'workspace-1',
+      firstName: 'Jay',
+      lastName: 'Kanani',
+      phone: null,
+      email: 'jaykanani1999@gmail.com',
+      status: 'open',
+      avatarUrl: null,
+    };
+    const contactChannel = {
+      id: 'contact-channel-1',
+      workspaceId: 'workspace-1',
+      channelId: 'channel-1',
+      channelType: 'email',
+      identifier: 'jaykanani1999@gmail.com',
+      contact,
+    };
+    const conversation = {
+      id: 'conversation-1',
+      workspaceId: 'workspace-1',
+      contactId: 'contact-1',
+      subject: 'Old subject',
+    };
+
+    prisma.contactChannel.findFirst.mockResolvedValue(contactChannel);
+    prisma.conversation.findFirst.mockResolvedValue(conversation);
+    prisma.conversation.update
+      .mockResolvedValueOnce(conversation)
+      .mockResolvedValueOnce({ ...conversation, lastMessageId: 'message-1' });
+    prisma.message.create.mockResolvedValue({
+      id: 'message-1',
+      workspaceId: 'workspace-1',
+      conversationId: 'conversation-1',
+      direction: 'incoming',
+      type: 'text',
+      text: 'New email body',
+    });
+    prisma.contactChannel.update.mockResolvedValue(contactChannel);
+
+    await service.process({
+      workspaceId: 'workspace-1',
+      channelId: 'channel-1',
+      channelType: 'email',
+      contactIdentifier: 'jaykanani1999@gmail.com',
+      direction: 'incoming',
+      messageType: 'text',
+      text: 'New email body',
+      subject: 'Different new subject',
+      channelMsgId: 'provider-message-1',
+    });
+
+    expect(prisma.conversation.findFirst).toHaveBeenCalledWith({
+      where: {
+        workspaceId: 'workspace-1',
+        contactId: 'contact-1',
+      },
+      orderBy: { updatedAt: 'desc' },
+    });
+    expect(prisma.conversation.create).not.toHaveBeenCalled();
+    expect(prisma.message.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          conversationId: 'conversation-1',
+          subject: 'Different new subject',
+        }),
+      }),
+    );
+  });
 });

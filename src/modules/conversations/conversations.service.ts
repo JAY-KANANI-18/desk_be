@@ -23,6 +23,7 @@ import {
   NotFoundException,
   BadRequestException,
   Logger,
+  ConflictException,
 } from '@nestjs/common';
 import { NotificationType } from '@prisma/client';
 import { ActivityService } from '../activity/activity.service';
@@ -42,6 +43,11 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { MentionParserService } from './mention-parser.service';
 import { MessageProcessingQueueService } from '../outbound/message-processing-queue.service';
+import { RealtimeService } from '../../realtime/realtime.service';
+import {
+  isPhoneIdentifierChannel,
+  normalizeContactIdentifierForChannel,
+} from '../../common/utils/contact-identifier.util';
 
 // ─── DTOs ─────────────────────────────────────────────────────────────────────
 
@@ -131,6 +137,55 @@ export interface GetTimelineOptions {
   after?: number;
 }
 
+const CONTACT_CHANNEL_SELECT = {
+  id: true,
+  channelId: true,
+  channelType: true,
+  identifier: true,
+  displayName: true,
+  avatarUrl: true,
+  createdAt: true,
+  updatedAt: true,
+  lastMessageTime: true,
+  lastIncomingMessageTime: true,
+  lastCallInteractionTime: true,
+  messageWindowExpiry: true,
+  conversationWindowCategory: true,
+  call_permission: true,
+  hasPermanentCallPermission: true,
+} satisfies Prisma.ContactChannelSelect;
+
+const CONFLICTING_CONTACT_CHANNEL_SELECT = {
+  id: true,
+  contactId: true,
+  contact: {
+    select: {
+      id: true,
+      firstName: true,
+      lastName: true,
+      email: true,
+      phone: true,
+      avatarUrl: true,
+      company: true,
+    },
+  },
+} satisfies Prisma.ContactChannelSelect;
+
+const INITIATABLE_CONTACT_FIELD_BY_CHANNEL = {
+  email: 'email',
+  gmail: 'email',
+  whatsapp: 'phone',
+  sms: 'phone',
+  exotel_call: 'phone',
+} as const;
+
+type InitiatableContactField =
+  (typeof INITIATABLE_CONTACT_FIELD_BY_CHANNEL)[keyof typeof INITIATABLE_CONTACT_FIELD_BY_CHANNEL];
+type SelectedContactChannel = Prisma.ContactChannelGetPayload<{ select: typeof CONTACT_CHANNEL_SELECT }>;
+type ConflictingContactChannel = Prisma.ContactChannelGetPayload<{
+  select: typeof CONFLICTING_CONTACT_CHANNEL_SELECT;
+}>;
+
 // ─── Prisma select for conversation list items ────────────────────────────────
 // Shared across findAll / findOne so shapes are consistent.
 
@@ -149,23 +204,7 @@ const CONV_INCLUDE = {
       teamId: true,
       lifecycleId: true,
       contactChannels: {
-        select: {
-          id: true,
-          channelId: true,
-          channelType: true,
-          identifier: true,
-          displayName: true,
-          avatarUrl: true,
-          createdAt: true,
-          updatedAt: true,
-          lastMessageTime: true,
-          lastIncomingMessageTime: true,
-          lastCallInteractionTime: true,
-          messageWindowExpiry: true,
-          conversationWindowCategory: true,
-          call_permission: true,
-          hasPermanentCallPermission: true,
-        }
+        select: CONTACT_CHANNEL_SELECT,
       }
     },
   },
@@ -197,6 +236,7 @@ export class ConversationsService {
     private readonly notifications: NotificationsService,
     private readonly mentionParser: MentionParserService,
     private readonly processingQueue: MessageProcessingQueueService,
+    private readonly realtime: RealtimeService,
   ) { }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -533,16 +573,33 @@ export class ConversationsService {
     });
     if (!channel) throw new NotFoundException(`Channel ${dto.channelId} not found`);
 
-    // Resolve `to` from ContactChannel
-    const contactChannel = await this.prisma.contactChannel.findFirst({
-      where: { contactId: conv.contactId, channelId: dto.channelId },
-    });
-    const to = contactChannel?.identifier;
+    const { contactChannel, created: createdContactChannel } =
+      await this.resolveSendContactChannel({
+        workspaceId: dto.workspaceId,
+        channel,
+        contact: conv.contact,
+      });
+    const to = contactChannel?.identifier ?? this.resolveContactFieldIdentifier(channel.type, conv.contact, dto);
     if (!to) {
       throw new BadRequestException(
-        `No ContactChannel found for contact ${conv.contactId} on channel ${dto.channelId}. ` +
+        `No reachable identifier found for contact ${conv.contactId} on channel ${dto.channelId}. ` +
         `Cannot send — contact has never messaged on this channel.`,
       );
+    }
+
+    if (createdContactChannel) {
+      await this.recordChannelAdded(
+        dto.conversationId,
+        dto.workspaceId,
+        {
+          channelType: channel.type,
+          identifier: to,
+          channelName: channel.name,
+          channelId: channel.id,
+        },
+        dto.actorId,
+      );
+      await this.emitContactChannelsUpdated(dto.workspaceId, conv.contactId);
     }
 
     const variableContext = await this.buildMessageVariableContext(conv, dto.actorId);
@@ -1065,6 +1122,140 @@ export class ConversationsService {
     return conv;
   }
 
+  private formatMessageMetadata(metadata: unknown, rawPayload: unknown) {
+    const base = this.isRecord(metadata) ? { ...metadata } : metadata;
+    if (!this.isRecord(base)) return base;
+
+    const raw = this.isRecord(rawPayload) ? rawPayload : null;
+    const rawHtml = typeof raw?.['body-html'] === 'string' ? raw['body-html'] : '';
+    const rawPlain = typeof raw?.['body-plain'] === 'string' ? raw['body-plain'] : '';
+    const email = this.isRecord(base.email) ? { ...base.email } : {};
+    const currentHtml =
+      typeof email.htmlBody === 'string'
+        ? email.htmlBody
+        : typeof base.htmlBody === 'string'
+          ? base.htmlBody
+          : '';
+    let emailChanged = false;
+
+    if (
+      rawHtml &&
+      this.hasForwardedMarker(`${rawPlain}\n${rawHtml}\n${currentHtml}`) &&
+      rawHtml.length > currentHtml.length
+    ) {
+      email.htmlBody = rawHtml;
+      base.htmlBody = rawHtml;
+      emailChanged = true;
+    }
+
+    const rawEnvelopeSender =
+      this.getStringField(raw?.sender) ??
+      this.getStringField(raw?.['X-Envelope-From']);
+    if (rawEnvelopeSender && !email.envelopeSender) {
+      email.envelopeSender = rawEnvelopeSender;
+      emailChanged = true;
+    }
+
+    const rawFrom = raw ? this.getRawMailHeader(raw, 'From') : undefined;
+    const currentFrom =
+      this.getStringField(email.from) ??
+      this.getStringField(base.from) ??
+      '';
+
+    if (rawFrom && this.shouldUseHeaderFrom(currentFrom, rawFrom, rawEnvelopeSender)) {
+      email.from = rawFrom;
+      base.from = rawFrom;
+
+      const senderName = this.extractEmailName(rawFrom);
+      if (senderName) {
+        email.senderName = senderName;
+        base.senderName = senderName;
+      }
+
+      emailChanged = true;
+    }
+
+    if (emailChanged) {
+      base.email = email;
+    }
+
+    return base;
+  }
+
+  private getRawMailHeader(raw: Record<string, any>, name: string): string | undefined {
+    const direct =
+      this.getStringField(raw[name]) ??
+      this.getStringField(raw[name.toLowerCase()]);
+    if (direct) return direct;
+
+    const messageHeaders = raw['message-headers'];
+    if (!messageHeaders) return undefined;
+
+    let headers: unknown = messageHeaders;
+    if (typeof messageHeaders === 'string') {
+      try {
+        headers = JSON.parse(messageHeaders);
+      } catch {
+        return undefined;
+      }
+    }
+
+    if (!Array.isArray(headers)) return undefined;
+
+    const match = headers.find((header): header is [string, string] => (
+      Array.isArray(header) &&
+      typeof header[0] === 'string' &&
+      typeof header[1] === 'string' &&
+      header[0].toLowerCase() === name.toLowerCase()
+    ));
+
+    return match?.[1]?.trim() || undefined;
+  }
+
+  private shouldUseHeaderFrom(
+    currentFrom: string,
+    headerFrom: string,
+    envelopeSender?: string,
+  ): boolean {
+    const currentEmail = this.extractEmailAddress(currentFrom);
+    const headerEmail = this.extractEmailAddress(headerFrom);
+    const envelopeEmail = this.extractEmailAddress(envelopeSender ?? '');
+
+    if (!headerEmail || currentEmail === headerEmail) return false;
+    if (!currentEmail) return true;
+    if (envelopeEmail && currentEmail === envelopeEmail) return true;
+
+    return this.isGeneratedSesEnvelopeAddress(currentEmail);
+  }
+
+  private extractEmailAddress(value: string): string {
+    return (value.match(/<(.+?)>/)?.[1] ?? value).trim().toLowerCase();
+  }
+
+  private extractEmailName(value: string): string | undefined {
+    return value.match(/^(.+?)\s*</)?.[1]?.replace(/"/g, '').trim();
+  }
+
+  private isGeneratedSesEnvelopeAddress(email: string): boolean {
+    return /-[0-9]{6}@amazonses\.com$/i.test(email);
+  }
+
+  private getStringField(value: unknown): string | undefined {
+    return typeof value === 'string' && value.trim() ? value : undefined;
+  }
+
+  private hasForwardedMarker(value: string) {
+    return (
+      /-{2,}\s*Forwarded message\s*-{2,}/i.test(value) ||
+      /Begin forwarded message:/i.test(value) ||
+      /-{2,}\s*Original Message\s*-{2,}/i.test(value)
+    );
+  }
+
+  private isRecord(value: unknown): value is Record<string, any> {
+    return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+  }
+
   private formatMessage(m: any) {
     return {
       id: m.id,
@@ -1079,7 +1270,7 @@ export class ConversationsService {
       createdAt: m.createdAt.toISOString(),
       sentAt: m.sentAt?.toISOString() ?? null,
       replyToChannelMsgId: m.replyToChannelMsgId ?? null,
-      metadata: m.metadata,
+      metadata: this.formatMessageMetadata(m.metadata, m.rawPayload),
       author: m.author
         ? {
           id: m.author.id,
@@ -1297,6 +1488,219 @@ export class ConversationsService {
         };
       default:
         return { to, text: dto.text, attachments: dto.attachments ?? [] };
+    }
+  }
+
+  private async resolveSendContactChannel(opts: {
+    workspaceId: string;
+    channel: { id: string; type: string; name?: string | null };
+    contact: {
+      id: string;
+      firstName?: string | null;
+      lastName?: string | null;
+      email?: string | null;
+      phone?: string | null;
+    };
+  }): Promise<{ contactChannel: SelectedContactChannel | null; created: boolean }> {
+    const existing = await this.prisma.contactChannel.findFirst({
+      where: {
+        workspaceId: opts.workspaceId,
+        contactId: opts.contact.id,
+        channelId: opts.channel.id,
+      },
+      select: CONTACT_CHANNEL_SELECT,
+    });
+
+    const now = BigInt(Date.now());
+    if (existing?.identifier) {
+      const normalizedExistingIdentifier =
+        normalizeContactIdentifierForChannel(opts.channel.type, existing.identifier) ?? existing.identifier.trim();
+      if (normalizedExistingIdentifier && normalizedExistingIdentifier !== existing.identifier) {
+        const conflicting = await this.findConflictingContactChannel({
+          workspaceId: opts.workspaceId,
+          channelId: opts.channel.id,
+          identifier: normalizedExistingIdentifier,
+        });
+        if (conflicting && conflicting.contactId !== opts.contact.id) {
+          this.throwContactChannelConflict(opts.channel.type, normalizedExistingIdentifier, conflicting);
+        }
+      }
+
+      return {
+        contactChannel: await this.prisma.contactChannel.update({
+          where: { id: existing.id },
+          data: {
+            lastMessageTime: now,
+            ...(normalizedExistingIdentifier && normalizedExistingIdentifier !== existing.identifier
+              ? { identifier: normalizedExistingIdentifier }
+              : {}),
+          },
+          select: CONTACT_CHANNEL_SELECT,
+        }),
+        created: false,
+      };
+    }
+
+    const identifier = this.resolveContactFieldIdentifier(opts.channel.type, opts.contact);
+    if (!identifier) {
+      return { contactChannel: existing, created: false };
+    }
+
+    const conflicting = await this.findConflictingContactChannel({
+      workspaceId: opts.workspaceId,
+      channelId: opts.channel.id,
+      identifier,
+      legacyIdentifier: isPhoneIdentifierChannel(opts.channel.type) ? opts.contact.phone : null,
+    });
+    if (conflicting && conflicting.contactId !== opts.contact.id) {
+      this.throwContactChannelConflict(opts.channel.type, identifier, conflicting);
+    }
+    if (conflicting) {
+      return {
+        contactChannel: await this.prisma.contactChannel.update({
+          where: { id: conflicting.id },
+          data: { lastMessageTime: now },
+          select: CONTACT_CHANNEL_SELECT,
+        }),
+        created: false,
+      };
+    }
+
+    const displayName = [opts.contact.firstName, opts.contact.lastName]
+      .filter(Boolean)
+      .join(' ')
+      .trim();
+
+    return {
+      contactChannel: await this.prisma.contactChannel.create({
+        data: {
+          workspaceId: opts.workspaceId,
+          contactId: opts.contact.id,
+          channelId: opts.channel.id,
+          channelType: opts.channel.type,
+          identifier,
+          displayName: displayName || null,
+          lastMessageTime: now,
+        },
+        select: CONTACT_CHANNEL_SELECT,
+      }),
+      created: true,
+    };
+  }
+
+  private async emitContactChannelsUpdated(workspaceId: string, contactId: string) {
+    const contactChannels = await this.prisma.contactChannel.findMany({
+      where: { workspaceId, contactId },
+      orderBy: { createdAt: 'asc' },
+      select: CONTACT_CHANNEL_SELECT,
+    });
+
+    this.realtime.emitToWorkspace(workspaceId, 'contact:updated', {
+      id: contactId,
+      contactChannels,
+    });
+  }
+
+  private async findConflictingContactChannel(opts: {
+    workspaceId: string;
+    channelId: string;
+    identifier: string;
+    legacyIdentifier?: string | null;
+  }): Promise<ConflictingContactChannel | null> {
+    const identifiers = Array.from(
+      new Set(
+        [opts.identifier, opts.legacyIdentifier?.trim()]
+          .filter((value): value is string => Boolean(value)),
+      ),
+    );
+
+    return this.prisma.contactChannel.findFirst({
+      where: {
+        workspaceId: opts.workspaceId,
+        channelId: opts.channelId,
+        identifier: { in: identifiers },
+      },
+      select: CONFLICTING_CONTACT_CHANNEL_SELECT,
+    });
+  }
+
+  private throwContactChannelConflict(
+    channelType: string,
+    identifier: string,
+    conflicting: ConflictingContactChannel,
+  ): never {
+    const existingContactName = this.getContactDisplayName(conflicting.contact);
+    const existingContactLabel = this.getConflictContactLabel(conflicting.contact);
+    const channelLabel = this.getChannelLabel(channelType);
+    this.logger.warn(
+      `ContactChannel already exists on another contact for outbound identity. channelType=${channelType} identifier=${identifier} existingContactId=${conflicting.contactId}`,
+    );
+    throw new ConflictException({
+      code: 'CONTACT_CHANNEL_IDENTIFIER_CONFLICT',
+      message:
+        `This ${channelLabel} is already used by ${existingContactLabel}. ` +
+        `Click Merge in Contact details first, then send again. This keeps replies and message history together.`,
+      retryable: false,
+      channelType,
+      identifier,
+      identifierField: this.getInitiatableContactField(channelType),
+      channelLabel,
+      existingContactId: conflicting.contactId,
+      existingContactName,
+      existingContact: conflicting.contact,
+    });
+  }
+
+  private getConflictContactLabel(contact: {
+    firstName?: string | null;
+    lastName?: string | null;
+    company?: string | null;
+  } | null) {
+    const fullName = [contact?.firstName, contact?.lastName].filter(Boolean).join(' ').trim();
+    return fullName || contact?.company || 'another contact';
+  }
+
+  private resolveContactFieldIdentifier(
+    channelType: string | null | undefined,
+    contact: { email?: string | null; phone?: string | null } | null | undefined,
+    dto?: SendMessageDto,
+  ): string | null {
+    const field = this.getInitiatableContactField(channelType);
+    if (field === 'email') {
+      return normalizeContactIdentifierForChannel(
+        channelType,
+        this.getStringField(dto?.metadata?.email?.to) ?? contact?.email,
+      );
+    }
+
+    if (field === 'phone') {
+      return normalizeContactIdentifierForChannel(channelType, contact?.phone);
+    }
+
+    return null;
+  }
+
+  private getInitiatableContactField(channelType: string | null | undefined): InitiatableContactField | null {
+    const normalizedChannelType = String(channelType ?? '').toLowerCase();
+    return INITIATABLE_CONTACT_FIELD_BY_CHANNEL[
+      normalizedChannelType as keyof typeof INITIATABLE_CONTACT_FIELD_BY_CHANNEL
+    ] ?? null;
+  }
+
+  private getChannelLabel(channelType: string | null | undefined) {
+    const normalizedChannelType = String(channelType ?? '').toLowerCase();
+    switch (normalizedChannelType) {
+      case 'whatsapp':
+        return 'WhatsApp number';
+      case 'sms':
+        return 'SMS number';
+      case 'exotel_call':
+        return 'phone number';
+      case 'email':
+      case 'gmail':
+        return 'email address';
+      default:
+        return `${normalizedChannelType || 'channel'} identifier`;
     }
   }
 

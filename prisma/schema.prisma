@@ -504,6 +504,7 @@ model Workspace {
   mediaAssets            MediaAsset[]
   outboundQueue          OutboundQueue[]
   messageTemplates       MessageTemplate[]
+  snippets               Snippet[]
   metaPageTemplates      MetaPageTemplate[]
   conversationActivities ConversationActivity[]
   lifecycleStages        LifecycleStage[]
@@ -559,6 +560,26 @@ model WorkspaceAiPrompt {
 
   @@index([workspaceId, kind, sortOrder])
   @@unique([workspaceId, key])
+}
+
+model Snippet {
+  id          String   @id @default(uuid()) @db.Uuid
+  workspaceId String   @db.Uuid
+  shortcut    String
+  name        String
+  content     String
+  topic       String?
+  attachments Json?
+  createdById String?  @db.Uuid
+  updatedById String?  @db.Uuid
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, shortcut])
+  @@index([workspaceId, topic])
+  @@index([workspaceId, updatedAt])
 }
 
 model WorkspaceMember {

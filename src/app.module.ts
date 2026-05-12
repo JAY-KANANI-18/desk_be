@@ -34,6 +34,8 @@ import { AiAgentsModule } from './modules/ai-agents/ai-agents.module';
 import { MessageProcessingRuntimeModule } from './modules/outbound/message-processing-runtime.module';
 import { ImportExportModule } from './modules/import-export/import-export.module';
 import { AuthModule } from './modules/auth/auth.module';
+import { SnippetsModule } from './modules/snippets/snippets.module';
+import { PlatformAdminModule } from './modules/platform-admin/platform-admin.module';
 
 import { RouteGuard } from './common/auth/route.guard';
 
@@ -64,7 +66,9 @@ import { RouteGuard } from './common/auth/route.guard';
     AiAssistModule,
     AiAgentsModule,
     MessageProcessingRuntimeModule,
-    ImportExportModule
+    ImportExportModule,
+    SnippetsModule,
+    // PlatformAdminModule
 
 
   ],

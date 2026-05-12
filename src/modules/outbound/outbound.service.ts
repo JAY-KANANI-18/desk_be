@@ -16,6 +16,7 @@ import {
     isMissingOrStaticContactAvatarUrl,
     resolveContactAvatarUrl,
 } from '../../common/contacts/static-contact-avatar';
+import { normalizeContactIdentifierForChannel } from '../../common/utils/contact-identifier.util';
 
 export interface SendAttachmentDto {
     type: string;
@@ -2086,9 +2087,9 @@ export class OutboundService {
 
         let identifier: string | null = null;
         if (channel.type === 'whatsapp') {
-            identifier = contact.phone?.trim() || null;
+            identifier = normalizeContactIdentifierForChannel(channel.type, contact.phone);
         } else if (channel.type === 'email') {
-            identifier = contact.email?.trim() || null;
+            identifier = normalizeContactIdentifierForChannel(channel.type, contact.email);
         } else {
             return opts.contactChannel;
         }

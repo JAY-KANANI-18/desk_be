@@ -37,6 +37,10 @@ export class FilesController {
                 key = `files/attachments/messages/${body.entityId}/${Date.now()}-${body.fileName}`
                 break
 
+            case "snippet-attachment":
+                key = `files/attachments/snippets/${body.entityId}/${Date.now()}-${body.fileName}`
+                break
+
             case "import":
                 key = `files/imports/workspace/${body.entityId}/${Date.now()}-${body.fileName}`
                 break

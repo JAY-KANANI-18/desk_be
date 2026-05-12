@@ -5,7 +5,7 @@ import { aiAgentsDebug } from '../ai-agents-debug.logger';
 export type AiProviderName = 'openai' | 'cohere' | 'anthropic' | 'claude' | 'gemini' | 'mistral';
 
 const DEFAULT_AI_PROVIDER: AiProviderName = 'mistral';
-const DEFAULT_MISTRAL_MODEL = 'mistral-large-2512';
+const DEFAULT_MISTRAL_MODEL = 'mistral-small-latest';
 
 export interface AiGatewayMessage {
   role: 'system' | 'user' | 'assistant' | 'tool';

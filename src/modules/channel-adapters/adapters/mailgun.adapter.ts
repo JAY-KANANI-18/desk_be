@@ -48,12 +48,44 @@ export class MailgunProvider implements ChannelProvider {
   }
 
   private async parseBody(body: any): Promise<ParsedInbound | null> {
-    const from      = body.sender ?? body.from ?? '';
-    const to        = body.recipient ?? body.To ?? '';
-    const subject   = body.subject ?? body.Subject ?? '';
-    const textBody  = await this.extractReply(body['body-plain'] ?? body['stripped-text'] ?? '') ;
-    const htmlBody  = body['body-html'] ?? '';
-    const messageId = body['Message-Id'] ?? body['message-id'] ?? `mailgun-${Date.now()}`;
+    const envelopeSender = this.stringField(body.sender) ?? this.stringField(body['X-Envelope-From']);
+    const from =
+      this.stringField(body.From) ??
+      this.stringField(body.from) ??
+      this.getMessageHeader(body, 'From') ??
+      envelopeSender ??
+      '';
+    const to =
+      this.stringField(body.To) ??
+      this.stringField(body.to) ??
+      this.getMessageHeader(body, 'To') ??
+      this.stringField(body.recipient) ??
+      '';
+    const cc =
+      this.stringField(body.Cc) ??
+      this.stringField(body.cc) ??
+      this.getMessageHeader(body, 'Cc');
+    const subject =
+      this.stringField(body.Subject) ??
+      this.stringField(body.subject) ??
+      this.getMessageHeader(body, 'Subject') ??
+      '';
+    const plainBody = body['body-plain'] ?? body['stripped-text'] ?? '';
+    const textBody  = await this.extractReply(plainBody);
+    const htmlBody  = this.selectHtmlBody(body, plainBody);
+    const messageId =
+      this.stringField(body['Message-Id']) ??
+      this.stringField(body['message-id']) ??
+      this.getMessageHeader(body, 'Message-Id') ??
+      `mailgun-${Date.now()}`;
+    const inReplyTo =
+      this.stringField(body['In-Reply-To']) ??
+      this.stringField(body['in-reply-to']) ??
+      this.getMessageHeader(body, 'In-Reply-To');
+    const references =
+      this.stringField(body.References) ??
+      this.stringField(body.references) ??
+      this.getMessageHeader(body, 'References');
 
     const senderEmail = this.extractEmail(from);
     const senderName  = this.extractName(from);
@@ -89,10 +121,26 @@ export class MailgunProvider implements ChannelProvider {
       subject,
       attachments,
       metadata: {
-        from, to, htmlBody, senderName,
-        messageId:  body['Message-Id']  ?? body['message-id'],
-        inReplyTo:  body['In-Reply-To'] ?? body['in-reply-to'],
-        references: body['References']  ?? body['references'],
+        email: {
+          from,
+          to,
+          cc,
+          subject,
+          htmlBody,
+          senderName,
+          envelopeSender,
+          messageId,
+          inReplyTo,
+          references,
+        },
+        from,
+        to,
+        htmlBody,
+        senderName,
+        envelopeSender,
+        messageId,
+        inReplyTo,
+        references,
       },
       raw: body,
     };
@@ -164,12 +212,38 @@ export class MailgunProvider implements ChannelProvider {
   async extractReply(text: string): Promise<string> {
     if (!text) return '';
     const stopPatterns = [/^On .* wrote:/i, /^From:/i, /^Sent:/i, /^Subject:/i, /^--$/];
+    if (this.hasForwardedMarker(text)) {
+      return text.trim();
+    }
+
     const result: string[] = [];
     for (const line of text.split('\n')) {
       if (stopPatterns.some(p => p.test(line.trim()))) break;
       result.push(line);
     }
     return result.join('\n').trim();
+  }
+
+  private selectHtmlBody(body: any, plainBody: string): string {
+    const fullHtml = body['body-html'] ?? '';
+    const strippedHtml = body['stripped-html'] ?? '';
+
+    if (
+      fullHtml &&
+      this.hasForwardedMarker(`${plainBody}\n${fullHtml}\n${strippedHtml}`)
+    ) {
+      return fullHtml;
+    }
+
+    return strippedHtml || fullHtml;
+  }
+
+  private hasForwardedMarker(value: string): boolean {
+    return (
+      /-{2,}\s*Forwarded message\s*-{2,}/i.test(value) ||
+      /Begin forwarded message:/i.test(value) ||
+      /-{2,}\s*Original Message\s*-{2,}/i.test(value)
+    );
   }
 
   private parseFileField(field: any): ParsedAttachment | null {
@@ -202,12 +276,18 @@ export class MailgunProvider implements ChannelProvider {
   async sendMessage(channel: any, payload: any): Promise<{ externalId: string }> {
     const config = channel.config as any;
 
-    const transporter = nodemailer.createTransport({
-      host:   config.smtpserver,
-      port:   config.smtpport,
-      secure: config.encryption === 'SSL/TLS',
-      auth: { user: config.userId || config.emailaddress, pass: config.password },
-    });
+   const transporter = nodemailer.createTransport({
+  host: config.smtpserver,
+  port: Number(config.smtpport),
+  secure: Number(config.smtpport) === 465, // ONLY true for 465
+  auth: {
+    user: config.userId || config.emailaddress,
+    pass: config.password,
+  },
+  tls: {
+    rejectUnauthorized: false,
+  },
+});
 
     const attachments = (payload.attachments ?? []).map((att: any) => ({
       filename:    att.filename,
@@ -240,5 +320,34 @@ export class MailgunProvider implements ChannelProvider {
   private parseCidMap(raw: string | undefined): Record<string, string> {
     if (!raw) return {};
     try { return JSON.parse(raw); } catch { return {}; }
+  }
+
+  private stringField(value: unknown): string | undefined {
+    return typeof value === 'string' && value.trim() ? value : undefined;
+  }
+
+  private getMessageHeader(body: any, name: string): string | undefined {
+    const raw = body?.['message-headers'];
+    if (!raw) return undefined;
+
+    let headers: unknown = raw;
+    if (typeof raw === 'string') {
+      try {
+        headers = JSON.parse(raw);
+      } catch {
+        return undefined;
+      }
+    }
+
+    if (!Array.isArray(headers)) return undefined;
+
+    const match = headers.find((header): header is [string, string] => (
+      Array.isArray(header) &&
+      typeof header[0] === 'string' &&
+      typeof header[1] === 'string' &&
+      header[0].toLowerCase() === name.toLowerCase()
+    ));
+
+    return match?.[1]?.trim() || undefined;
   }
 }

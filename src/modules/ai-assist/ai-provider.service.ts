@@ -72,7 +72,7 @@ export interface WorkspaceAiRuntimeSettings {
 }
 
 const DEFAULT_AI_PROVIDER = 'mistral';
-const DEFAULT_MISTRAL_MODEL = 'mistral-large-2512';
+const DEFAULT_MISTRAL_MODEL = 'mistral-small-latest';
 
 @Injectable()
 export class AiProviderService {

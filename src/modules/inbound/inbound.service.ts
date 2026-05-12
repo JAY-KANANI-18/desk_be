@@ -13,6 +13,10 @@ import {
   isMissingOrStaticContactAvatarUrl,
   resolveContactAvatarUrl,
 } from '../../common/contacts/static-contact-avatar';
+import {
+  isPhoneIdentifierChannel,
+  normalizeContactIdentifierForChannel,
+} from '../../common/utils/contact-identifier.util';
 
 // ─── DTO ─────────────────────────────────────────────────────────────────────
 // This is what EVERY webhook controller passes to inbound.process()
@@ -64,11 +68,13 @@ export class InboundService {
   async process(dto: InboundDto): Promise<void> {
     const {
       channelId, workspaceId, channelType,
-      contactIdentifier, direction,
+      contactIdentifier: rawContactIdentifier, direction,
       messageType, text, subject,
       attachments = [], replyToChannelMsgId, channelMsgId,
       metadata, raw, profile, timestamp,
     } = dto;
+    const contactIdentifier =
+      normalizeContactIdentifierForChannel(channelType, rawContactIdentifier) ?? rawContactIdentifier.trim();
 
     // ── 1. Upsert Contact + ContactChannel ─────────────────────────────────
     const { contact, contactChannel, openedConversation } = await this.upsertContact({
@@ -187,14 +193,28 @@ export class InboundService {
     profile?: { name?: string; avatarUrl?: string } | null;
   }) {
     const { workspaceId, channelId, channelType, contactIdentifier, profile } = opts;
+    const legacyPhoneIdentifier =
+      isPhoneIdentifierChannel(channelType) && contactIdentifier
+        ? `+${contactIdentifier}`
+        : null;
+    const identifierCandidates = [contactIdentifier, legacyPhoneIdentifier]
+      .filter((value): value is string => Boolean(value));
 
     // Find existing ContactChannel
     let contactChannel = await this.prisma.contactChannel.findFirst({
-      where: { workspaceId, channelId, identifier: contactIdentifier },
+      where: { workspaceId, channelId, identifier: { in: identifierCandidates } },
       include: { contact: true },
     });
 
     if (contactChannel) {
+      if (contactChannel.identifier !== contactIdentifier) {
+        contactChannel = await this.prisma.contactChannel.update({
+          where: { id: contactChannel.id },
+          data: { identifier: contactIdentifier },
+          include: { contact: true },
+        });
+      }
+
       // Update profile if we got fresh data
       if (profile?.name || profile?.avatarUrl) {
         await this.prisma.contactChannel.update({
@@ -216,7 +236,7 @@ export class InboundService {
       }
 
       // Keep phone/email backfilled for channels where identifier is the real customer phone/email.
-      if (channelType === 'sms' || channelType === 'exotel_call' || channelType === 'whatsapp') {
+      if (isPhoneIdentifierChannel(channelType)) {
         if (!contactChannel.contact.phone) {
           await this.prisma.contact.update({
             where: { id: contactChannel.contact.id },
@@ -262,7 +282,7 @@ export class InboundService {
         firstName: nameParts.firstName,
         lastName: nameParts.lastName,
         email: channelType === 'email' ? contactIdentifier : undefined,
-        phone: ['whatsapp', 'sms', 'exotel_call'].includes(channelType) ? contactIdentifier : undefined,
+        phone: isPhoneIdentifierChannel(channelType) ? contactIdentifier : undefined,
         avatarUrl: resolveContactAvatarUrl(profile?.avatarUrl),
         status: 'open',   // ← new contact starts as open
       },
@@ -293,15 +313,13 @@ export class InboundService {
     contactId: string;
     subject?: string;
   }) {
-    const { workspaceId, channelId, channelType, contactId, subject } = opts;
+    const { workspaceId, contactId, subject } = opts;
 
-    // For email, thread by subject. For others, find latest open conversation.
+    // AxoDesk keeps one conversation per contact; email subject is message context, not identity.
     const existing = await this.prisma.conversation.findFirst({
       where: {
         workspaceId,
         contactId,
-        // Email: same subject = same thread
-        ...(subject ? { subject } : {}),
       },
       orderBy: { updatedAt: 'desc' },
     });
@@ -309,7 +327,10 @@ export class InboundService {
     if (existing) {
       const conversation = await this.prisma.conversation.update({
         where: { id: existing.id },
-        data: { updatedAt: new Date() },
+        data: {
+          updatedAt: new Date(),
+          ...(!existing.subject && subject ? { subject } : {}),
+        },
       });
       return { conversation, created: false };
     }
