@@ -1,6 +1,6 @@
 import { Injectable, BadRequestException, ConflictException, NotFoundException } from '@nestjs/common';
 import { SetupWorkspaceDto } from './dto/add-workspace.dto';
-import { User } from '@prisma/client';
+import { Prisma, User } from '@prisma/client';
 import slugify from 'slugify';
 import { PrismaService } from '../../prisma/prisma.service';
 import { InviteUserDto } from './workspace.controller';
@@ -373,10 +373,35 @@ export class WorkspaceService {
         };
     }
 
-    async updateWorkspace(id: string, dto: SetupWorkspaceDto) {
+    async updateWorkspace(id: string, dto: Partial<SetupWorkspaceDto> & Record<string, unknown>) {
+        const data: Prisma.WorkspaceUpdateInput = {};
+        const name = typeof dto.name === 'string' ? dto.name.trim() : undefined;
+        const timeZone =
+            typeof dto.timeZone === 'string'
+                ? dto.timeZone
+                : typeof dto.timezone === 'string'
+                    ? dto.timezone
+                    : undefined;
+
+        if (name) data.name = name;
+        if (timeZone) data.timeZone = timeZone;
+        if (typeof dto.language === 'string') data.language = dto.language;
+        if (typeof dto.dateFormat === 'string') data.dateFormat = dto.dateFormat;
+        if (typeof dto.timeFormat === 'string') data.timeFormat = dto.timeFormat;
+        if (typeof dto.notificationInactivityTimeoutSec === 'number') {
+            data.notificationInactivityTimeoutSec = dto.notificationInactivityTimeoutSec;
+        }
+        if (typeof dto.lifecycleEnabled === 'boolean') {
+            data.lifecycleEnabled = dto.lifecycleEnabled;
+        }
+
+        if (Object.keys(data).length === 0) {
+            throw new BadRequestException('No valid workspace fields to update');
+        }
+
         const workspace = await this.prisma.workspace.update({
             where: { id },
-            data: dto,
+            data,
         });
 
         return workspace;

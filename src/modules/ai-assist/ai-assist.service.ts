@@ -78,22 +78,43 @@ export class AiAssistService {
 
   async updateWorkspaceSettings(workspaceId: string, payload: any) {
     await this.ensureWorkspaceAiSetup(workspaceId);
-    await this.prisma.$executeRaw`
-      UPDATE "WorkspaceAiSettings"
-      SET
-        "enabled" = ${payload.enabled},
-        "provider" = ${payload.provider},
-        "model" = ${payload.model},
-        "autoSuggest" = ${payload.autoSuggest},
-        "smartReply" = ${payload.smartReply},
-        "summarize" = ${payload.summarize},
-        "sentiment" = ${payload.sentiment},
-        "translate" = ${payload.translate},
-        "defaultLanguage" = ${payload.defaultLanguage},
-        "updatedAt" = NOW()
-      WHERE "workspaceId" = ${workspaceId}
-    `;
-    return this.getWorkspaceSettings(workspaceId);
+    const current = await this.findSettings(workspaceId);
+    if (!current) {
+      throw new NotFoundException('AI settings not found');
+    }
+
+    const next = {
+      enabled: typeof payload.enabled === 'boolean' ? payload.enabled : current.enabled,
+      provider:
+        typeof payload.provider === 'string' && payload.provider.trim()
+          ? payload.provider.trim()
+          : current.provider,
+      model:
+        typeof payload.model === 'string' && payload.model.trim()
+          ? payload.model.trim()
+          : current.model,
+      autoSuggest:
+        typeof payload.autoSuggest === 'boolean'
+          ? payload.autoSuggest
+          : current.autoSuggest,
+      smartReply:
+        typeof payload.smartReply === 'boolean' ? payload.smartReply : current.smartReply,
+      summarize:
+        typeof payload.summarize === 'boolean' ? payload.summarize : current.summarize,
+      sentiment:
+        typeof payload.sentiment === 'boolean' ? payload.sentiment : current.sentiment,
+      translate:
+        typeof payload.translate === 'boolean' ? payload.translate : current.translate,
+      defaultLanguage:
+        typeof payload.defaultLanguage === 'string' && payload.defaultLanguage.trim()
+          ? payload.defaultLanguage.trim()
+          : current.defaultLanguage,
+    };
+
+    return this.prisma.workspaceAiSettings.update({
+      where: { workspaceId },
+      data: next,
+    });
   }
 
   async listWorkspacePrompts(workspaceId: string) {
@@ -117,45 +138,36 @@ export class AiAssistService {
       throw new NotFoundException('AI assist prompt not found');
     }
 
-    await this.prisma.$executeRaw`
-      UPDATE "WorkspaceAiPrompt"
-      SET
-        "name" = ${payload.name ?? prompt.name},
-        "description" = ${payload.description ?? prompt.description ?? null},
-        "prompt" = ${payload.prompt ?? prompt.prompt},
-        "isEnabled" = ${payload.isEnabled ?? prompt.isEnabled},
-        "updatedAt" = NOW()
-      WHERE "id" = ${prompt.id}::uuid
-    `;
-
-    return this.ensurePrompt(workspaceId, prompt.id);
+    return this.prisma.workspaceAiPrompt.update({
+      where: { id: prompt.id },
+      data: {
+        name: payload.name ?? prompt.name,
+        description: payload.description ?? prompt.description ?? null,
+        prompt: payload.prompt ?? prompt.prompt,
+        isEnabled: payload.isEnabled ?? prompt.isEnabled,
+      },
+    });
   }
 
   async createWorkspacePrompt(workspaceId: string, payload: any) {
     await this.ensureWorkspaceAiSetup(workspaceId);
     const kind = 'rewrite';
-    const id = crypto.randomUUID();
-    await this.prisma.$executeRaw`
-      INSERT INTO "WorkspaceAiPrompt"
-      ("id","workspaceId","key","name","description","kind","prompt","options","isDefault","isEnabled","isActive","sortOrder","createdAt","updatedAt")
-      VALUES (
-        ${id}::uuid,
-        ${workspaceId}::uuid,
-        ${payload.key ?? null},
-        ${payload.name},
-        ${payload.description ?? null},
-        ${kind},
-        ${payload.prompt},
-        ${payload.options ? JSON.stringify(payload.options) : null}::jsonb,
-        false,
-        ${payload.isEnabled ?? true},
-        false,
-        ${payload.sortOrder ?? 100},
-        NOW(),
-        NOW()
-      )
-    `;
-    return this.ensurePrompt(workspaceId, id);
+
+    return this.prisma.workspaceAiPrompt.create({
+      data: {
+        workspaceId,
+        key: payload.key ?? null,
+        name: payload.name,
+        description: payload.description ?? null,
+        kind,
+        prompt: payload.prompt,
+        options: this.promptOptionsForWrite(payload.options),
+        isDefault: false,
+        isEnabled: payload.isEnabled ?? true,
+        isActive: false,
+        sortOrder: payload.sortOrder ?? 100,
+      },
+    });
   }
 
   async updateWorkspacePrompt(workspaceId: string, promptId: string, payload: any) {
@@ -164,32 +176,33 @@ export class AiAssistService {
       throw new BadRequestException('Only rewrite prompts can be managed from AI prompts');
     }
     if (prompt.isDefault) {
-      await this.prisma.$executeRaw`
-        UPDATE "WorkspaceAiPrompt"
-        SET
-          "isEnabled" = ${payload.isEnabled ?? prompt.isEnabled},
-          "updatedAt" = NOW()
-        WHERE "id" = ${promptId}::uuid
-      `;
-      return this.ensurePrompt(workspaceId, promptId);
+      return this.prisma.workspaceAiPrompt.update({
+        where: { id: promptId },
+        data: {
+          isEnabled: payload.isEnabled ?? prompt.isEnabled,
+        },
+      });
     }
 
-    await this.prisma.$executeRaw`
-      UPDATE "WorkspaceAiPrompt"
-      SET
-        "key" = ${payload.key ?? prompt.key ?? null},
-        "name" = ${payload.name ?? prompt.name},
-        "description" = ${payload.description ?? null},
-        "kind" = 'rewrite',
-        "prompt" = ${payload.prompt ?? prompt.prompt},
-        "options" = ${payload.options ? JSON.stringify(payload.options) : null}::jsonb,
-        "isEnabled" = ${payload.isEnabled ?? prompt.isEnabled},
-        "isActive" = false,
-        "sortOrder" = ${payload.sortOrder ?? prompt.sortOrder ?? 100},
-        "updatedAt" = NOW()
-      WHERE "id" = ${promptId}::uuid
-    `;
-    return this.ensurePrompt(workspaceId, promptId);
+    return this.prisma.workspaceAiPrompt.update({
+      where: { id: promptId },
+      data: {
+        key: payload.key ?? prompt.key ?? null,
+        name: payload.name ?? prompt.name,
+        description:
+          payload.description !== undefined
+            ? payload.description
+            : prompt.description ?? null,
+        kind: 'rewrite',
+        prompt: payload.prompt ?? prompt.prompt,
+        options: this.promptOptionsForWrite(
+          payload.options !== undefined ? payload.options : prompt.options,
+        ),
+        isEnabled: payload.isEnabled ?? prompt.isEnabled,
+        isActive: false,
+        sortOrder: payload.sortOrder ?? prompt.sortOrder ?? 100,
+      },
+    });
   }
 
   async deleteWorkspacePrompt(workspaceId: string, promptId: string) {
@@ -200,7 +213,7 @@ export class AiAssistService {
     if (prompt.isDefault) {
       throw new BadRequestException('Default AI prompts cannot be deleted');
     }
-    await this.prisma.$executeRaw`DELETE FROM "WorkspaceAiPrompt" WHERE "id" = ${promptId}::uuid`;
+    await this.prisma.workspaceAiPrompt.delete({ where: { id: promptId } });
     return { deleted: true };
   }
 
@@ -210,16 +223,14 @@ export class AiAssistService {
       throw new BadRequestException('Only rewrite prompts can be activated from AI prompts');
     }
     await this.prisma.$transaction([
-      this.prisma.$executeRaw`
-        UPDATE "WorkspaceAiPrompt"
-        SET "isActive" = false, "updatedAt" = NOW()
-        WHERE "workspaceId" = ${workspaceId}::uuid AND "kind" = ${prompt.kind}
-      `,
-      this.prisma.$executeRaw`
-        UPDATE "WorkspaceAiPrompt"
-        SET "isActive" = true, "isEnabled" = true, "updatedAt" = NOW()
-        WHERE "id" = ${promptId}::uuid
-      `,
+      this.prisma.workspaceAiPrompt.updateMany({
+        where: { workspaceId, kind: prompt.kind },
+        data: { isActive: false },
+      }),
+      this.prisma.workspaceAiPrompt.update({
+        where: { id: promptId },
+        data: { isActive: true, isEnabled: true },
+      }),
     ]);
     return { activated: true };
   }
@@ -427,76 +438,63 @@ export class AiAssistService {
     const provider = process.env.AI_PROVIDER || 'mistral';
     const model = this.defaultWorkspaceAiModelFor(provider);
 
-    await this.prisma.$executeRaw`
-      INSERT INTO "WorkspaceAiSettings"
-      ("id","workspaceId","enabled","provider","model","autoSuggest","smartReply","summarize","sentiment","translate","defaultLanguage","createdAt","updatedAt")
-      VALUES (
-        ${crypto.randomUUID()}::uuid,
-        ${workspaceId}::uuid,
-        true,
-        ${provider},
-        ${model},
-        false,
-        true,
-        true,
-        false,
-        true,
-        'auto',
-        NOW(),
-        NOW()
-      )
-      ON CONFLICT ("workspaceId") DO NOTHING
-    `;
+    await this.prisma.workspaceAiSettings.upsert({
+      where: { workspaceId },
+      create: {
+        workspaceId,
+        enabled: true,
+        provider,
+        model,
+        autoSuggest: false,
+        smartReply: true,
+        summarize: true,
+        sentiment: false,
+        translate: true,
+        defaultLanguage: 'auto',
+      },
+      update: {},
+    });
 
-    const [{ count }] = await this.prisma.$queryRaw<Array<{ count: bigint }>>`
-      SELECT COUNT(*)::bigint AS count FROM "WorkspaceAiPrompt" WHERE "workspaceId" = ${workspaceId}::uuid
-    `;
-    if (Number(count) > 0) return;
+    const count = await this.prisma.workspaceAiPrompt.count({
+      where: { workspaceId },
+    });
+    if (count > 0) return;
 
     for (const prompt of this.defaultPrompts(workspaceId)) {
-      await this.prisma.$executeRaw`
-        INSERT INTO "WorkspaceAiPrompt"
-        ("id","workspaceId","key","name","description","kind","prompt","options","isDefault","isEnabled","isActive","sortOrder","createdAt","updatedAt")
-        VALUES (
-          ${crypto.randomUUID()}::uuid,
-          ${prompt.workspaceId}::uuid,
-          ${prompt.key},
-          ${prompt.name},
-          ${prompt.description},
-          ${prompt.kind},
-          ${prompt.prompt},
-          ${prompt.options ? JSON.stringify(prompt.options) : null}::jsonb,
-          ${prompt.isDefault},
-          ${prompt.isEnabled},
-          ${prompt.isActive},
-          ${prompt.sortOrder},
-          NOW(),
-          NOW()
-        )
-      `;
+      await this.prisma.workspaceAiPrompt.create({
+        data: {
+          workspaceId: prompt.workspaceId,
+          key: prompt.key,
+          name: prompt.name,
+          description: prompt.description,
+          kind: prompt.kind,
+          prompt: prompt.prompt,
+          options: this.promptOptionsForWrite(prompt.options),
+          isDefault: prompt.isDefault,
+          isEnabled: prompt.isEnabled,
+          isActive: prompt.isActive,
+          sortOrder: prompt.sortOrder,
+        },
+      });
     }
   }
 
   private async getActivePrompt(workspaceId: string, kind: string) {
-    const rows = await this.prisma.$queryRaw<any[]>`
-      SELECT * FROM "WorkspaceAiPrompt"
-      WHERE "workspaceId" = ${workspaceId}::uuid
-        AND "kind" = ${kind}
-        AND "isEnabled" = true
-        AND "isActive" = true
-      ORDER BY "sortOrder" ASC, "createdAt" ASC
-      LIMIT 1
-    `;
-    return rows[0] ? this.normalizePromptRow(rows[0]) : null;
+    return this.prisma.workspaceAiPrompt.findFirst({
+      where: {
+        workspaceId,
+        kind,
+        isEnabled: true,
+        isActive: true,
+      },
+      orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
+    });
   }
 
   private async ensurePrompt(workspaceId: string, promptId: string) {
-    const rows = await this.prisma.$queryRaw<any[]>`
-      SELECT * FROM "WorkspaceAiPrompt"
-      WHERE "id" = ${promptId}::uuid AND "workspaceId" = ${workspaceId}::uuid
-      LIMIT 1
-    `;
-    const prompt = rows[0] ? this.normalizePromptRow(rows[0]) : null;
+    const prompt = await this.prisma.workspaceAiPrompt.findFirst({
+      where: { id: promptId, workspaceId },
+    });
     if (!prompt) {
       throw new NotFoundException('AI prompt not found');
     }
@@ -521,13 +519,6 @@ export class AiAssistService {
     }
   }
 
-  private normalizePromptKind(kind?: string) {
-    if (kind === 'assist' || kind === 'summarize') {
-      return kind;
-    }
-    return 'rewrite';
-  }
-
   private defaultWorkspaceAiModelFor(provider: string) {
     console.log(` Resolving default model for provider2: ${provider}`);
     
@@ -548,27 +539,29 @@ export class AiAssistService {
   }
 
   private async findSettings(workspaceId: string) {
-    const rows = await this.prisma.$queryRaw<any[]>`
-      SELECT * FROM "WorkspaceAiSettings" WHERE "workspaceId" = ${workspaceId}::uuid LIMIT 1
-    `;
-    return rows[0] || null;
+    return this.prisma.workspaceAiSettings.findUnique({
+      where: { workspaceId },
+    });
   }
 
   private async listPrompts(workspaceId: string, kind?: string) {
-    const rows = await this.prisma.$queryRaw<any[]>`
-      SELECT * FROM "WorkspaceAiPrompt"
-      WHERE "workspaceId" = ${workspaceId}::uuid
-        ${kind ? Prisma.sql`AND "kind" = ${kind}` : Prisma.empty}
-      ORDER BY "kind" ASC, "sortOrder" ASC, "createdAt" ASC
-    `;
-    return rows.map((row) => this.normalizePromptRow(row));
+    return this.prisma.workspaceAiPrompt.findMany({
+      where: {
+        workspaceId,
+        ...(kind ? { kind } : {}),
+      },
+      orderBy: [{ kind: 'asc' }, { sortOrder: 'asc' }, { createdAt: 'asc' }],
+    });
   }
 
-  private normalizePromptRow(row: any) {
-    return {
-      ...row,
-      options: row.options ?? null,
-    };
+  private promptOptionsForWrite(options: unknown) {
+    if (options === undefined) {
+      return undefined;
+    }
+    if (options === null) {
+      return Prisma.DbNull;
+    }
+    return options as Prisma.InputJsonValue;
   }
 
   private defaultPrompts(workspaceId: string) {

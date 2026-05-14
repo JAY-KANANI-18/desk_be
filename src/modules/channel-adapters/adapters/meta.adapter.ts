@@ -138,11 +138,13 @@ export class MetaProvider implements ChannelProvider {
           },
         }
       : undefined;
+    const direction: ParsedInbound['direction'] = isSentByPage ? 'outgoing' : 'incoming';
 
     const base = {
       externalId: msg.mid,
       contactIdentifier: senderId,
-      direction: 'incoming' as const,
+      recipientIdentifier: recipientId,
+      direction,
       replyToChannelMsgId: msg.reply_to?.mid,
       timestamp: event.timestamp,
       raw: event,

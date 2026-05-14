@@ -158,6 +158,12 @@ export class InstagramController {
       console.log({ parsed });
 
       if (parsed.contactIdentifier === channel.identifier) {
+        if (!parsed.recipientIdentifier || !parsed.externalId) {
+          this.logger.warn(
+            `Instagram outbound echo ignored: missing recipient/message id channel=${channel.id} sender=${parsed.contactIdentifier ?? 'missing'} recipient=${parsed.recipientIdentifier ?? 'missing'} externalId=${parsed.externalId ?? 'missing'}`,
+          );
+          continue;
+        }
         await this.processingQueue.enqueueExternalOutbound({
           workspaceId: channel.workspaceId,
 

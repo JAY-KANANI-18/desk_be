@@ -3,6 +3,7 @@ import {
   Get,
   Post,
   Patch,
+  Put,
   Delete,
   Body,
   Param,
@@ -10,6 +11,7 @@ import {
   HttpCode,
   HttpStatus,
   Req,
+  Query,
   UseGuards,
 } from '@nestjs/common';
 import { LifecycleService } from './lifecycle.service';
@@ -25,8 +27,20 @@ export class LifecycleController {
   /** GET /workspaces/:workspaceId/lifecycle */
   @Get()
   @WorkspaceRoute()
-  findAll(@Req() req) {
-    return this.lifecycleService.findAll(req.workspaceId);
+  findAll(
+    @Req() req,
+    @Query('includeDisabled') includeDisabled?: string,
+  ) {
+    return this.lifecycleService.findAll(req.workspaceId, {
+      includeDisabled: includeDisabled === 'true',
+    });
+  }
+
+  /** GET /workspaces/:workspaceId/lifecycle/visibility */
+  @Get('visibility')
+  @WorkspaceRoute()
+  getVisibility(@Req() req) {
+    return this.lifecycleService.getVisibility(req.workspaceId);
   }
 
   /** GET /workspaces/:workspaceId/lifecycle/:id */
@@ -62,6 +76,17 @@ export class LifecycleController {
     console.log({dto});
     
     return this.lifecycleService.reorder(dto, req.workspaceId);
+  }
+
+  /** PUT /workspaces/:workspaceId/lifecycle/visibility */
+  @Put('visibility')
+    @WorkspaceRoute(WorkspacePermission.SETTINGS_MANAGE)
+
+  putVisibility(
+    @Req() req,
+    @Body() dto: ToggleVisibilityDto,
+  ) {
+    return this.lifecycleService.toggleVisibility(req.workspaceId, dto.enabled);
   }
 
   /** PATCH /workspaces/:workspaceId/lifecycle/visibility */

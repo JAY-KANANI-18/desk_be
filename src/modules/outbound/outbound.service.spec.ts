@@ -23,6 +23,29 @@ type OutboundPayloadTestApi = {
   ): Promise<any>;
 };
 
+type OutboundVariableTestApi = {
+  buildTemplateContext(
+    contact: {
+      firstName?: string | null;
+      lastName?: string | null;
+      email?: string | null;
+      phone?: string | null;
+    },
+    author: { firstName?: string | null; lastName?: string | null } | null,
+    lastMessage: string | null,
+  ): Record<string, string>;
+  renderVariables(
+    value: string | null | undefined,
+    context: Record<string, string>,
+    fieldName: string,
+  ): string | undefined;
+  renderTemplateVariables(
+    value: Record<string, string>,
+    context: Record<string, string>,
+    fieldName: string,
+  ): Record<string, string>;
+};
+
 function createService() {
   return new OutboundService(
     {} as PrismaService,
@@ -155,5 +178,84 @@ describe('OutboundService quick reply payloads', () => {
       'what is product?\n\nOptions:\n1. Product 1\n2. Product 2\n3. Product 3',
     );
     expect(payload.quickReplies).toEqual(productReplies);
+  });
+});
+
+describe('OutboundService variable rendering', () => {
+  it('renders broadcast contact variables in message text', () => {
+    const service = createService() as unknown as OutboundVariableTestApi;
+    const context = service.buildTemplateContext(
+      {
+        firstName: 'Jay',
+        lastName: 'Kanani',
+        email: 'jay@example.com',
+        phone: '916353969157',
+      },
+      { firstName: 'Axo', lastName: 'Agent' },
+      'Last inbound note',
+    );
+
+    expect(
+      service.renderVariables(
+        'Hi {{contact_first_name}}, reply at {{contact_email}}. - {{agent_name}}',
+        context,
+        'message text',
+      ),
+    ).toBe('Hi Jay, reply at jay@example.com. - Axo Agent');
+  });
+
+  it('renders broadcast contact variables inside WhatsApp template values', () => {
+    const service = createService() as unknown as OutboundVariableTestApi;
+    const context = service.buildTemplateContext(
+      {
+        firstName: 'Jay',
+        lastName: 'Kanani',
+        email: 'jay@example.com',
+        phone: '916353969157',
+      },
+      null,
+      null,
+    );
+
+    expect(
+      service.renderTemplateVariables(
+        {
+          '1': '{{contact_name}}',
+          '2': '{{contact_phone}}',
+        },
+        context,
+        'template variable',
+      ),
+    ).toEqual({
+      '1': 'Jay Kanani',
+      '2': '916353969157',
+    });
+  });
+});
+
+describe('OutboundService external outbound guards', () => {
+  it('ignores Meta echoes without a recipient identifier', async () => {
+    const prisma = {
+      message: {
+        findFirst: jest.fn(),
+      },
+    };
+    const service = new OutboundService(
+      prisma as unknown as PrismaService,
+      {} as ChannelAdaptersRegistry,
+      { emit: jest.fn() } as unknown as EventEmitter2,
+      { processAttachments: jest.fn() } as unknown as MediaService,
+    );
+
+    await service.processExternalOutbound({
+      workspaceId: 'workspace-1',
+      channelId: 'channel-1',
+      channelType: 'instagram',
+      channelMsgId: 'mid.echo.1',
+      recipientIdentifier: undefined as unknown as string,
+      text: 'Hello',
+    });
+
+    expect(prisma.message.findFirst).not.toHaveBeenCalled();
   });
 });

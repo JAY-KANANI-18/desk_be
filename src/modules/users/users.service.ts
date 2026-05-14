@@ -18,6 +18,23 @@ export class UsersService {
 
     constructor(private prisma: PrismaService) { }
 
+    private isAiAgentsEnabled() {
+        const value = String(
+            process.env.AI_AGENTS_ENABLED ??
+                process.env.FEATURE_AI_AGENTS_ENABLED ??
+                'true',
+        ).toLowerCase();
+
+        return !['0', 'false', 'off', 'disabled', 'no'].includes(value);
+    }
+
+    private workspaceFeatures(workspace: { lifecycleEnabled?: boolean | null }) {
+        return {
+            aiAgentsEnabled: this.isAiAgentsEnabled(),
+            lifecycleEnabled: Boolean(workspace.lifecycleEnabled),
+        };
+    }
+
     async getMe(userId: string) {
         const user = await this.prisma.user.findUnique({
             where: { id: userId },
@@ -41,6 +58,7 @@ export class UsersService {
                                     select: {
                                         id: true,
                                         name: true,
+                                        lifecycleEnabled: true,
 
                                         members: {
                                             where: {
@@ -74,6 +92,7 @@ export class UsersService {
                     id: ws.id,
                     name: ws.name,
                     role: ws.members[0].role,
+                    features: this.workspaceFeatures(ws),
                 })),
         }));
 
@@ -120,6 +139,10 @@ async getMyOrganizations(userId: string) {
         return memberships.map((membership) => ({
             role: membership.role,
             ...membership.organization,
+            workspaces: membership.organization.workspaces.map((workspace) => ({
+                ...workspace,
+                features: this.workspaceFeatures(workspace),
+            })),
         }));
 
     }
@@ -139,6 +162,7 @@ async getMyOrganizations(userId: string) {
         return memberships.map((membership) => ({
             role: membership.role,
             ...membership.workspace,
+            features: this.workspaceFeatures(membership.workspace),
         }));
 
     }

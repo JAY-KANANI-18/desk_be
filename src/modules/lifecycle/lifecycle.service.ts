@@ -13,7 +13,25 @@ export class LifecycleService {
 
   // ─── Read ──────────────────────────────────────────────────────────────────
 
-  async findAll(workspaceId: string): Promise<CreateLifecycleStageDto[]> {
+  async findAll(
+    workspaceId: string,
+    options: { includeDisabled?: boolean } = {},
+  ): Promise<CreateLifecycleStageDto[]> {
+    if (!options.includeDisabled) {
+      const workspace = await this.prisma.workspace.findUnique({
+        where: { id: workspaceId },
+        select: { lifecycleEnabled: true },
+      });
+
+      if (!workspace) {
+        throw new NotFoundException('Workspace not found');
+      }
+
+      if (!workspace.lifecycleEnabled) {
+        return [];
+      }
+    }
+
     return this.prisma.lifecycleStage.findMany({
       where: { workspaceId },
       orderBy: [{ type: 'asc' }, { order: 'asc' }],
@@ -144,12 +162,26 @@ export class LifecycleService {
 
   // ─── Toggle visibility ─────────────────────────────────────────────────────
 
+  async getVisibility(workspaceId: string): Promise<{ enabled: boolean }> {
+    const workspace = await this.prisma.workspace.findUnique({
+      where: { id: workspaceId },
+      select: { lifecycleEnabled: true },
+    });
+
+    if (!workspace) {
+      throw new NotFoundException('Workspace not found');
+    }
+
+    return { enabled: workspace.lifecycleEnabled };
+  }
+
   async toggleVisibility(workspaceId: string, enabled: boolean): Promise<{ enabled: boolean }> {
-    // Uncomment when you have lifecycleEnabled on your Workspace model:
-    // await this.prisma.workspace.update({
-    //   where: { id: workspaceId },
-    //   data: { lifecycleEnabled: enabled },
-    // });
-    return { enabled };
+    const workspace = await this.prisma.workspace.update({
+      where: { id: workspaceId },
+      data: { lifecycleEnabled: enabled },
+      select: { lifecycleEnabled: true },
+    });
+
+    return { enabled: workspace.lifecycleEnabled };
   }
 }

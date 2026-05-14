@@ -113,9 +113,21 @@ export class BroadcastsController {
 
   @Get(':id/trace')
   @WorkspaceRoute(WorkspacePermission.BROADCASTS_VIEW)
-  async trace(@Req() req: any, @Param('id') id: string) {
+  async trace(
+    @Req() req: any,
+    @Param('id') id: string,
+    @Query('status') status?: string,
+    @Query('page') page?: string,
+    @Query('take') take?: string,
+  ) {
     const workspaceId = req.workspaceId || req.headers['x-workspace-id'];
-    return this.broadcasts.getRunTrace(workspaceId, id);
+    const parsedPage = page ? parseInt(page, 10) : 1;
+    const parsedTake = take ? parseInt(take, 10) : 20;
+    return this.broadcasts.getRunTrace(workspaceId, id, {
+      status,
+      page: Number.isFinite(parsedPage) ? parsedPage : 1,
+      take: Number.isFinite(parsedTake) ? parsedTake : 20,
+    });
   }
 
   @Patch(':id')

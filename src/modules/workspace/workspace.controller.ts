@@ -118,11 +118,11 @@ export class WorkspaceController {
     }
 
     // Update workspace
-    @Put(':id')
+    @Put(':id([0-9a-fA-F-]{36})')
     @OrgRoute(OrgPermission.WORKSPACES_MANAGE)
-    async updateWorkspace(@Req() req: any) {
+    async updateWorkspace(@Param('id') id: string, @Req() req: any) {
         const data = await this.workspaceService.updateWorkspace(
-            req.params.id,
+            id,
             req.body,
         );
 
@@ -132,11 +132,11 @@ export class WorkspaceController {
 
 
     // Delete workspace
-    @Delete(':id')
+    @Delete(':id([0-9a-fA-F-]{36})')
     @OrgRoute(OrgPermission.WORKSPACES_MANAGE)
-    async deleteWorkspace(@Req() req: any) {
+    async deleteWorkspace(@Param('id') id: string) {
         const data = await this.workspaceService.deleteWorkspace(
-            req.params.id,
+            id,
         );
 
         return data;

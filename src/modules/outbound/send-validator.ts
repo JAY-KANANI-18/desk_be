@@ -41,6 +41,7 @@ export type SendErrorCode =
   | 'WA_MEDIA_UPLOAD_FAILED'     // media could not be uploaded
   | 'WA_PERMISSION_DENIED'       // page / business not authorised
   | 'WA_RECIPIENT_BLOCKED'       // user blocked the business
+  | 'WA_RECIPIENT_NOT_ALLOWED'   // test number recipient not allow-listed
   // Instagram / Messenger
   | 'META_INVALID_TOKEN'
   | 'META_NO_PAGE_ACCESS'        // page has not granted messaging permission
@@ -258,20 +259,47 @@ export class ProviderErrorNormaliser {
 
   /**
    * Call inside the outbound service catch block.
-   * Re-throws a BadRequestException with a clean SendError body,
-   * OR rethrows the original error if it is already a BadRequestException.
+   * Re-throws a BadRequestException with a clean SendError body.
    */
   static normalise(err: any, channelType: string): never {
     // Already a structured error from our validators — pass through
-    if (err instanceof BadRequestException) throw err;
-
-    const sendError = this.parse(err, channelType);
+    const sendError = this.toSendError(err, channelType);
 
     this.logger.warn(
       `Provider error [${channelType}] code=${sendError.code} detail=${sendError.detail}`,
     );
 
     throw new BadRequestException(sendError);
+  }
+
+  static toSendError(err: any, channelType: string): SendError {
+    if (err instanceof BadRequestException) {
+      const response = err.getResponse();
+      if (response && typeof response === 'object') {
+        const body = response as Partial<SendError>;
+        const message = Array.isArray(body.message)
+          ? body.message.join(', ')
+          : body.message;
+        if (typeof message === 'string' && message.trim()) {
+          return {
+            code: typeof body.code === 'string' ? (body.code as SendErrorCode) : 'UNKNOWN',
+            message,
+            detail: typeof body.detail === 'string' ? body.detail : undefined,
+            retryable: typeof body.retryable === 'boolean' ? body.retryable : false,
+          };
+        }
+      }
+
+      if (typeof response === 'string' && response.trim()) {
+        return {
+          code: 'UNKNOWN',
+          message: response,
+          retryable: false,
+        };
+      }
+    }
+
+    return this.parse(err, channelType);
   }
 
   private static parse(err: any, channelType: string): SendError {
@@ -364,6 +392,15 @@ export class ProviderErrorNormaliser {
       return {
         code: 'WA_RECIPIENT_BLOCKED',
         message: 'The contact has blocked your WhatsApp Business number.',
+        detail,
+        retryable: false,
+      };
+    }
+
+    if (code === 131030) {
+      return {
+        code: 'WA_RECIPIENT_NOT_ALLOWED',
+        message: 'This phone number is not in the allowed recipients list for your WhatsApp test number. Add it in Meta or use a live WhatsApp Business number.',
         detail,
         retryable: false,
       };

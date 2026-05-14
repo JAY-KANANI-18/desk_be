@@ -374,6 +374,7 @@ export class OutboundService {
             if (params.metadata?.template) {
                 const result = await this.sendTemplate({
                     channel, provider, conversation, to,
+                    author,
                     templateMeta: params.metadata.template,
                     workspaceId,
                 });
@@ -492,6 +493,7 @@ export class OutboundService {
             return message;
 
         } catch (err: any) {
+            const sendError = ProviderErrorNormaliser.toSendError(err, channel.type);
 
             // Mark the pending message as failed
             const msg: any = await this.prisma.message.update({
@@ -500,11 +502,11 @@ export class OutboundService {
                     status: 'failed',
                     metadata: {
                         ...((message.metadata as Record<string, any>) ?? {}),
-                        error: err.message,
+                        error: sendError.message,
                     },
                 },
             }).catch(() => null);
-            await this.failBroadcastRecipientForSend(params, workspaceId, err, message.id);
+            await this.failBroadcastRecipientForSend(params, workspaceId, sendError, message.id);
             if (msg) {
                 this.events.emit('message.status_updated', {
                     workspaceId: msg.workspaceId,
@@ -529,6 +531,9 @@ export class OutboundService {
                     include: {
                         conversation: {
                             include: { contact: true },
+                        },
+                        author: {
+                            select: { firstName: true, lastName: true },
                         },
                         messageAttachments: true,
                     },
@@ -587,6 +592,7 @@ export class OutboundService {
                     channel,
                     provider,
                     conversation: message.conversation,
+                    author: message.author,
                     to: templateRecipient,
                     templateMeta,
                     workspaceId: message.workspaceId,
@@ -669,11 +675,12 @@ export class OutboundService {
                 status: 'sent',
             });
         } catch (err: any) {
+            const sendError = ProviderErrorNormaliser.toSendError(err, channel.type);
             await this.prisma.outboundQueue.update({
                 where: { id: queueEntryId },
                 data: {
                     status: 'failed',
-                    lastError: err.message,
+                    lastError: sendError.message,
                 },
             });
             await this.prisma.message.update({
@@ -682,7 +689,7 @@ export class OutboundService {
                     status: 'failed',
                     metadata: {
                         ...((message.metadata as Record<string, any>) ?? {}),
-                        error: err.message,
+                        error: sendError.message,
                     },
                 },
             });
@@ -690,7 +697,7 @@ export class OutboundService {
                 message,
                 attempt >= maxRetries ? 'dead_letter' : 'failed',
                 {
-                    lastError: err.message,
+                    lastError: sendError.message,
                     attempts: attempt,
                     maxRetries,
                 },
@@ -709,12 +716,26 @@ export class OutboundService {
         channel: any;
         provider: any;
         conversation: any;
+        author: { firstName?: string | null; lastName?: string | null } | null;
         to: string;
         templateMeta: any;
         workspaceId: string;
     }) {
 
-        const { channel, provider, to, templateMeta, workspaceId } = opts;
+        const { channel, provider, to, workspaceId } = opts;
+        const templateContext = this.buildTemplateContext(
+            opts.conversation?.contact ?? {},
+            opts.author,
+            null,
+        );
+        const templateMeta = {
+            ...opts.templateMeta,
+            variables: this.renderTemplateVariables(
+                opts.templateMeta?.variables,
+                templateContext,
+                'template variable',
+            ),
+        };
 
         if (channel.type === 'messenger') {
             return this.sendMessengerTemplate({
@@ -1226,9 +1247,33 @@ export class OutboundService {
                 failedAt: new Date(),
                 attempts: params.queueAttempt ?? undefined,
                 maxRetries: params.queueMaxRetries ?? undefined,
-                lastError: err?.message ?? String(err),
+                lastError: this.displayErrorMessage(err),
             },
         });
+    }
+
+    private displayErrorMessage(err: unknown): string {
+        if (err instanceof BadRequestException) {
+            const response = err.getResponse();
+            if (response && typeof response === 'object') {
+                const message = (response as { message?: unknown }).message;
+                if (Array.isArray(message)) return message.join(', ');
+                if (typeof message === 'string' && message.trim()) return message;
+            }
+            if (typeof response === 'string' && response.trim()) return response;
+        }
+
+        if (
+            err &&
+            typeof err === 'object' &&
+            'message' in err &&
+            typeof (err as { message?: unknown }).message === 'string' &&
+            (err as { message: string }).message.trim()
+        ) {
+            return (err as { message: string }).message;
+        }
+
+        return String(err);
     }
 
     private async finalise(
@@ -1737,13 +1782,23 @@ export class OutboundService {
             text, attachments = [], timestamp,
             profile, metadata,
         } = dto;
+        const normalizedRecipientIdentifier =
+            normalizeContactIdentifierForChannel(channelType, recipientIdentifier) ??
+            recipientIdentifier?.trim();
+        const normalizedChannelMsgId = channelMsgId?.trim();
+        if (!normalizedRecipientIdentifier || !normalizedChannelMsgId) {
+            this.logger.warn(
+                `ExternalOutbound ignored: missing recipient/message id channel=${channelId} channelMsgId=${channelMsgId ?? 'missing'}`,
+            );
+            return;
+        }
 
         // ── 1. Dedup ───────────────────────────────────────────────────────────
         // If our system already created this message (sendMessage saved channelMsgId),
         // the echo arrives and we skip it cleanly.
 
         const existing = await this.prisma.message.findFirst({
-            where: { channelMsgId, channelId },
+            where: { channelMsgId: normalizedChannelMsgId, channelId },
             select: { id: true },
         });
 
@@ -1779,7 +1834,7 @@ export class OutboundService {
             workspaceId,
             channelId,
             channelType,
-            identifier: recipientIdentifier,
+            identifier: normalizedRecipientIdentifier,
             profile,
         });
 
@@ -1821,7 +1876,7 @@ export class OutboundService {
                 conversationId: conversation.id,
                 channelId,
                 channelType,
-                channelMsgId,
+                channelMsgId: normalizedChannelMsgId,
                 type: messageType,
                 direction: 'outgoing',
                 text: text ?? null,
@@ -2029,6 +2084,10 @@ export class OutboundService {
 
         return {
             contact_name: contactName,
+            contact_first_name: contact.firstName?.trim() || '',
+            contact_last_name: contact.lastName?.trim() || '',
+            contact_email: contact.email?.trim() || '',
+            contact_phone: contact.phone?.trim() || '',
             agent_name: agentName || 'Agent',
             last_message: lastMessage?.trim() || '',
         };
@@ -2048,6 +2107,19 @@ export class OutboundService {
         }
 
         return value.replace(/{{\s*([a-zA-Z0-9_]+)\s*}}/g, (_match, key: string) => context[key] ?? '');
+    }
+
+    private renderTemplateVariables(
+        value: any,
+        context: Record<string, string>,
+        fieldName: string,
+    ): Record<string, string> {
+        const variables = this.normaliseTemplateVariables(value);
+
+        return Object.entries(variables).reduce<Record<string, string>>((acc, [key, entry]) => {
+            acc[key] = this.renderVariables(entry, context, `${fieldName} ${key}`) ?? '';
+            return acc;
+        }, {});
     }
 
     private renderTemplateValue(value: any, variables: Record<string, string>): any {

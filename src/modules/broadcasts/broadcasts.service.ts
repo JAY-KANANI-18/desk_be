@@ -7,8 +7,9 @@ import {
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { createHash, randomBytes } from 'crypto';
 import { Prisma } from '@prisma/client';
-import { PrismaService } from 'src/prisma/prisma.service';
+import { PrismaService } from '../../prisma/prisma.service';
 import { MessageProcessingQueueService } from '../outbound/message-processing-queue.service';
+import { normalizeContactIdentifierForChannel } from '../../common/utils/contact-identifier.util';
 
 export type BroadcastAudienceFilters = {
   tagIds?: string[];
@@ -17,19 +18,24 @@ export type BroadcastAudienceFilters = {
   respectMarketingOptOut?: boolean;
 };
 
-type AudienceContactChannel = Prisma.ContactChannelGetPayload<{
-  include: {
-    contact: {
-      select: {
-        id: true;
-        firstName: true;
-        lastName: true;
-        phone: true;
-        email: true;
-      };
-    };
-  };
-}>;
+type AudienceContactSnapshot = {
+  id: string;
+  firstName: string;
+  lastName: string | null;
+  phone: string | null;
+  email: string | null;
+};
+
+type AudienceContactChannel = {
+  id: string;
+  workspaceId: string;
+  contactId: string;
+  channelId: string;
+  channelType: string;
+  identifier: string;
+  createdAt: Date;
+  contact: AudienceContactSnapshot;
+};
 
 type BroadcastRecipientForQueue = Prisma.BroadcastRecipientGetPayload<{
   include: {
@@ -82,6 +88,27 @@ const BROADCAST_CHANNEL_METADATA = {
   },
 } satisfies Record<string, { broadcast: BroadcastChannelCapability }>;
 type BroadcastChannelType = keyof typeof BROADCAST_CHANNEL_METADATA;
+type BroadcastTraceStatusFilter = 'all' | 'sent' | 'delivered' | 'read' | 'attention';
+type BroadcastTraceOptions = {
+  status?: string;
+  page?: number;
+  take?: number;
+};
+type NormalisedBroadcastTraceOptions = {
+  status: BroadcastTraceStatusFilter;
+  page: number;
+  take: number;
+  skip: number;
+};
+
+const BROADCAST_TRACE_STATUS_FILTERS = new Set<BroadcastTraceStatusFilter>([
+  'all',
+  'sent',
+  'delivered',
+  'read',
+  'attention',
+]);
+const BROADCAST_ATTENTION_STATUSES = ['failed', 'bounced', 'dead_letter', 'unsubscribed'];
 
 @Injectable()
 export class BroadcastsService {
@@ -202,17 +229,367 @@ export class BroadcastsService {
     return [{ createdAt: 'desc' }, { id: 'desc' }];
   }
 
-  private async snapshotAudience(opts: {
+  private normaliseTraceOptions(opts: BroadcastTraceOptions = {}): NormalisedBroadcastTraceOptions {
+    const rawStatus = (opts.status ?? 'all').trim().toLowerCase();
+    if (!BROADCAST_TRACE_STATUS_FILTERS.has(rawStatus as BroadcastTraceStatusFilter)) {
+      throw new BadRequestException('Unknown broadcast recipient status filter');
+    }
+
+    const take = Math.min(Math.max(1, opts.take ?? 20), 100);
+    const page = Math.max(1, opts.page ?? 1);
+    return {
+      status: rawStatus as BroadcastTraceStatusFilter,
+      page,
+      take,
+      skip: (page - 1) * take,
+    };
+  }
+
+  private traceRecipientWhere(
+    workspaceId: string,
+    id: string,
+    status: BroadcastTraceStatusFilter,
+  ): Prisma.BroadcastRecipientWhereInput {
+    const where: Prisma.BroadcastRecipientWhereInput = { workspaceId, broadcastRunId: id };
+    if (status === 'all') return where;
+
+    const statuses =
+      status === 'sent'
+        ? ['sent', 'delivered', 'read']
+        : status === 'delivered'
+          ? ['delivered', 'read']
+          : status === 'read'
+            ? ['read']
+            : BROADCAST_ATTENTION_STATUSES;
+
+    if (status === 'attention') {
+      return {
+        ...where,
+        OR: [
+          { status: { in: statuses } },
+          { lastError: { not: null } },
+          {
+            message: {
+              is: {
+                status: { in: statuses },
+              },
+            },
+          },
+          {
+            message: {
+              is: {
+                outboundQueue: {
+                  is: {
+                    lastError: { not: null },
+                  },
+                },
+              },
+            },
+          },
+        ],
+      };
+    }
+
+    return {
+      ...where,
+      OR: [
+        { status: { in: statuses } },
+        {
+          message: {
+            is: {
+              status: { in: statuses },
+            },
+          },
+        },
+      ],
+    };
+  }
+
+  private traceMessageWhere(
+    workspaceId: string,
+    id: string,
+    status: BroadcastTraceStatusFilter,
+  ): Prisma.MessageWhereInput {
+    const where: Prisma.MessageWhereInput = { workspaceId, broadcastRunId: id };
+    if (status === 'all') return where;
+
+    const statuses =
+      status === 'sent'
+        ? ['sent', 'delivered', 'read']
+        : status === 'delivered'
+          ? ['delivered', 'read']
+          : status === 'read'
+            ? ['read']
+            : BROADCAST_ATTENTION_STATUSES;
+
+    if (status === 'attention') {
+      return {
+        ...where,
+        OR: [
+          { status: { in: statuses } },
+          {
+            outboundQueue: {
+              is: {
+                lastError: { not: null },
+              },
+            },
+          },
+        ],
+      };
+    }
+
+    return { ...where, status: { in: statuses } };
+  }
+
+  private getBroadcastContactField(channelType: string): 'email' | 'phone' | null {
+    if (channelType === 'email') return 'email';
+    if (channelType === 'whatsapp') return 'phone';
+    return null;
+  }
+
+  private contactFieldWhere(field: 'email' | 'phone'): Prisma.ContactWhereInput {
+    return field === 'email'
+      ? { AND: [{ email: { not: null } }, { email: { not: '' } }] }
+      : { AND: [{ phone: { not: null } }, { phone: { not: '' } }] };
+  }
+
+  private contactFieldAudienceWhere(
+    workspaceId: string,
+    channel: { id: string; type: string },
+    filters: BroadcastAudienceFilters,
+  ): Prisma.ContactWhereInput {
+    const field = this.getBroadcastContactField(channel.type);
+    if (!field) return this.contactWhereFromFilters(workspaceId, filters);
+
+    return {
+      AND: [
+        this.contactWhereFromFilters(workspaceId, filters),
+        {
+          OR: [
+            this.contactFieldWhere(field),
+            {
+              contactChannels: {
+                some: {
+                  workspaceId,
+                  channelId: channel.id,
+                  identifier: { not: '' },
+                },
+              },
+            },
+          ],
+        },
+      ],
+    };
+  }
+
+  private contactFieldValue(
+    contact: AudienceContactSnapshot,
+    channelType: string,
+  ): string | null | undefined {
+    const field = this.getBroadcastContactField(channelType);
+    return field ? contact[field] : null;
+  }
+
+  private normaliseAudienceIdentifier(
+    channelType: string,
+    value: string | null | undefined,
+  ) {
+    return normalizeContactIdentifierForChannel(channelType, value);
+  }
+
+  private toAudienceContactChannel(
+    contactChannel: Pick<
+      AudienceContactChannel,
+      'id' | 'workspaceId' | 'contactId' | 'channelId' | 'channelType' | 'identifier' | 'createdAt'
+    >,
+    contact: AudienceContactSnapshot,
+  ): AudienceContactChannel {
+    return {
+      id: contactChannel.id,
+      workspaceId: contactChannel.workspaceId,
+      contactId: contact.id,
+      channelId: contactChannel.channelId,
+      channelType: contactChannel.channelType,
+      identifier: contactChannel.identifier,
+      createdAt: contactChannel.createdAt,
+      contact,
+    };
+  }
+
+  private async ensureAudienceContactChannel(opts: {
     workspaceId: string;
-    channelId: string;
+    channel: { id: string; type: string };
+    contact: AudienceContactSnapshot;
+  }): Promise<AudienceContactChannel | null> {
+    const identifier = this.normaliseAudienceIdentifier(
+      opts.channel.type,
+      this.contactFieldValue(opts.contact, opts.channel.type),
+    );
+    if (!identifier) return null;
+
+    const existing = await this.prisma.contactChannel.findFirst({
+      where: {
+        workspaceId: opts.workspaceId,
+        channelId: opts.channel.id,
+        identifier,
+      },
+      include: {
+        contact: {
+          select: {
+            id: true,
+            firstName: true,
+            lastName: true,
+            phone: true,
+            email: true,
+          },
+        },
+      },
+    });
+
+    if (existing) {
+      return this.toAudienceContactChannel(existing, opts.contact);
+    }
+
+    const displayName = [opts.contact.firstName, opts.contact.lastName]
+      .filter(Boolean)
+      .join(' ')
+      .trim();
+
+    try {
+      return await this.prisma.contactChannel.create({
+        data: {
+          workspaceId: opts.workspaceId,
+          contactId: opts.contact.id,
+          channelId: opts.channel.id,
+          channelType: opts.channel.type,
+          identifier,
+          displayName: displayName || null,
+        },
+        include: {
+          contact: {
+            select: {
+              id: true,
+              firstName: true,
+              lastName: true,
+              phone: true,
+              email: true,
+            },
+          },
+        },
+      });
+    } catch (err: unknown) {
+      if (!(err instanceof Prisma.PrismaClientKnownRequestError) || err.code !== 'P2002') {
+        throw err;
+      }
+
+      const raced = await this.prisma.contactChannel.findFirst({
+        where: {
+          workspaceId: opts.workspaceId,
+          channelId: opts.channel.id,
+          identifier,
+        },
+        include: {
+          contact: {
+            select: {
+              id: true,
+              firstName: true,
+              lastName: true,
+              phone: true,
+              email: true,
+            },
+          },
+        },
+      });
+      return raced ? this.toAudienceContactChannel(raced, opts.contact) : null;
+    }
+  }
+
+  private async snapshotContactFieldAudience(opts: {
+    workspaceId: string;
+    channel: { id: string; type: string };
     filters: BroadcastAudienceFilters;
     take: number;
   }): Promise<AudienceContactChannel[]> {
+    const contacts = await this.prisma.contact.findMany({
+      where: this.contactFieldAudienceWhere(opts.workspaceId, opts.channel, opts.filters),
+      select: {
+        id: true,
+        workspaceId: true,
+        firstName: true,
+        lastName: true,
+        phone: true,
+        email: true,
+        contactChannels: {
+          where: {
+            workspaceId: opts.workspaceId,
+            channelId: opts.channel.id,
+            identifier: { not: '' },
+          },
+          select: {
+            id: true,
+            workspaceId: true,
+            contactId: true,
+            channelId: true,
+            channelType: true,
+            identifier: true,
+            createdAt: true,
+          },
+          orderBy: { createdAt: 'desc' },
+          take: 1,
+        },
+      },
+      take: opts.take,
+      orderBy: { createdAt: 'desc' },
+    });
+
+    const audience: AudienceContactChannel[] = [];
+    for (const contact of contacts) {
+      const existing = contact.contactChannels[0];
+      const contactSnapshot = {
+        id: contact.id,
+        firstName: contact.firstName,
+        lastName: contact.lastName,
+        phone: contact.phone,
+        email: contact.email,
+      };
+      if (existing) {
+        audience.push(this.toAudienceContactChannel(existing, contactSnapshot));
+        continue;
+      }
+
+      const created = await this.ensureAudienceContactChannel({
+        workspaceId: opts.workspaceId,
+        channel: opts.channel,
+        contact: contactSnapshot,
+      });
+      if (created) {
+        audience.push(created);
+      }
+    }
+
+    return audience;
+  }
+
+  private async snapshotAudience(opts: {
+    workspaceId: string;
+    channel: { id: string; type: string };
+    filters: BroadcastAudienceFilters;
+    take: number;
+  }): Promise<AudienceContactChannel[]> {
+    if (this.getBroadcastContactField(opts.channel.type)) {
+      return this.snapshotContactFieldAudience({
+        workspaceId: opts.workspaceId,
+        channel: opts.channel,
+        filters: opts.filters,
+        take: opts.take,
+      });
+    }
+
     const contactWhere = this.contactWhereFromFilters(opts.workspaceId, opts.filters);
     return this.prisma.contactChannel.findMany({
       where: {
         workspaceId: opts.workspaceId,
-        channelId: opts.channelId,
+        channelId: opts.channel.id,
         contact: contactWhere,
       },
       include: {
@@ -414,6 +791,67 @@ export class BroadcastsService {
     const take = Math.min(Math.max(1, limit), 2000);
     const contactWhere = this.contactWhereFromFilters(workspaceId, filters);
 
+    if (this.getBroadcastContactField(channel.type)) {
+      const contactFieldWhere = this.contactFieldAudienceWhere(workspaceId, channel, filters);
+      const total = await this.prisma.contact.count({ where: contactFieldWhere });
+      const sampleContacts = await this.prisma.contact.findMany({
+        where: contactFieldWhere,
+        take,
+        orderBy: { createdAt: 'desc' },
+        select: {
+          id: true,
+          firstName: true,
+          lastName: true,
+          phone: true,
+          email: true,
+          contactChannels: {
+            where: {
+              workspaceId,
+              channelId,
+              identifier: { not: '' },
+            },
+            select: { identifier: true },
+            orderBy: { createdAt: 'desc' },
+            take: 1,
+          },
+        },
+      });
+
+      const sample = sampleContacts
+        .map((contact) => {
+          const identifier = this.normaliseAudienceIdentifier(
+            channel.type,
+            contact.contactChannels[0]?.identifier ??
+              this.contactFieldValue(contact, channel.type),
+          );
+          if (!identifier) return null;
+
+          return {
+            contactId: contact.id,
+            identifier,
+            name: this.displayName({ identifier, contact }),
+          };
+        })
+        .filter(
+          (
+            row,
+          ): row is {
+            contactId: string;
+            identifier: string;
+            name: string;
+          } => Boolean(row),
+        );
+
+      return {
+        channelId,
+        channelType: channel.type,
+        totalMatching: total,
+        previewLimit: take,
+        previewCount: sample.length,
+        sample,
+      };
+    }
+
     const total = await this.prisma.contactChannel.count({
       where: {
         workspaceId,
@@ -431,7 +869,7 @@ export class BroadcastsService {
       take,
       orderBy: { createdAt: 'desc' },
       include: {
-        contact: { select: { id: true, firstName: true, lastName: true, phone: true } },
+        contact: { select: { id: true, firstName: true, lastName: true, phone: true, email: true } },
       },
     });
 
@@ -444,10 +882,7 @@ export class BroadcastsService {
       sample: sample.map((cc) => ({
         contactId: cc.contactId,
         identifier: cc.identifier,
-        name:
-          [cc.contact.firstName, cc.contact.lastName].filter(Boolean).join(' ') ||
-          cc.contact.phone ||
-          '-',
+        name: this.displayName(cc),
       })),
     };
   }
@@ -560,55 +995,70 @@ export class BroadcastsService {
     };
   }
 
-  async getRunTrace(workspaceId: string, id: string) {
+  async getRunTrace(workspaceId: string, id: string, opts: BroadcastTraceOptions = {}) {
     await this.getRun(workspaceId, id);
+    const traceOpts = this.normaliseTraceOptions(opts);
+    const where = this.traceRecipientWhere(workspaceId, id, traceOpts.status);
 
-    const recipients = await this.prisma.broadcastRecipient.findMany({
+    const total = await this.prisma.broadcastRecipient.count({
       where: { workspaceId, broadcastRunId: id },
-      orderBy: { createdAt: 'desc' },
-      take: 200,
-      include: {
-        contact: {
-          select: {
-            id: true,
-            firstName: true,
-            lastName: true,
-            phone: true,
-            email: true,
+    });
+
+    if (!total) {
+      return this.getLegacyRunTrace(workspaceId, id, traceOpts);
+    }
+
+    const [filteredTotal, recipients] = await Promise.all([
+      this.prisma.broadcastRecipient.count({ where }),
+      this.prisma.broadcastRecipient.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        skip: traceOpts.skip,
+        take: traceOpts.take,
+        include: {
+          contact: {
+            select: {
+              id: true,
+              firstName: true,
+              lastName: true,
+              phone: true,
+              email: true,
+            },
           },
-        },
-        message: {
-          select: {
-            id: true,
-            status: true,
-            text: true,
-            channelMsgId: true,
-            createdAt: true,
-            sentAt: true,
-            metadata: true,
-            outboundQueue: {
-              select: {
-                id: true,
-                status: true,
-                attempts: true,
-                maxRetries: true,
-                lastError: true,
-                scheduledAt: true,
-                sentAt: true,
+          message: {
+            select: {
+              id: true,
+              status: true,
+              text: true,
+              channelMsgId: true,
+              createdAt: true,
+              sentAt: true,
+              metadata: true,
+              outboundQueue: {
+                select: {
+                  id: true,
+                  status: true,
+                  attempts: true,
+                  maxRetries: true,
+                  lastError: true,
+                  scheduledAt: true,
+                  sentAt: true,
+                },
               },
             },
           },
         },
-      },
-    });
-
-    if (!recipients.length) {
-      return this.getLegacyRunTrace(workspaceId, id);
-    }
+      }),
+    ]);
 
     return {
       broadcastRunId: id,
-      limit: 200,
+      limit: traceOpts.take,
+      page: traceOpts.page,
+      total,
+      filteredTotal,
+      totalPages: Math.max(1, Math.ceil(filteredTotal / traceOpts.take)),
+      status: traceOpts.status,
       rows: recipients.map((recipient) => ({
         recipientId: recipient.id,
         messageId: recipient.message?.id ?? null,
@@ -639,50 +1089,65 @@ export class BroadcastsService {
     };
   }
 
-  private async getLegacyRunTrace(workspaceId: string, id: string) {
-    const messages = await this.prisma.message.findMany({
-      where: { workspaceId, broadcastRunId: id },
-      orderBy: { createdAt: 'desc' },
-      take: 200,
-      select: {
-        id: true,
-        status: true,
-        text: true,
-        channelMsgId: true,
-        createdAt: true,
-        sentAt: true,
-        metadata: true,
-        conversation: {
-          select: {
-            id: true,
-            contact: {
-              select: {
-                id: true,
-                firstName: true,
-                lastName: true,
-                phone: true,
-                email: true,
+  private async getLegacyRunTrace(
+    workspaceId: string,
+    id: string,
+    opts: NormalisedBroadcastTraceOptions,
+  ) {
+    const where = this.traceMessageWhere(workspaceId, id, opts.status);
+    const [total, filteredTotal, messages] = await Promise.all([
+      this.prisma.message.count({ where: { workspaceId, broadcastRunId: id } }),
+      this.prisma.message.count({ where }),
+      this.prisma.message.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        skip: opts.skip,
+        take: opts.take,
+        select: {
+          id: true,
+          status: true,
+          text: true,
+          channelMsgId: true,
+          createdAt: true,
+          sentAt: true,
+          metadata: true,
+          conversation: {
+            select: {
+              id: true,
+              contact: {
+                select: {
+                  id: true,
+                  firstName: true,
+                  lastName: true,
+                  phone: true,
+                  email: true,
+                },
               },
             },
           },
-        },
-        outboundQueue: {
-          select: {
-            id: true,
-            status: true,
-            attempts: true,
-            maxRetries: true,
-            lastError: true,
-            scheduledAt: true,
-            sentAt: true,
+          outboundQueue: {
+            select: {
+              id: true,
+              status: true,
+              attempts: true,
+              maxRetries: true,
+              lastError: true,
+              scheduledAt: true,
+              sentAt: true,
+            },
           },
         },
-      },
-    });
+      }),
+    ]);
 
     return {
       broadcastRunId: id,
-      limit: 200,
+      limit: opts.take,
+      page: opts.page,
+      total,
+      filteredTotal,
+      totalPages: Math.max(1, Math.ceil(filteredTotal / opts.take)),
+      status: opts.status,
       rows: messages.map((message) => {
         const contact = message.conversation?.contact;
         const metadata = (message.metadata ?? {}) as Record<string, unknown>;
@@ -1073,7 +1538,7 @@ export class BroadcastsService {
     const [contactChannels, templateSnapshot] = await Promise.all([
       this.snapshotAudience({
         workspaceId,
-        channelId,
+        channel,
         filters,
         take,
       }),
