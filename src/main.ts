@@ -2,6 +2,7 @@ import 'dotenv/config';
 import * as bodyParser from 'body-parser';
 import * as cors from 'cors';
 import * as helmet from 'helmet';
+import { IncomingMessage } from 'http';
 
 import { NestFactory } from '@nestjs/core';
 import { ValidationPipe } from '@nestjs/common';
@@ -11,6 +12,10 @@ import { AppModule } from './app.module';
 import { ResponseInterceptor } from './common/interceptors/response.interceptor';
 import { HttpExceptionFilter } from './common/filters/http-exception.filter';
 import { RequestIdMiddleware } from './common/middleware/request-id.middleware';
+
+type RawBodyRequest = IncomingMessage & {
+  rawBody?: Buffer;
+};
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule, {
@@ -56,18 +61,16 @@ async function bootstrap() {
    */
   app.use(
     bodyParser.json({
-      verify: (req: any, res, buf) => {
+      verify: (req: RawBodyRequest, _res, buf) => {
         req.rawBody = buf;
       },
     }),
   );
 
-   /**
+  /**
    * Parse Mailgun form-data
    */
   app.use(bodyParser.urlencoded({ extended: true }));
-
-  /**
 
   /**
    * Global Validation

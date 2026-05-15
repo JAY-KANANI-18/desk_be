@@ -250,6 +250,23 @@ export class WorkflowEngineService {
 
   // ── Trigger entry point ──────────────────────────────────────────────────
 
+  @OnEvent('commerce.event')
+  async onCommerceEvent(event: {
+    workspaceId: string;
+    contactId: string;
+    conversationId?: string | null;
+    eventType: string;
+    triggerData: Record<string, any>;
+  }) {
+    await this.trigger({
+      workspaceId: event.workspaceId,
+      eventType: event.eventType,
+      contactId: event.contactId,
+      conversationId: event.conversationId ?? undefined,
+      triggerData: event.triggerData ?? {},
+    });
+  }
+
   async trigger(opts: {
     workspaceId: string;
     eventType: string;

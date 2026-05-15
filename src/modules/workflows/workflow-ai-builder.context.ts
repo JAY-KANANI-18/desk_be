@@ -98,7 +98,7 @@ const commonOperators = [
 ] as const;
 
 export const WORKFLOW_AI_BUILDER_CONTEXT = {
-  version: '2026-05-07.2',
+  version: '2026-05-14.1',
   feature: 'workflow_build_with_ai',
   contract: {
     workflowConfigShape: {
@@ -227,6 +227,55 @@ export const WORKFLOW_AI_BUILDER_CONTEXT = {
       description: 'Runs when a contact assignment changes.',
       dataFields: [],
       conditionFields: ['assigneeId', 'teamId'],
+    },
+    {
+      type: 'meta_ad_click',
+      label: 'Meta Ad Click',
+      description: 'Runs when a Meta Ads integration emits a normalized ad click or lead event.',
+      dataFields: [],
+      conditionFields: ['provider', 'adId', 'adName', 'campaignId', 'campaignName'],
+    },
+    {
+      type: 'commerce.cart_abandoned',
+      label: 'Abandoned Cart',
+      description: 'Runs when a normalized commerce cart becomes abandoned.',
+      dataFields: [],
+      conditionFields: ['provider', 'cartTotalAmount', 'cartItemCount', 'checkoutUrl', 'currency'],
+    },
+    {
+      type: 'commerce.order_created',
+      label: 'Order Created',
+      description: 'Runs when a normalized commerce order is created.',
+      dataFields: [],
+      conditionFields: ['provider', 'orderNumber', 'orderTotalAmount', 'financialStatus', 'currency'],
+    },
+    {
+      type: 'commerce.order_paid',
+      label: 'Order Paid',
+      description: 'Runs when a normalized commerce order is paid.',
+      dataFields: [],
+      conditionFields: ['provider', 'orderNumber', 'orderTotalAmount', 'currency', 'customerEmail'],
+    },
+    {
+      type: 'commerce.order_fulfilled',
+      label: 'Order Fulfilled',
+      description: 'Runs when a normalized commerce order is fulfilled.',
+      dataFields: [],
+      conditionFields: ['provider', 'orderNumber', 'fulfillmentStatus', 'orderPlacedAt'],
+    },
+    {
+      type: 'commerce.order_cancelled',
+      label: 'Order Cancelled',
+      description: 'Runs when a normalized commerce order is cancelled.',
+      dataFields: [],
+      conditionFields: ['provider', 'orderNumber', 'orderStatus', 'financialStatus'],
+    },
+    {
+      type: 'commerce.refund_created',
+      label: 'Refund Created',
+      description: 'Runs when a commerce adapter records a normalized refund event.',
+      dataFields: [],
+      conditionFields: ['provider', 'orderNumber', 'orderTotalAmount', 'currency'],
     },
   ],
   steps: [

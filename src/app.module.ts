@@ -36,6 +36,8 @@ import { ImportExportModule } from './modules/import-export/import-export.module
 import { AuthModule } from './modules/auth/auth.module';
 import { SnippetsModule } from './modules/snippets/snippets.module';
 import { PlatformAdminModule } from './modules/platform-admin/platform-admin.module';
+import { IntegrationsModule } from './modules/integrations/integrations.module';
+import { CommerceModule } from './modules/commerce/commerce.module';
 
 import { RouteGuard } from './common/auth/route.guard';
 
@@ -50,6 +52,8 @@ import { RouteGuard } from './common/auth/route.guard';
     OrganizationModule, ContactsModule, ConversationsModule, MessagesModule,
     UsersModule,
     WorkspaceModule,
+    IntegrationsModule,
+    CommerceModule,
     ChannelsModule,
     // WebhooksModule,
     TeamsModule, WorkflowsModule, InboundModule,

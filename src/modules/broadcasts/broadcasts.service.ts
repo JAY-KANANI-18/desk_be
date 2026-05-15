@@ -16,6 +16,21 @@ export type BroadcastAudienceFilters = {
   lifecycleId?: string;
   /** Default true: skip contacts with marketingOptOut */
   respectMarketingOptOut?: boolean;
+  commerce?: CommerceAudienceFilters;
+};
+
+export type CommerceAudienceFilters = {
+  abandonedCart?: {
+    olderThanMinutes?: number;
+    minTotalAmount?: number;
+    productExternalIds?: string[];
+  };
+  purchased?: {
+    since?: string;
+    minTotalAmount?: number;
+    productExternalIds?: string[];
+    statuses?: string[];
+  };
 };
 
 type AudienceContactSnapshot = {
@@ -124,6 +139,7 @@ export class BroadcastsService {
     filters: BroadcastAudienceFilters,
   ): Prisma.ContactWhereInput {
     const respectOptOut = filters.respectMarketingOptOut !== false;
+    const commerceWhere = this.commerceContactWhereFromFilters(filters.commerce);
     return {
       workspaceId,
       ...(respectOptOut ? { marketingOptOut: false } : {}),
@@ -131,7 +147,72 @@ export class BroadcastsService {
       ...(filters.tagIds?.length
         ? { tags: { some: { tagId: { in: filters.tagIds } } } }
         : {}),
+      ...commerceWhere,
     };
+  }
+
+  private commerceContactWhereFromFilters(
+    filters?: CommerceAudienceFilters,
+  ): Prisma.ContactWhereInput {
+    if (!filters) return {};
+    const clauses: Prisma.ContactWhereInput[] = [];
+
+    if (filters.abandonedCart) {
+      const olderThanMinutes = Math.max(0, filters.abandonedCart.olderThanMinutes ?? 0);
+      clauses.push({
+        commerceCarts: {
+          some: {
+            status: 'abandoned',
+            abandonedAt: olderThanMinutes
+              ? { lte: new Date(Date.now() - olderThanMinutes * 60_000) }
+              : { not: null },
+            ...(filters.abandonedCart.minTotalAmount != null
+              ? { totalAmount: { gte: filters.abandonedCart.minTotalAmount } }
+              : {}),
+            ...(filters.abandonedCart.productExternalIds?.length
+              ? {
+                  lineItems: {
+                    some: {
+                      externalProductId: { in: filters.abandonedCart.productExternalIds },
+                    },
+                  },
+                }
+              : {}),
+          },
+        },
+      });
+    }
+
+    if (filters.purchased) {
+      clauses.push({
+        commerceOrders: {
+          some: {
+            status: {
+              in: filters.purchased.statuses?.length
+                ? filters.purchased.statuses
+                : ['paid', 'fulfilled'],
+            },
+            ...(filters.purchased.since
+              ? { placedAt: { gte: new Date(filters.purchased.since) } }
+              : {}),
+            ...(filters.purchased.minTotalAmount != null
+              ? { totalAmount: { gte: filters.purchased.minTotalAmount } }
+              : {}),
+            ...(filters.purchased.productExternalIds?.length
+              ? {
+                  lineItems: {
+                    some: {
+                      externalProductId: { in: filters.purchased.productExternalIds },
+                    },
+                  },
+                }
+              : {}),
+          },
+        },
+      });
+    }
+
+    return clauses.length ? { AND: clauses } : {};
   }
 
   private normaliseAudienceFilters(
@@ -141,6 +222,9 @@ export class BroadcastsService {
       tagIds: [...(filters.tagIds ?? [])].sort(),
       lifecycleId: filters.lifecycleId ?? null,
       respectMarketingOptOut: filters.respectMarketingOptOut !== false,
+      commerce: filters.commerce
+        ? (JSON.parse(JSON.stringify(filters.commerce)) as Prisma.InputJsonValue)
+        : null,
     };
   }
 

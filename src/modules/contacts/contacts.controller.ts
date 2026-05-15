@@ -78,6 +78,12 @@ export class ContactsController {
         return this.contactsService.findOne(req.workspaceId, id);
     }
 
+    @Get(':id/commerce')
+    @WorkspaceRoute(WorkspacePermission.CONTACTS_VIEW)
+    commerceContext(@Req() req: any, @Param('id') id: string) {
+        return this.contactsService.getCommerceContext(req.workspaceId, id);
+    }
+
     @Get(':id/duplicates')
     @WorkspaceRoute(WorkspacePermission.CONTACTS_VIEW)
     findDuplicates(@Req() req: any, @Param('id') id: string) {

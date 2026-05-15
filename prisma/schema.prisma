@@ -519,6 +519,17 @@ model Workspace {
   notificationEmailHistory NotificationEmailHistory[]
   contactMergeRuns       ContactMergeRun[]
   importExportJobs       ImportExportJob[]
+  integrations           Integration[]
+  integrationResources   IntegrationResource[]
+  contactIntegrations    ContactIntegration[]
+  integrationEvents      IntegrationEvent[]
+  integrationJobs        IntegrationJob[]
+  commerceCustomers      CommerceCustomer[]
+  commerceProducts       CommerceProduct[]
+  commerceOrders         CommerceOrder[]
+  commerceOrderLineItems CommerceOrderLineItem[]
+  commerceCarts          CommerceCart[]
+  commerceCartLineItems  CommerceCartLineItem[]
 }
 
 model WorkspaceAiSettings {
@@ -635,6 +646,10 @@ model Contact {
   mergedContacts    Contact[]      @relation("ContactMergedInto")
   conversations   Conversation[]
   contactChannels ContactChannel[]
+  contactIntegrations ContactIntegration[]
+  commerceCustomers CommerceCustomer[]
+  commerceOrders CommerceOrder[]
+  commerceCarts CommerceCart[]
   broadcastRecipients BroadcastRecipient[]
   emailUnsubscribeTokens EmailUnsubscribeToken[]
   tags            ContactTag[]
@@ -825,6 +840,8 @@ model Channel {
   identifier  String   @unique // phone_number_id | page_id | email prefix | IG account id
   status      String   @default("connected") // connected | disconnected | error
   createdAt   DateTime @default(now())
+  integrationId String? @db.Uuid
+  integrationResourceId String? @db.Uuid
 
   // Encrypted credentials stored as JSON:
   // WhatsApp:  { accessToken, wabaId, phoneNumberId, appSecret, verifyToken }
@@ -837,6 +854,8 @@ model Channel {
   config Json?
 
   workspace       Workspace        @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  integration     Integration?     @relation(fields: [integrationId], references: [id], onDelete: SetNull)
+  integrationResource IntegrationResource? @relation(fields: [integrationResourceId], references: [id], onDelete: SetNull)
   messages        Message[]
   contactChannels ContactChannel[]
   outboundQueue   OutboundQueue[]
@@ -844,6 +863,8 @@ model Channel {
   broadcastRecipients BroadcastRecipient[]
 
   @@index([workspaceId])
+  @@index([workspaceId, integrationId])
+  @@index([integrationResourceId])
   @@index([type, identifier])
 }
 
@@ -915,6 +936,384 @@ model ContactChannel {
 
   @@unique([workspaceId, channelId, identifier])
   @@index([workspaceId, identifier])
+}
+
+// ============================================================
+// INTEGRATIONS
+// ============================================================
+
+// One third-party business-system connection per workspace account/store/org.
+// Chat surfaces remain in Channel; integrations power commerce, ads, CRM,
+// payments, sheets, and future non-chat provider activity.
+model Integration {
+  id                  String   @id @default(uuid()) @db.Uuid
+  workspaceId         String   @db.Uuid
+  provider            String
+  category            String
+  name                String
+  status              String   @default("connected")
+  externalAccountId   String?
+  externalAccountName String?
+  authType            String   @default("oauth")
+  scopes              String[] @default([])
+  credentialsEncrypted String?
+  settings            Json?
+  metadata            Json?
+  health              Json?
+  connectedAt         DateTime?
+  disconnectedAt      DateTime?
+  lastSyncedAt        DateTime?
+  lastWebhookAt       DateTime?
+  createdById         String?  @db.Uuid
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  workspace           Workspace              @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  resources           IntegrationResource[]
+  contactIntegrations ContactIntegration[]
+  events              IntegrationEvent[]
+  jobs                IntegrationJob[]
+  channels            Channel[]
+  commerceCustomers   CommerceCustomer[]
+  commerceProducts    CommerceProduct[]
+  commerceOrders      CommerceOrder[]
+  commerceCarts       CommerceCart[]
+
+  @@unique([workspaceId, provider, externalAccountId])
+  @@index([workspaceId, provider, status])
+  @@index([workspaceId, category, status])
+  @@index([externalAccountId])
+}
+
+// Provider-owned resources under an integration connection:
+// ad account, lead form, shop location, catalog, sheet tab, CRM object, etc.
+model IntegrationResource {
+  id            String   @id @default(uuid()) @db.Uuid
+  workspaceId   String   @db.Uuid
+  integrationId String   @db.Uuid
+  type          String
+  externalId    String
+  name          String?
+  status        String   @default("active")
+  settings      Json?
+  metadata      Json?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  workspace           Workspace              @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  integration         Integration            @relation(fields: [integrationId], references: [id], onDelete: Cascade)
+  contactIntegrations ContactIntegration[]
+  events              IntegrationEvent[]
+  jobs                IntegrationJob[]
+  channels            Channel[]
+  commerceCustomers   CommerceCustomer[]
+  commerceProducts    CommerceProduct[]
+  commerceOrders      CommerceOrder[]
+  commerceCarts       CommerceCart[]
+
+  @@unique([integrationId, type, externalId])
+  @@index([workspaceId, type, status])
+  @@index([workspaceId, integrationId])
+}
+
+// External identity for a contact in a non-chat business system.
+model ContactIntegration {
+  id            String   @id @default(uuid()) @db.Uuid
+  workspaceId   String   @db.Uuid
+  contactId     String   @db.Uuid
+  integrationId String   @db.Uuid
+  resourceId    String?  @db.Uuid
+  provider      String
+  externalId    String
+  role          String?
+  email         String?
+  phone         String?
+  profile       Json?
+  lastSeenAt    DateTime?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  workspace   Workspace            @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  contact     Contact              @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  integration Integration          @relation(fields: [integrationId], references: [id], onDelete: Cascade)
+  resource    IntegrationResource? @relation(fields: [resourceId], references: [id], onDelete: SetNull)
+  commerceCustomers CommerceCustomer[]
+
+  @@unique([integrationId, externalId])
+  @@index([workspaceId, contactId])
+  @@index([workspaceId, provider, externalId])
+  @@index([workspaceId, email])
+  @@index([workspaceId, phone])
+}
+
+// Durable inbox for webhooks and sync events before domain projection.
+model IntegrationEvent {
+  id              String   @id @default(uuid()) @db.Uuid
+  workspaceId     String   @db.Uuid
+  integrationId   String   @db.Uuid
+  resourceId      String?  @db.Uuid
+  provider        String
+  eventType       String
+  externalEventId String?
+  idempotencyKey  String
+  status          String   @default("received")
+  occurredAt      DateTime?
+  processedAt     DateTime?
+  payload         Json?
+  error           String?
+  createdAt       DateTime @default(now())
+
+  workspace   Workspace            @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  integration Integration          @relation(fields: [integrationId], references: [id], onDelete: Cascade)
+  resource    IntegrationResource? @relation(fields: [resourceId], references: [id], onDelete: SetNull)
+
+  @@unique([integrationId, idempotencyKey])
+  @@index([workspaceId, eventType, createdAt])
+  @@index([workspaceId, status, createdAt])
+  @@index([provider, externalEventId])
+}
+
+// Durable integration sync/action work.
+model IntegrationJob {
+  id            String   @id @default(uuid()) @db.Uuid
+  workspaceId   String   @db.Uuid
+  integrationId String   @db.Uuid
+  resourceId    String?  @db.Uuid
+  type          String
+  status        String   @default("pending")
+  attempts      Int      @default(0)
+  maxRetries    Int      @default(3)
+  scheduledAt   DateTime @default(now())
+  startedAt     DateTime?
+  completedAt   DateTime?
+  lastError     String?
+  input         Json?
+  output        Json?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  workspace   Workspace            @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  integration Integration          @relation(fields: [integrationId], references: [id], onDelete: Cascade)
+  resource    IntegrationResource? @relation(fields: [resourceId], references: [id], onDelete: SetNull)
+
+  @@index([status, scheduledAt])
+  @@index([workspaceId, integrationId, status])
+  @@index([workspaceId, type, createdAt])
+}
+
+// ============================================================
+// COMMERCE PROJECTIONS
+// ============================================================
+
+// Normalized customer profile from commerce providers such as Shopify,
+// WooCommerce, BigCommerce, Magento, or custom commerce integrations.
+model CommerceCustomer {
+  id                   String   @id @default(uuid()) @db.Uuid
+  workspaceId          String   @db.Uuid
+  integrationId        String   @db.Uuid
+  integrationResourceId String? @db.Uuid
+  contactId            String?  @db.Uuid
+  contactIntegrationId String?  @db.Uuid
+  provider             String
+  externalCustomerId   String
+  email                String?
+  phone                String?
+  firstName            String?
+  lastName             String?
+  company              String?
+  status               String   @default("active")
+  marketingOptIn       Boolean?
+  totalOrders          Int      @default(0)
+  totalSpentAmount     Int?
+  currency             String?
+  firstSeenAt          DateTime?
+  lastSeenAt           DateTime?
+  metadata             Json?
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  workspace          Workspace            @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  integration        Integration          @relation(fields: [integrationId], references: [id], onDelete: Cascade)
+  integrationResource IntegrationResource? @relation(fields: [integrationResourceId], references: [id], onDelete: SetNull)
+  contact            Contact?             @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  contactIntegration ContactIntegration?  @relation(fields: [contactIntegrationId], references: [id], onDelete: SetNull)
+  orders             CommerceOrder[]
+  carts              CommerceCart[]
+
+  @@unique([integrationId, externalCustomerId])
+  @@index([workspaceId, contactId])
+  @@index([workspaceId, provider, externalCustomerId])
+  @@index([workspaceId, email])
+  @@index([workspaceId, phone])
+}
+
+// Normalized product or variant snapshot used by order/cart line items and
+// audience filters. `externalKey` is provider adapter controlled.
+model CommerceProduct {
+  id                    String   @id @default(uuid()) @db.Uuid
+  workspaceId           String   @db.Uuid
+  integrationId         String   @db.Uuid
+  integrationResourceId String?  @db.Uuid
+  provider              String
+  externalKey           String
+  externalProductId     String
+  externalVariantId     String?
+  title                 String
+  sku                   String?
+  handle                String?
+  productType           String?
+  vendor                String?
+  status                String   @default("active")
+  imageUrl              String?
+  priceAmount           Int?
+  currency              String?
+  inventoryQuantity     Int?
+  metadata              Json?
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  workspace           Workspace            @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  integration         Integration          @relation(fields: [integrationId], references: [id], onDelete: Cascade)
+  integrationResource IntegrationResource? @relation(fields: [integrationResourceId], references: [id], onDelete: SetNull)
+  orderLineItems      CommerceOrderLineItem[]
+  cartLineItems       CommerceCartLineItem[]
+
+  @@unique([integrationId, externalKey])
+  @@index([workspaceId, provider, externalProductId])
+  @@index([workspaceId, sku])
+  @@index([workspaceId, status])
+}
+
+model CommerceOrder {
+  id                    String   @id @default(uuid()) @db.Uuid
+  workspaceId           String   @db.Uuid
+  integrationId         String   @db.Uuid
+  integrationResourceId String?  @db.Uuid
+  contactId             String?  @db.Uuid
+  commerceCustomerId    String?  @db.Uuid
+  provider              String
+  externalOrderId       String
+  orderNumber           String?
+  status                String   @default("created")
+  financialStatus       String?
+  fulfillmentStatus     String?
+  currency              String?
+  subtotalAmount        Int?
+  discountAmount        Int?
+  taxAmount             Int?
+  shippingAmount        Int?
+  totalAmount           Int?
+  email                 String?
+  phone                 String?
+  placedAt              DateTime?
+  paidAt                DateTime?
+  fulfilledAt           DateTime?
+  cancelledAt           DateTime?
+  metadata              Json?
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  workspace           Workspace            @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  integration         Integration          @relation(fields: [integrationId], references: [id], onDelete: Cascade)
+  integrationResource IntegrationResource? @relation(fields: [integrationResourceId], references: [id], onDelete: SetNull)
+  contact             Contact?             @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  commerceCustomer    CommerceCustomer?    @relation(fields: [commerceCustomerId], references: [id], onDelete: SetNull)
+  lineItems           CommerceOrderLineItem[]
+
+  @@unique([integrationId, externalOrderId])
+  @@index([workspaceId, contactId, placedAt])
+  @@index([workspaceId, status, placedAt])
+  @@index([workspaceId, provider, externalOrderId])
+}
+
+model CommerceOrderLineItem {
+  id                String   @id @default(uuid()) @db.Uuid
+  workspaceId       String   @db.Uuid
+  orderId           String   @db.Uuid
+  productId         String?  @db.Uuid
+  externalLineItemId String?
+  externalProductId String?
+  externalVariantId String?
+  sku               String?
+  title             String
+  quantity          Int      @default(1)
+  unitPriceAmount   Int?
+  totalAmount       Int?
+  metadata          Json?
+  createdAt         DateTime @default(now())
+
+  workspace Workspace        @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  order     CommerceOrder    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  product   CommerceProduct? @relation(fields: [productId], references: [id], onDelete: SetNull)
+
+  @@index([workspaceId, orderId])
+  @@index([workspaceId, productId])
+  @@index([workspaceId, sku])
+}
+
+model CommerceCart {
+  id                    String   @id @default(uuid()) @db.Uuid
+  workspaceId           String   @db.Uuid
+  integrationId         String   @db.Uuid
+  integrationResourceId String?  @db.Uuid
+  contactId             String?  @db.Uuid
+  commerceCustomerId    String?  @db.Uuid
+  provider              String
+  externalCartId        String
+  externalCheckoutId    String?
+  status                String   @default("active")
+  currency              String?
+  subtotalAmount        Int?
+  totalAmount           Int?
+  itemCount             Int      @default(0)
+  checkoutUrl           String?
+  email                 String?
+  phone                 String?
+  providerCreatedAt     DateTime?
+  providerUpdatedAt     DateTime?
+  abandonedAt           DateTime?
+  recoveredAt           DateTime?
+  expiresAt             DateTime?
+  metadata              Json?
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  workspace           Workspace            @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  integration         Integration          @relation(fields: [integrationId], references: [id], onDelete: Cascade)
+  integrationResource IntegrationResource? @relation(fields: [integrationResourceId], references: [id], onDelete: SetNull)
+  contact             Contact?             @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  commerceCustomer    CommerceCustomer?    @relation(fields: [commerceCustomerId], references: [id], onDelete: SetNull)
+  lineItems           CommerceCartLineItem[]
+
+  @@unique([integrationId, externalCartId])
+  @@index([workspaceId, contactId, updatedAt])
+  @@index([workspaceId, status, abandonedAt])
+  @@index([workspaceId, provider, externalCartId])
+}
+
+model CommerceCartLineItem {
+  id                String   @id @default(uuid()) @db.Uuid
+  workspaceId       String   @db.Uuid
+  cartId            String   @db.Uuid
+  productId         String?  @db.Uuid
+  externalLineItemId String?
+  externalProductId String?
+  externalVariantId String?
+  sku               String?
+  title             String
+  quantity          Int      @default(1)
+  unitPriceAmount   Int?
+  totalAmount       Int?
+  metadata          Json?
+  createdAt         DateTime @default(now())
+
+  workspace Workspace        @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  cart      CommerceCart     @relation(fields: [cartId], references: [id], onDelete: Cascade)
+  product   CommerceProduct? @relation(fields: [productId], references: [id], onDelete: SetNull)
+
+  @@index([workspaceId, cartId])
+  @@index([workspaceId, productId])
+  @@index([workspaceId, sku])
 }
 
 // ============================================================

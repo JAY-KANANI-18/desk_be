@@ -7,8 +7,14 @@ function buildDatabaseUrl() {
 
     try {
         const url = new URL(rawUrl);
-        const connectionLimit = process.env.PRISMA_CONNECTION_LIMIT || process.env.DATABASE_CONNECTION_LIMIT;
-        const poolTimeout = process.env.PRISMA_POOL_TIMEOUT || process.env.DATABASE_POOL_TIMEOUT;
+        const connectionLimit =
+            process.env.PRISMA_CONNECTION_LIMIT ||
+            process.env.DATABASE_CONNECTION_LIMIT ||
+            '3';
+        const poolTimeout =
+            process.env.PRISMA_POOL_TIMEOUT ||
+            process.env.DATABASE_POOL_TIMEOUT ||
+            '20';
 
         if (connectionLimit && !url.searchParams.has('connection_limit')) {
             url.searchParams.set('connection_limit', connectionLimit);

@@ -465,6 +465,10 @@ export class ChannelService {
 
     /** Meta Ads (Marketing API) — one hidden channel row per workspace for webhooks & inbox routing; excluded from channel picker APIs. */
     async connectMetaAdsOAuthCode(code: string, workspaceId: string) {
+        throw new Error('Meta Ads connections are handled by the integrations module.');
+    }
+
+    private async connectLegacyMetaAdsOAuthCode(code: string, workspaceId: string) {
         const redirectUri = process.env.META_ADS_REDIRECT_URI || process.env.META_REDIRECT_URI;
         const userToken = await this.exchangeCode(code, redirectUri);
 

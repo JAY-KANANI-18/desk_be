@@ -7,11 +7,13 @@ import { InviteUserDto } from './workspace.controller';
 import { OrgPermission, OrgRole } from 'src/common/constants/permissions';
 import { AuthService } from '../auth/auth.service';
 import { seedDefaultLifecycleStages } from '../lifecycle/default-lifecycle-stages';
+import { IntegrationsService } from '../integrations/integrations.service';
 
 @Injectable()
 export class WorkspaceService {
     constructor(private prisma: PrismaService,
         private authService: AuthService,
+        private integrationsService: IntegrationsService,
 
     ) { }
 
@@ -426,6 +428,10 @@ export class WorkspaceService {
     }
 
     async getIntegrationsCatalog(workspaceId: string) {
+        return this.integrationsService.listCatalog(workspaceId);
+    }
+
+    private async getLegacyIntegrationsCatalog(workspaceId: string) {
         const metaRow = await this.prisma.channel.findFirst({
             where: { workspaceId, type: 'meta_ads' },
         });
@@ -456,6 +462,10 @@ export class WorkspaceService {
     }
 
     async disconnectIntegration(workspaceId: string, integrationId: string) {
+        return this.integrationsService.disconnectProvider(workspaceId, integrationId);
+    }
+
+    private async disconnectLegacyIntegration(workspaceId: string, integrationId: string) {
         if (integrationId === 'meta_ads') {
             await this.prisma.channel.deleteMany({
                 where: { workspaceId, type: 'meta_ads' },

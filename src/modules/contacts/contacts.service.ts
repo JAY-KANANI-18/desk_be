@@ -15,6 +15,7 @@ import { MergeContactsDto } from './dto/merge-contact.dto';
 import { ActivityService } from '../activity/activity.service';
 import { resolveContactAvatarUrl } from '../../common/contacts/static-contact-avatar';
 import { normalizePhoneIdentifier } from '../../common/utils/contact-identifier.util';
+import { CommerceService } from '../commerce/commerce.service';
 
 const CONTACT_INCLUDE = {
   tags: { include: { tag: true } },
@@ -41,6 +42,36 @@ const CONTACT_INCLUDE = {
       hasPermanentCallPermission: true,
     },
   },
+  contactIntegrations: {
+    orderBy: { createdAt: 'asc' as const },
+    select: {
+      id: true,
+      provider: true,
+      externalId: true,
+      role: true,
+      email: true,
+      phone: true,
+      lastSeenAt: true,
+      integration: {
+        select: {
+          id: true,
+          provider: true,
+          name: true,
+          externalAccountId: true,
+          externalAccountName: true,
+          status: true,
+        },
+      },
+      resource: {
+        select: {
+          id: true,
+          type: true,
+          name: true,
+          externalId: true,
+        },
+      },
+    },
+  },
   mergedIntoContact: {
     select: {
       id: true,
@@ -61,6 +92,7 @@ export class ContactsService {
     private realtime: RealtimeService,
     private events: EventEmitter2,
     private activity: ActivityService,
+    private commerce: CommerceService,
   ) {}
 
   private listContactsWhere(
@@ -445,6 +477,16 @@ async removeTag(workspaceId: string, contactId: string, tagId: string) {
         suggestions: duplicateSummary.suggestions.slice(0, 3),
       },
     };
+  }
+
+  async getCommerceContext(workspaceId: string, id: string) {
+    const contact = await this.prisma.contact.findFirst({
+      where: { id, workspaceId },
+      select: { id: true },
+    });
+    if (!contact) throw new NotFoundException('Contact not found');
+
+    return this.commerce.getContactCommerceContext(workspaceId, id);
   }
 
   async exportContacts(

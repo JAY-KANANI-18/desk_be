@@ -1,7 +1,7 @@
 import { Body, Controller, Get, Param, Patch, Post, Query, Req } from '@nestjs/common';
 import { Public, WorkspaceRoute } from 'src/common/auth/route-access.decorator';
 import { WorkspacePermission } from 'src/common/constants/permissions';
-import { BroadcastsService } from './broadcasts.service';
+import { BroadcastAudienceFilters, BroadcastsService } from './broadcasts.service';
 
 @Controller('api/broadcasts')
 export class BroadcastsController {
@@ -48,6 +48,7 @@ export class BroadcastsController {
       tagIds?: string[];
       lifecycleId?: string;
       respectMarketingOptOut?: boolean;
+      commerce?: BroadcastAudienceFilters['commerce'];
       limit?: number;
     },
   ) {
@@ -59,6 +60,7 @@ export class BroadcastsController {
         tagIds: dto.tagIds,
         lifecycleId: dto.lifecycleId,
         respectMarketingOptOut: dto.respectMarketingOptOut,
+        commerce: dto.commerce,
       },
       limit: dto.limit,
     });
@@ -77,6 +79,7 @@ export class BroadcastsController {
       tagIds?: string[];
       lifecycleId?: string;
       respectMarketingOptOut?: boolean;
+      commerce?: BroadcastAudienceFilters['commerce'];
       limit?: number;
       scheduledAt?: string;
     },
@@ -92,6 +95,7 @@ export class BroadcastsController {
         tagIds: dto.tagIds || [],
         lifecycleId: dto.lifecycleId,
         respectMarketingOptOut: dto.respectMarketingOptOut,
+        commerce: dto.commerce,
       },
       limit: dto.limit || 200,
       scheduledAt: dto.scheduledAt,
