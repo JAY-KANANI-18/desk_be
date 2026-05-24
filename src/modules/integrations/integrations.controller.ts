@@ -53,6 +53,26 @@ export class IntegrationsController {
     });
   }
 
+  @Get(':integrationId/commerce/:resourceType')
+  @WorkspaceRoute(WorkspacePermission.CHANNELS_MANAGE)
+  getCommerceRecords(
+    @Req() req: WorkspaceRequest,
+    @Param('integrationId') integrationId: string,
+    @Param('resourceType') resourceType: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    return this.integrations.listIntegrationCommerceRecords(
+      req.workspaceId,
+      integrationId,
+      resourceType,
+      {
+        page: page ? Number(page) : undefined,
+        limit: limit ? Number(limit) : undefined,
+      },
+    );
+  }
+
   @Post(':integrationId/sync')
   @WorkspaceRoute(WorkspacePermission.CHANNELS_MANAGE)
   syncIntegration(

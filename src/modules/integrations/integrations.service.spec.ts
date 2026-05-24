@@ -23,6 +23,12 @@ import { IntegrationsService } from './integrations.service';
 type PrismaMock = {
   integration: {
     findFirst: jest.Mock;
+    findMany: jest.Mock;
+    update: jest.Mock;
+    updateMany: jest.Mock;
+  };
+  channel: {
+    findFirst: jest.Mock;
   };
   integrationEvent: {
     findMany: jest.Mock;
@@ -36,6 +42,22 @@ type PrismaMock = {
     create: jest.Mock;
     update: jest.Mock;
   };
+  commerceOrder: {
+    findMany: jest.Mock;
+    count: jest.Mock;
+  };
+  commerceCart: {
+    findMany: jest.Mock;
+    count: jest.Mock;
+  };
+  commerceCustomer: {
+    findMany: jest.Mock;
+    count: jest.Mock;
+  };
+  commerceProduct: {
+    findMany: jest.Mock;
+    count: jest.Mock;
+  };
 };
 
 type IntegrationJobQueueMock = {
@@ -45,6 +67,12 @@ type IntegrationJobQueueMock = {
 function createService() {
   const prisma: PrismaMock = {
     integration: {
+      findFirst: jest.fn(),
+      findMany: jest.fn(),
+      update: jest.fn(),
+      updateMany: jest.fn(),
+    },
+    channel: {
       findFirst: jest.fn(),
     },
     integrationEvent: {
@@ -59,12 +87,29 @@ function createService() {
       create: jest.fn(),
       update: jest.fn(),
     },
+    commerceOrder: {
+      findMany: jest.fn(),
+      count: jest.fn(),
+    },
+    commerceCart: {
+      findMany: jest.fn(),
+      count: jest.fn(),
+    },
+    commerceCustomer: {
+      findMany: jest.fn(),
+      count: jest.fn(),
+    },
+    commerceProduct: {
+      findMany: jest.fn(),
+      count: jest.fn(),
+    },
   };
   const integrationJobQueue: IntegrationJobQueueMock = {
     add: jest.fn(async () => undefined),
   };
   const adapterRegistry = {
     get: jest.fn(),
+    maybeGet: jest.fn(),
   };
 
   const service = new IntegrationsService(
@@ -79,6 +124,240 @@ function createService() {
   return { prisma, integrationJobQueue, adapterRegistry, service };
 }
 
+describe('IntegrationsService catalog', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it('returns all active connection rows separately from the provider catalog', async () => {
+    const { prisma, adapterRegistry, service } = createService();
+    const updatedAt = new Date('2026-05-19T10:00:00.000Z');
+    const connectedAt = new Date('2026-05-19T09:00:00.000Z');
+    prisma.integration.findMany.mockResolvedValue([
+      {
+        id: 'shopify-2',
+        provider: 'shopify',
+        status: 'connected',
+        externalAccountId: 'second.myshopify.com',
+        externalAccountName: 'Second Store',
+        metadata: { shopDomain: 'second.myshopify.com', shopName: 'Second Store' },
+        health: null,
+        connectedAt,
+        lastSyncedAt: updatedAt,
+        lastWebhookAt: null,
+      },
+      {
+        id: 'shopify-1',
+        provider: 'shopify',
+        status: 'connected',
+        externalAccountId: 'first.myshopify.com',
+        externalAccountName: 'First Store',
+        metadata: { shopDomain: 'first.myshopify.com', shopName: 'First Store' },
+        health: null,
+        connectedAt,
+        lastSyncedAt: null,
+        lastWebhookAt: null,
+      },
+    ]);
+    prisma.channel.findFirst.mockResolvedValue(null);
+    adapterRegistry.maybeGet.mockReturnValue({
+      summarize: (integration: { externalAccountId: string; externalAccountName: string }) => ({
+        shopDomain: integration.externalAccountId,
+        shopName: integration.externalAccountName,
+      }),
+      webhookPath: (integration: { id: string }) => `/api/integrations/shopify/webhook/${integration.id}`,
+      buildSyncJob: jest.fn(),
+    });
+
+    const result = await service.listCatalog('workspace-1');
+
+    const shopifyCatalog = result.integrations.find((item) => item.id === 'shopify');
+    expect(shopifyCatalog?.integrationId).toBe('shopify-2');
+    expect(shopifyCatalog?.summary?.shopName).toBe('Second Store');
+
+    const shopifyConnections = result.connections.filter((item) => item.id === 'shopify');
+    expect(shopifyConnections).toHaveLength(2);
+    expect(shopifyConnections.map((item) => item.integrationId)).toEqual([
+      'shopify-2',
+      'shopify-1',
+    ]);
+  });
+
+  it('disconnects one integration instance when a row id is provided', async () => {
+    const { prisma, service } = createService();
+    prisma.integration.findFirst.mockResolvedValue({ id: 'integration-1' });
+    prisma.integration.update.mockResolvedValue({});
+
+    await service.disconnectIntegration('workspace-1', 'integration-1');
+
+    expect(prisma.integration.findFirst).toHaveBeenCalledWith({
+      where: { id: 'integration-1', workspaceId: 'workspace-1' },
+      select: { id: true },
+    });
+    expect(prisma.integration.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'integration-1' },
+        data: expect.objectContaining({
+          status: 'disconnected',
+          credentialsEncrypted: null,
+        }),
+      }),
+    );
+    expect(prisma.integration.updateMany).not.toHaveBeenCalled();
+  });
+});
+
+describe('IntegrationsService commerce records', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it('lists commerce customers with tenant scope and bounded offset pagination', async () => {
+    const { prisma, service } = createService();
+    prisma.integration.findFirst.mockResolvedValue({
+      id: 'integration-1',
+      status: 'connected',
+    });
+    prisma.commerceCustomer.findMany.mockResolvedValue([
+      {
+        id: 'customer-1',
+        externalCustomerId: 'gid://shopify/Customer/1',
+        email: 'customer@example.com',
+        firstName: 'Priya',
+        lastName: 'Shah',
+        status: 'active',
+        totalOrders: 3,
+        totalSpentAmount: 125000,
+        currency: 'INR',
+      },
+    ]);
+    prisma.commerceCustomer.count.mockResolvedValue(11);
+
+    const result = await service.listIntegrationCommerceRecords(
+      'workspace-1',
+      'integration-1',
+      'customers',
+      { page: 2, limit: 10 },
+    );
+
+    expect(prisma.integration.findFirst).toHaveBeenCalledWith({
+      where: { id: 'integration-1', workspaceId: 'workspace-1' },
+      select: { id: true, status: true },
+    });
+    expect(prisma.commerceCustomer.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { workspaceId: 'workspace-1', integrationId: 'integration-1' },
+        skip: 10,
+        take: 10,
+        select: expect.not.objectContaining({
+          metadata: true,
+        }),
+      }),
+    );
+    expect(prisma.commerceCustomer.count).toHaveBeenCalledWith({
+      where: { workspaceId: 'workspace-1', integrationId: 'integration-1' },
+    });
+    expect(result).toEqual({
+      items: [
+        expect.objectContaining({
+          id: 'customer-1',
+          email: 'customer@example.com',
+        }),
+      ],
+      pagination: {
+        total: 11,
+        page: 2,
+        limit: 10,
+        totalPages: 2,
+        hasNextPage: false,
+        hasPrevPage: true,
+      },
+    });
+  });
+
+  it('lists checkouts from commerce carts without returning raw metadata', async () => {
+    const { prisma, service } = createService();
+    prisma.integration.findFirst.mockResolvedValue({
+      id: 'integration-1',
+      status: 'connected',
+    });
+    prisma.commerceCart.findMany.mockResolvedValue([
+      {
+        id: 'cart-1',
+        externalCartId: 'cart-1',
+        externalCheckoutId: 'checkout-1',
+        status: 'abandoned',
+        totalAmount: 249900,
+        currency: 'INR',
+        itemCount: 2,
+      },
+    ]);
+    prisma.commerceCart.count.mockResolvedValue(1);
+
+    const result = await service.listIntegrationCommerceRecords(
+      'workspace-1',
+      'integration-1',
+      'checkouts',
+    );
+
+    expect(prisma.commerceCart.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          workspaceId: 'workspace-1',
+          integrationId: 'integration-1',
+          OR: [
+            { externalCheckoutId: { not: null } },
+            { checkoutUrl: { not: null } },
+          ],
+        },
+        take: 10,
+        select: expect.not.objectContaining({
+          metadata: true,
+        }),
+      }),
+    );
+    expect(result.items).toEqual([
+      expect.objectContaining({
+        externalCheckoutId: 'checkout-1',
+        status: 'abandoned',
+      }),
+    ]);
+    expect(result.pagination).toMatchObject({
+      total: 1,
+      page: 1,
+      limit: 10,
+    });
+  });
+
+  it('rejects unsupported commerce resource types before querying projections', async () => {
+    const { prisma, service } = createService();
+    prisma.integration.findFirst.mockResolvedValue({
+      id: 'integration-1',
+      status: 'connected',
+    });
+
+    await expect(
+      service.listIntegrationCommerceRecords('workspace-1', 'integration-1', 'refunds'),
+    ).rejects.toThrow(BadRequestException);
+
+    expect(prisma.commerceOrder.findMany).not.toHaveBeenCalled();
+    expect(prisma.commerceCart.findMany).not.toHaveBeenCalled();
+    expect(prisma.commerceCustomer.findMany).not.toHaveBeenCalled();
+    expect(prisma.commerceProduct.findMany).not.toHaveBeenCalled();
+  });
+
+  it('does not query commerce records when the integration is outside the workspace', async () => {
+    const { prisma, service } = createService();
+    prisma.integration.findFirst.mockResolvedValue(null);
+
+    await expect(
+      service.listIntegrationCommerceRecords('workspace-1', 'integration-other', 'orders'),
+    ).rejects.toThrow(NotFoundException);
+
+    expect(prisma.commerceOrder.findMany).not.toHaveBeenCalled();
+  });
+});
+
 describe('IntegrationsService operation logs', () => {
   beforeEach(() => {
     jest.clearAllMocks();
@@ -92,6 +371,7 @@ describe('IntegrationsService operation logs', () => {
         id: 'event-1',
         provider: 'shopify',
         eventType: 'commerce.order_paid',
+        externalEventId: 'order-1',
         status: 'processed',
         createdAt: new Date('2026-05-14T10:00:00.000Z'),
       },
@@ -99,6 +379,7 @@ describe('IntegrationsService operation logs', () => {
         id: 'event-2',
         provider: 'shopify',
         eventType: 'commerce.cart_abandoned',
+        externalEventId: 'cart-1',
         status: 'received',
         createdAt: new Date('2026-05-14T09:00:00.000Z'),
       },
@@ -106,10 +387,41 @@ describe('IntegrationsService operation logs', () => {
         id: 'event-3',
         provider: 'shopify',
         eventType: 'commerce.customer_updated',
+        externalEventId: 'customer-1',
         status: 'processed',
         createdAt: new Date('2026-05-14T08:00:00.000Z'),
       },
     ]);
+    prisma.commerceOrder.findMany.mockResolvedValue([
+      {
+        externalOrderId: 'order-1',
+        orderNumber: '#1001',
+        status: 'paid',
+        financialStatus: 'paid',
+        fulfillmentStatus: null,
+        currency: 'INR',
+        totalAmount: 129900,
+        email: 'customer@example.com',
+        phone: null,
+        commerceCustomer: null,
+        lineItems: [{ title: 'Kurta', quantity: 1 }],
+      },
+    ]);
+    prisma.commerceCart.findMany.mockResolvedValue([
+      {
+        externalCartId: 'cart-1',
+        externalCheckoutId: 'checkout-1',
+        status: 'abandoned',
+        currency: 'INR',
+        totalAmount: 249900,
+        itemCount: 2,
+        email: 'cart@example.com',
+        phone: null,
+        commerceCustomer: null,
+        lineItems: [{ title: 'Sneakers', quantity: 2 }],
+      },
+    ]);
+    prisma.commerceCustomer.findMany.mockResolvedValue([]);
 
     const result = await service.listIntegrationEvents('workspace-1', 'integration-1', {
       limit: 2,
@@ -132,6 +444,25 @@ describe('IntegrationsService operation logs', () => {
       }),
     );
     expect(result.items.map((item) => item.id)).toEqual(['event-1', 'event-2']);
+    expect(result.items[0]).toMatchObject({
+      summary: {
+        resourceType: 'order',
+        identifier: '#1001',
+        customerLabel: 'customer@example.com',
+        totalAmount: 129900,
+        currency: 'INR',
+        itemPreview: 'Kurta',
+      },
+    });
+    expect(result.items[1]).toMatchObject({
+      summary: {
+        resourceType: 'cart',
+        identifier: 'checkout-1',
+        customerLabel: 'cart@example.com',
+        itemCount: 2,
+        itemPreview: 'Sneakers x2',
+      },
+    });
     expect(result.nextCursor).toBe('event-2');
   });
 

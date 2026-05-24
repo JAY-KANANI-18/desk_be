@@ -93,6 +93,7 @@ export class InboundService {
         conversationId: conversation.id,
         source: openedConversation?.source ?? 'conversation',
         channel: channelType,
+        channelId,
       });
     }
     

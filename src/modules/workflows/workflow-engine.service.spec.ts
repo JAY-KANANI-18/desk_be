@@ -43,7 +43,7 @@ type PrismaMock = {
   contact: ContactDelegateMock;
   contactTag: { upsert: jest.Mock };
   contactChannel: { findFirst: jest.Mock };
-  conversation: { findFirst: jest.Mock };
+  conversation: { create: jest.Mock; findFirst: jest.Mock };
   conversationActivity: { create: jest.Mock };
   tag: { create: jest.Mock; findFirst: jest.Mock };
   teamMember: { findMany: jest.Mock };
@@ -129,22 +129,26 @@ type WorkflowEngineFieldTestApi = {
       type?: string;
       data: {
         channel?: string;
+        deliveryStrategy?: string;
         defaultMessage?: { text?: string };
         attachments?: Array<Record<string, unknown>>;
         metadata?: Record<string, unknown>;
         addMessageFailureBranch?: boolean;
+        templateButtonBranching?: boolean;
         connectors?: string[];
       };
     },
     ctx: WorkflowRunContext,
     config?: { steps: unknown[] },
-  ): Promise<{ output: Record<string, unknown>; branchConnectorId?: string }>;
+  ): Promise<{ output: Record<string, unknown>; suspend?: boolean; waitFor?: string; branchConnectorId?: string }>;
   handleAskQuestion(
     step: {
       id: string;
       data: {
         questionText: string;
         questionType: string;
+        channel?: string;
+        deliveryStrategy?: string;
         multipleChoiceOptions?: Array<{ id: string; label: string }>;
         saveAsVariable?: boolean;
         variableName?: string;
@@ -159,6 +163,14 @@ type WorkflowEngineFieldTestApi = {
     ctx: WorkflowRunContext,
     config: { steps: unknown[] },
   ): Promise<{ output: Record<string, unknown>; suspend?: boolean; branchConnectorId?: string | null }>;
+  handleWait(
+    step: {
+      id: string;
+      data: { value: number; unit: string };
+    },
+    ctx: WorkflowRunContext,
+    config: { steps: Array<{ id: string; type: string; parentId: string }> },
+  ): Promise<{ output: Record<string, unknown>; suspend?: boolean }>;
   handleTriggerAnotherWorkflow(
     step: {
       id?: string;
@@ -188,6 +200,7 @@ function createService(activity?: ActivityMock) {
       findFirst: jest.fn(),
     },
     conversation: {
+      create: jest.fn(),
       findFirst: jest.fn(),
     },
     conversationActivity: {
@@ -390,6 +403,101 @@ describe('WorkflowEngineService contact field updates', () => {
     );
     expect(redis.client.del).toHaveBeenCalledWith('wf:ctx:run-1');
     expect(redis.client.del).toHaveBeenCalledWith('wf:active:workspace-1:contact-1');
+  });
+
+  it('creates and opens a conversation for commerce workflow runs before timeline logging', async () => {
+    const activity: ActivityMock = {
+      record: jest.fn(async (dto) => ({
+        id: `${dto.eventType}-activity-1`,
+        conversationId: dto.conversationId,
+        eventType: dto.eventType,
+        actorType: dto.actorType,
+        metadata: dto.metadata,
+        createdAt: '2026-05-07T10:30:00.000Z',
+        description: dto.eventType,
+      })),
+    };
+    const { prisma, redis, service } = createService(activity);
+    prisma.workflow.findFirst.mockResolvedValue({
+      id: 'workflow-1',
+      name: 'Order Created',
+      status: 'published',
+      config: {
+        trigger: { type: 'commerce.order_created' },
+        steps: [
+          {
+            id: 'send-message-step',
+            parentId: 'trigger',
+            type: 'send_message',
+          },
+        ],
+      },
+    });
+    prisma.contact.findUnique.mockResolvedValue({
+      id: 'contact-1',
+      firstName: 'Jay',
+      lastName: 'Kanani',
+      status: 'closed',
+      tags: [],
+      assigneeId: null,
+      teamId: null,
+      lifecycleId: null,
+      assignee: null,
+      team: null,
+      lifecycle: null,
+    });
+    prisma.workflowRun.create.mockResolvedValue({ id: 'run-1' });
+    prisma.conversation.findFirst.mockResolvedValue(null);
+    prisma.conversation.create.mockResolvedValue({
+      id: 'conversation-new',
+      lastMessage: null,
+    });
+    prisma.contact.updateMany.mockResolvedValue({ count: 1 });
+
+    await service.startRun({
+      workspaceId: 'workspace-1',
+      workflowId: 'workflow-1',
+      contactId: 'contact-1',
+      triggerData: { eventType: 'commerce.order_created', orderNumber: '#1001' },
+    });
+
+    expect(prisma.conversation.create).toHaveBeenCalledWith({
+      data: {
+        workspaceId: 'workspace-1',
+        contactId: 'contact-1',
+      },
+      include: { lastMessage: true },
+    });
+    expect(prisma.contact.updateMany).toHaveBeenCalledWith({
+      where: { id: 'contact-1', workspaceId: 'workspace-1' },
+      data: { status: 'open' },
+    });
+    expect(activity.record).toHaveBeenCalledWith({
+      workspaceId: 'workspace-1',
+      conversationId: 'conversation-new',
+      eventType: 'workflow_started',
+      actorType: 'automation',
+      metadata: {
+        workflowId: 'workflow-1',
+        workflowName: 'Order Created',
+        runId: 'run-1',
+      },
+    });
+    expect(redis.client.setex).toHaveBeenCalledWith(
+      'wf:ctx:run-1',
+      expect.any(Number),
+      expect.stringContaining('"conversationId":"conversation-new"'),
+    );
+    expect(redis.client.setex).toHaveBeenCalledWith(
+      'wf:ctx:run-1',
+      expect.any(Number),
+      expect.stringContaining('"status":"open"'),
+    );
+    expect(workflowQueue.add).toHaveBeenCalledWith(
+      'execute-step',
+      { type: 'EXECUTE_STEP', runId: 'run-1', stepId: 'send-message-step' },
+      expect.objectContaining({ jobId: expect.stringContaining('step-run-1-send-message-step') }),
+    );
   });
 
   it('starts a workflow from the requested target step when another workflow triggers it', async () => {
@@ -1028,6 +1136,162 @@ describe('WorkflowEngineService ask question', () => {
     expect(mockWaitUntilFinished).toHaveBeenCalledWith(expect.any(Object), 30000);
   });
 
+  it('blocks trigger-channel sends when the workflow trigger is not chat-based', async () => {
+    const { prisma, service } = createService();
+    prisma.conversation.findFirst.mockResolvedValue({
+      id: 'conversation-1',
+      lastMessage: { channelId: 'whatsapp-channel-1' },
+    });
+
+    await expect(
+      service.handleSendMessage(
+        {
+          id: 'send-message-step',
+          type: 'send_message',
+          data: {
+            channel: 'trigger_channel',
+            deliveryStrategy: 'trigger_channel',
+            defaultMessage: { text: 'prod 1' },
+          },
+        },
+        createContext(),
+        {
+          trigger: { type: 'commerce.abandoned_cart' },
+          steps: [],
+        } as any,
+      ),
+    ).resolves.toEqual({
+      output: {
+        skipped: true,
+        reason: 'This workflow does not start from a chat. Choose one channel.',
+      },
+    });
+
+    expect(mockMessageProcessingQueueAdd).not.toHaveBeenCalled();
+  });
+
+  it('asks a question on a selected specific channel', async () => {
+    const { prisma, service } = createService();
+    prisma.conversation.findFirst.mockResolvedValue({
+      id: 'conversation-1',
+      lastMessage: { channelId: 'whatsapp-channel-1' },
+    });
+
+    await expect(
+      service.handleAskQuestion(
+        {
+          id: 'ask-question-step',
+          data: {
+            channel: 'email-channel-1',
+            deliveryStrategy: 'specific_channel',
+            questionText: 'What is your email?',
+            questionType: 'email',
+          },
+        },
+        createContext(),
+        {
+          trigger: { type: 'commerce.abandoned_cart' },
+          steps: [],
+        } as any,
+      ),
+    ).resolves.toEqual({
+      output: { waiting: true, quickReplies: 0 },
+      suspend: true,
+    });
+
+    expect(mockMessageProcessingQueueAdd).toHaveBeenCalledWith(
+      'outbound.send_message',
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          channelId: 'email-channel-1',
+          text: 'What is your email?',
+        }),
+      }),
+    );
+  });
+
+  it('creates a conversation and sends approved template metadata for commerce first-touch messages', async () => {
+    const { prisma, redis, service } = createService();
+    prisma.conversation.findFirst.mockResolvedValueOnce(null);
+    prisma.conversation.create.mockResolvedValue({
+      id: 'conversation-new',
+      lastMessage: null,
+    });
+
+    await expect(
+      service.handleSendMessage(
+        {
+          id: 'send-message-step',
+          type: 'send_message',
+          data: {
+            channel: 'whatsapp-channel-1',
+            defaultMessage: { text: '' },
+            metadata: {
+              template: {
+                name: 'order_confirmation',
+                language: 'en_US',
+                variables: {
+                  '1': '{{trigger.orderNumber}}',
+                  '2': '{{contact.first_name}}',
+                },
+                components: [{ type: 'BODY', text: 'Order {{1}} for {{2}}' }],
+              },
+            },
+          },
+        },
+        {
+          ...createContext(),
+          contact: { firstName: 'Jay' },
+          trigger: { orderNumber: '#1001' },
+        },
+      ),
+    ).resolves.toEqual({
+      output: {
+        sent: true,
+        text: '',
+        attachments: 0,
+        template: 'order_confirmation',
+      },
+    });
+
+    expect(prisma.conversation.create).toHaveBeenCalledWith({
+      data: {
+        workspaceId: 'workspace-1',
+        contactId: 'contact-1',
+      },
+      include: { lastMessage: true },
+    });
+    expect(redis.client.setex).toHaveBeenCalledWith(
+      'wf:ctx:run-1',
+      expect.any(Number),
+      expect.stringContaining('"conversationId":"conversation-new"'),
+    );
+    expect(mockMessageProcessingQueueAdd).toHaveBeenCalledWith(
+      'outbound.send_message',
+      {
+        kind: 'outbound.send_message',
+        payload: {
+          workspaceId: 'workspace-1',
+          conversationId: 'conversation-new',
+          channelId: 'whatsapp-channel-1',
+          text: undefined,
+          attachments: [],
+          metadata: {
+            template: {
+              name: 'order_confirmation',
+              language: 'en_US',
+              variables: {
+                '1': '#1001',
+                '2': 'Jay',
+              },
+              components: [{ type: 'BODY', text: 'Order {{1}} for {{2}}' }],
+            },
+          },
+        },
+      },
+    );
+  });
+
   it('routes successful send message steps through the success connector when failure branching is enabled', async () => {
     const { prisma, service } = createService();
     prisma.conversation.findFirst.mockResolvedValue({
@@ -1113,6 +1377,125 @@ describe('WorkflowEngineService ask question', () => {
       output: { failed: true, reason: 'provider rejected' },
       branchConnectorId: 'failure-connector',
     });
+  });
+
+  it('waits for a template quick-reply button when template button branching is enabled', async () => {
+    const { prisma, service } = createService();
+    prisma.conversation.findFirst.mockResolvedValue({
+      id: 'conversation-1',
+      lastMessage: { channelId: 'whatsapp-channel-1' },
+    });
+
+    await expect(
+      service.handleSendMessage(
+        {
+          id: 'send-message-step',
+          type: 'send_message',
+          data: {
+            channel: 'last_interacted',
+            defaultMessage: { text: '' },
+            templateButtonBranching: true,
+            metadata: {
+              template: {
+                name: 'order_confirmation',
+                language: 'en',
+                variables: {},
+                components: [
+                  {
+                    type: 'BUTTONS',
+                    buttons: [
+                      { type: 'QUICK_REPLY', text: 'Confirm Order' },
+                      { type: 'QUICK_REPLY', text: 'Talk To Support' },
+                    ],
+                  },
+                ],
+              },
+            },
+          },
+        },
+        createContext(),
+        {
+          steps: [
+            {
+              id: 'confirm-connector',
+              parentId: 'send-message-step',
+              type: 'branch_connector',
+              name: 'Confirm Order',
+            },
+            {
+              id: 'support-connector',
+              parentId: 'send-message-step',
+              type: 'branch_connector',
+              name: 'Talk To Support',
+            },
+          ],
+        },
+      ),
+    ).resolves.toEqual({
+      output: {
+        sent: true,
+        text: '',
+        attachments: 0,
+        template: 'order_confirmation',
+        waiting: true,
+        waitFor: 'template_button',
+      },
+      suspend: true,
+      waitFor: 'template_button',
+    });
+  });
+
+  it('routes a stored template button reply to the matching connector without resending', async () => {
+    const { service } = createService();
+    const ctx = createContext();
+    ctx.vars = {
+      templateButtonReplyStepId: 'send-message-step',
+      templateButtonReply: 'opaque-provider-id',
+      templateButtonReplyTitle: 'Talk To Support',
+      templateButtonReplyMessageId: 'message-1',
+    };
+
+    await expect(
+      service.handleSendMessage(
+        {
+          id: 'send-message-step',
+          type: 'send_message',
+          data: {
+            channel: 'last_interacted',
+            defaultMessage: { text: '' },
+            templateButtonBranching: true,
+          },
+        },
+        ctx,
+        {
+          steps: [
+            {
+              id: 'confirm-connector',
+              parentId: 'send-message-step',
+              type: 'branch_connector',
+              name: 'Confirm Order',
+            },
+            {
+              id: 'support-connector',
+              parentId: 'send-message-step',
+              type: 'branch_connector',
+              name: 'Talk To Support',
+            },
+          ],
+        },
+      ),
+    ).resolves.toEqual({
+      output: {
+        button: 'Talk To Support',
+        reply: 'Talk To Support',
+        valid: true,
+      },
+      branchConnectorId: 'support-connector',
+    });
+
+    expect(mockMessageProcessingQueueAdd).not.toHaveBeenCalled();
+    expect(ctx.vars.templateButtonReply).toBeUndefined();
+    expect(ctx.vars.__processedAnswerMessageIds).toEqual(['message-1']);
   });
 
   it('sends multiple-choice options as quick replies while waiting for an answer', async () => {
@@ -1259,6 +1642,44 @@ describe('WorkflowEngineService ask question', () => {
       'execute-step',
       { type: 'EXECUTE_STEP', runId: 'run-1', stepId: 'timeout-child' },
       expect.objectContaining({ jobId: expect.stringContaining('step-run-1-timeout-child') }),
+    );
+  });
+
+  it('resumes from a wait step into the next child instead of re-running the wait', async () => {
+    const { service } = createService();
+
+    await expect(
+      service.handleWait(
+        {
+          id: 'wait-step',
+          data: { value: 5, unit: 'hours' },
+        },
+        createContext(),
+        {
+          steps: [
+            { id: 'wait-step', type: 'wait', parentId: 'trigger' },
+            { id: 'send-after-wait', type: 'send_message', parentId: 'wait-step' },
+          ],
+        },
+      ),
+    ).resolves.toEqual({
+      output: {
+        waitMs: 18_000_000,
+        unit: 'hours',
+        value: 5,
+        nextStepId: 'send-after-wait',
+      },
+      suspend: true,
+    });
+
+    expect(workflowQueue.add).toHaveBeenCalledWith(
+      'resume-after-wait',
+      {
+        type: 'RESUME',
+        runId: 'run-1',
+        resumeData: { nextStepId: 'send-after-wait' },
+      },
+      { delay: 18_000_000 },
     );
   });
 

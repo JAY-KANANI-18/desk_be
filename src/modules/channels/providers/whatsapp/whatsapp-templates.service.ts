@@ -229,7 +229,7 @@ export class WhatsAppTemplatesService {
 
   private render(components: any[], vars: Record<string, string>): TemplatePreviewResult {
     const sub = (text: string) =>
-      text.replace(/\{\{(\w+)\}\}/g, (_, k) => vars[k] ?? `{{${k}}}`);
+      text.replace(/\{\{\s*([a-zA-Z0-9._-]+)\s*\}\}/g, (_, k) => vars[k] ?? `{{${k}}}`);
 
     const result: TemplatePreviewResult = { body: '', components: [] };
     const built: any[] = [];
@@ -285,7 +285,7 @@ export class WhatsAppTemplatesService {
 
   private textParams(text: string, vars: Record<string, string>) {
     const out: { type: 'text'; text: string }[] = [];
-    const re = /\{\{(\w+)\}\}/g;
+    const re = /\{\{\s*([a-zA-Z0-9._-]+)\s*\}\}/g;
     let m: RegExpExecArray | null;
     while ((m = re.exec(text)) !== null) {
       const v = vars[m[1]];
@@ -298,7 +298,7 @@ export class WhatsAppTemplatesService {
 
   private extractVariables(components: any[]): string[] {
     const vars = new Set<string>();
-    const re   = /\{\{(\w+)\}\}/g;
+    const re   = /\{\{\s*([a-zA-Z0-9._-]+)\s*\}\}/g;
 
     for (const c of components) {
       for (const text of [c.text, ...(c.buttons ?? []).map((b: any) => b.url)].filter(Boolean)) {

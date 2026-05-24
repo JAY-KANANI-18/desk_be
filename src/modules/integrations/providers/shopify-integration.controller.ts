@@ -184,7 +184,7 @@ export class ShopifyIntegrationController {
       process.env.AUTH_FRONTEND_BASE_URL ??
       process.env.APP_URL ??
       'http://localhost:5173';
-    return `${root.replace(/\/$/, '')}/workspace/settings/integrations`;
+    return `${root.replace(/\/$/, '')}/integrations`;
   }
 
   private readState(value?: string) {

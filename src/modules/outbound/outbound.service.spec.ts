@@ -33,15 +33,15 @@ type OutboundVariableTestApi = {
     },
     author: { firstName?: string | null; lastName?: string | null } | null,
     lastMessage: string | null,
-  ): Record<string, string>;
+  ): Record<string, unknown>;
   renderVariables(
     value: string | null | undefined,
-    context: Record<string, string>,
+    context: Record<string, unknown>,
     fieldName: string,
   ): string | undefined;
   renderTemplateVariables(
     value: Record<string, string>,
-    context: Record<string, string>,
+    context: Record<string, unknown>,
     fieldName: string,
   ): Record<string, string>;
 };
@@ -197,7 +197,7 @@ describe('OutboundService variable rendering', () => {
 
     expect(
       service.renderVariables(
-        'Hi {{contact_first_name}}, reply at {{contact_email}}. - {{agent_name}}',
+        'Hi {{contact.first_name}}, reply at {{contact.email}}. - {{agent.name}}',
         context,
         'message text',
       ),
@@ -220,8 +220,8 @@ describe('OutboundService variable rendering', () => {
     expect(
       service.renderTemplateVariables(
         {
-          '1': '{{contact_name}}',
-          '2': '{{contact_phone}}',
+          '1': '{{contact.name}}',
+          '2': '{{contact.phone}}',
         },
         context,
         'template variable',
@@ -231,6 +231,7 @@ describe('OutboundService variable rendering', () => {
       '2': '916353969157',
     });
   });
+
 });
 
 describe('OutboundService external outbound guards', () => {

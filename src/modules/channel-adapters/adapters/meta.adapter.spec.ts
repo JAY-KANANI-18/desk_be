@@ -36,6 +36,43 @@ describe('MetaProvider quick replies', () => {
       },
     });
   });
+
+  it('parses button template postbacks as interactive inbound messages', async () => {
+    const provider = new MetaProvider();
+
+    const parsed = await provider.parseWebhook({
+      entry: [
+        {
+          id: 'ig-business-1',
+          messaging: [
+            {
+              sender: { id: 'customer-1' },
+              recipient: { id: 'ig-business-1' },
+              timestamp: 1778141834,
+              postback: {
+                title: "I'm following",
+                payload: 'AXO_COMMENT_DM_FOLLOW_CHECK:YWxs',
+              },
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(parsed[0]).toMatchObject({
+      externalId: 'customer-1_1778141834_postback',
+      contactIdentifier: 'customer-1',
+      recipientIdentifier: 'ig-business-1',
+      direction: 'incoming',
+      messageType: 'interactive',
+      text: "I'm following",
+      metadata: {
+        postback: {
+          payload: 'AXO_COMMENT_DM_FOLLOW_CHECK:YWxs',
+        },
+      },
+    });
+  });
 });
 
 describe('MetaProvider message direction', () => {

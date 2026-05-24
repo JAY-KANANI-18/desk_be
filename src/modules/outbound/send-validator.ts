@@ -51,6 +51,7 @@ export type SendErrorCode =
   | 'EMAIL_AUTH_FAILED'          // SMTP auth rejected
   | 'EMAIL_RECIPIENT_REJECTED'   // recipient address rejected by SMTP
   | 'EMAIL_CONNECTION_FAILED'    // could not reach SMTP server
+  | 'EMPTY_MESSAGE'
   // Generic
   | 'PROVIDER_ERROR'             // unmapped provider error
   | 'UNKNOWN';
@@ -76,6 +77,7 @@ export class SendValidator {
     contactPhone?: string | null;
     contactEmail?: string | null;
     hasTemplate?: boolean;
+    messageText?: string | null;
   }): void {
     const { channelType, channelStatus, credentials, contactChannel } = opts;
 
@@ -148,6 +150,23 @@ export class SendValidator {
           throw this.error({
             code: 'CONTACT_NO_IDENTIFIER',
             message: 'This contact has no email address. Add an email address to the contact first.',
+            retryable: false,
+          });
+        }
+        break;
+
+      case 'sms':
+        if (!identifier && !opts.contactPhone) {
+          throw this.error({
+            code: 'CONTACT_NO_IDENTIFIER',
+            message: 'This contact has no phone number. Add a phone number to the contact first.',
+            retryable: false,
+          });
+        }
+        if (!opts.messageText?.trim()) {
+          throw this.error({
+            code: 'EMPTY_MESSAGE',
+            message: 'SMS text is required.',
             retryable: false,
           });
         }
@@ -243,6 +262,7 @@ export class SendValidator {
       instagram: 'Instagram',
       messenger: 'Messenger',
       email: 'Email',
+      sms: 'SMS',
     };
     return map[channelType] ?? channelType;
   }
@@ -323,7 +343,11 @@ export class ProviderErrorNormaliser {
     const waError = data?.error;
     const code: number = waError?.code ?? waError?.error_code ?? 0;
     const subcode: number = waError?.error_subcode ?? 0;
-    const detail = waError?.message ?? waError?.error_user_msg ?? err.message;
+    const detail = this.providerDetail(
+      waError?.error_data?.details,
+      waError?.error_user_msg,
+      waError?.message,
+    ) || this.providerDetail(axiosErr?.message, err?.message);
 
     
 
@@ -429,7 +453,11 @@ export class ProviderErrorNormaliser {
     const status = axiosErr?.response?.status;
     const fbError = data?.error;
     const code: number = fbError?.code ?? 0;
-    const detail = fbError?.message ?? err.message;
+    const detail = this.providerDetail(
+      fbError?.error_data?.details,
+      fbError?.error_user_msg,
+      fbError?.message,
+    ) || this.providerDetail(err?.message);
     const label = channelType === 'instagram' ? 'Instagram' : 'Messenger';
     this.logger.debug(`Parsing Meta error for ${label}: code=${code} status=${status} message=${detail}`);
     // Token expired
@@ -532,8 +560,11 @@ export class ProviderErrorNormaliser {
   // ─── Generic fallback ──────────────────────────────────────────────────────
 
   private static generic(err: any, detail?: string): SendError {
-    
-        this.logger.error('Unexpected email sending error', err);
+    const safeError = err instanceof Error ? err.stack ?? err.message : String(err);
+    this.logger.error(
+      `Unexpected provider sending error${detail ? `: ${detail}` : ''}`,
+      safeError,
+    );
 
     return {
       code: 'PROVIDER_ERROR',
@@ -541,5 +572,14 @@ export class ProviderErrorNormaliser {
       detail: detail ?? err?.message ?? String(err),
       retryable: true,
     };
+  }
+
+  private static providerDetail(...values: unknown[]): string {
+    const parts = values
+      .filter((value): value is string => typeof value === 'string')
+      .map((value) => value.trim())
+      .filter(Boolean);
+
+    return Array.from(new Set(parts)).join(' | ');
   }
 }

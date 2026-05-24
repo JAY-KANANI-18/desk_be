@@ -16,6 +16,14 @@ import {
   findElseBranchConnector,
   isElseBranchConnector,
 } from './branch-routing.util';
+import { renderVariableTemplate } from '../../common/variables/variable-metadata';
+import {
+  getWorkflowStrategyIssue,
+  isSpecificWorkflowChannel,
+  resolveWorkflowChannelStrategy,
+  type WorkflowChannelStrategy,
+  type WorkflowMessagingStepKind,
+} from './workflow-delivery-rulebook';
 
 const RUN_CTX_TTL = 60 * 60 * 24;
 const ACTIVE_RUN_KEY = (workspaceId: string, contactId: string) =>
@@ -51,6 +59,20 @@ type BranchContactWorkflowField =
   | 'lifecycleName'
   | 'assigneeId'
   | 'teamId';
+
+type WorkflowStepHandlerResult = {
+  output: Record<string, any>;
+  branchConnectorId?: string | null;
+  nextStepId?: string | null;
+  suspend?: boolean;
+  waitFor?: string;
+};
+
+type WorkflowMessageTarget = {
+  channelId: string;
+  conversation: any;
+  deliveryStrategy: WorkflowChannelStrategy;
+};
 
 const CONTACT_FIELD_ALIASES: Record<string, ContactWorkflowField> = {
   firstName: 'firstName',
@@ -161,13 +183,14 @@ export class WorkflowEngineService {
     conversationId: string;
     source: string;
     channel: string;
+    channelId?: string;
   }) {
     await this.trigger({
       workspaceId: event.workspaceId,
       eventType: 'conversation_opened',
       contactId: event.contactId,
       conversationId: event.conversationId,
-      triggerData: { source: event.source, channel: event.channel },
+      triggerData: { source: event.source, channel: event.channel, channelId: event.channelId },
     });
   }
 
@@ -178,13 +201,14 @@ export class WorkflowEngineService {
     conversationId: string;
     source: string;
     channel: string;
+    channelId?: string;
   }) {
     await this.trigger({
       workspaceId: event.workspaceId,
       eventType: 'conversation_closed',
       contactId: event.contactId,
       conversationId: event.conversationId,
-      triggerData: { source: event.source, channel: event.channel },
+      triggerData: { source: event.source, channel: event.channel, channelId: event.channelId },
     });
   }
 
@@ -220,7 +244,25 @@ export class WorkflowEngineService {
     const currentStep = (config.steps ?? []).find(
       (s: any) => s.id === run.currentStepId,
     );
-    if (!currentStep || currentStep.type !== 'ask_question') return;
+    if (!currentStep) return;
+
+    if (currentStep.type === 'send_message' && currentStep.data?.templateButtonBranching) {
+      const buttonReply = this.resolveInboundButtonReply(event.message);
+      await workflowQueue.add('resume', {
+        type: 'RESUME',
+        runId: run.id,
+        resumeData: {
+          templateButtonReply: buttonReply.text,
+          templateButtonReplyTitle: buttonReply.title,
+          templateButtonReplyId: buttonReply.id,
+          templateButtonReplyMessageId: event.message.id,
+          templateButtonReplyStepId: currentStep.id,
+        },
+      });
+      return;
+    }
+
+    if (currentStep.type !== 'ask_question') return;
 
     await workflowQueue.add('resume', {
       type: 'RESUME',
@@ -230,6 +272,36 @@ export class WorkflowEngineService {
         lastAnswerMessageId: event.message.id,
       },
     });
+  }
+
+  private resolveInboundButtonReply(message: any) {
+    const metadata = message?.metadata && typeof message.metadata === 'object'
+      ? message.metadata
+      : {};
+    const interactiveReply = metadata.interactiveReply && typeof metadata.interactiveReply === 'object'
+      ? metadata.interactiveReply
+      : null;
+    const buttonReply = metadata.buttonReply && typeof metadata.buttonReply === 'object'
+      ? metadata.buttonReply
+      : null;
+    const title =
+      typeof interactiveReply?.title === 'string'
+        ? interactiveReply.title
+        : typeof buttonReply?.text === 'string'
+          ? buttonReply.text
+          : undefined;
+    const id =
+      typeof interactiveReply?.id === 'string'
+        ? interactiveReply.id
+        : typeof buttonReply?.payload === 'string'
+          ? buttonReply.payload
+          : undefined;
+
+    return {
+      text: typeof message?.text === 'string' ? message.text : title ?? id ?? '',
+      title,
+      id,
+    };
   }
 
   @OnEvent('meta_ads.click')
@@ -473,6 +545,7 @@ export class WorkflowEngineService {
       vars: {},
     };
 
+    await this.ensureRunConversation(ctx, config.trigger?.type);
     await this.saveContext(ctx);
     await this.recordWorkflowLifecycleActivity(ctx, 'workflow_started');
 
@@ -565,7 +638,7 @@ export class WorkflowEngineService {
           where: { id: runId },
           data: { status: 'waiting' },
         });
-        if (step.type === 'ask_question') {
+        if (step.type === 'ask_question' || result.waitFor === 'template_button') {
           await this.markActiveRun(ctx);
         }
         return;
@@ -595,14 +668,15 @@ export class WorkflowEngineService {
     const ctx = await this.loadContext(runId);
     if (!ctx) return;
 
-    if (this.hasProcessedAnswerMessage(ctx, resumeData?.lastAnswerMessageId)) {
+    const resumeMessageId = resumeData?.lastAnswerMessageId ?? resumeData?.templateButtonReplyMessageId;
+    if (this.hasProcessedAnswerMessage(ctx, resumeMessageId)) {
       this.logger.debug(
-        `Ignoring duplicate workflow answer message=${resumeData.lastAnswerMessageId} run=${runId}`,
+        `Ignoring duplicate workflow answer message=${resumeMessageId} run=${runId}`,
       );
       return;
     }
 
-    const { nextStepId, ...vars } = resumeData ?? {};
+    const { nextStepId, completeAfterWait, ...vars } = resumeData ?? {};
     ctx.vars = { ...ctx.vars, ...vars };
     await this.saveContext(ctx);
 
@@ -610,6 +684,11 @@ export class WorkflowEngineService {
       where: { id: runId },
       data: { status: 'running' },
     });
+
+    if (completeAfterWait === true) {
+      await this.completeRun(runId, ctx);
+      return;
+    }
 
     const resumeStepId =
       typeof nextStepId === 'string' && nextStepId.trim()
@@ -670,7 +749,7 @@ export class WorkflowEngineService {
       case 'update_contact_tag': return this.handleUpdateContactTag(step, ctx);
       case 'update_contact_field': return this.handleUpdateContactField(step, ctx);
       case 'branch': return this.handleBranch(step, ctx, config);
-      case 'wait': return this.handleWait(step, ctx);
+      case 'wait': return this.handleWait(step, ctx, config);
       case 'http_request': return this.handleHttpRequest(step, ctx);
       case 'jump_to': return this.handleJumpTo(step, ctx);
       case 'open_conversation': return this.handleOpenConversation(step, ctx);
@@ -688,43 +767,35 @@ export class WorkflowEngineService {
   // ── Handlers ─────────────────────────────────────────────────────────────
 
   // send_message
-  private async handleSendMessage(step: any, ctx: WorkflowRunContext, config?: any) {
+  private async handleSendMessage(
+    step: any,
+    ctx: WorkflowRunContext,
+    config?: any,
+  ): Promise<WorkflowStepHandlerResult> {
   const { defaultMessage, attachments = [], metadata = {} } = step.data;
+  if (this.isTemplateButtonBranchingStep(step) && ctx.vars?.templateButtonReplyStepId === step.id) {
+    return this.handleTemplateButtonReply(step, ctx, config);
+  }
 
-  // Require either text or attachments
-  if (!defaultMessage?.text && attachments.length === 0) {
+  const renderedMetadata = this.renderWorkflowSendMetadata(metadata, ctx);
+  const hasTemplate = Boolean(renderedMetadata?.template?.name && renderedMetadata?.template?.language);
+
+  if (!defaultMessage?.text && attachments.length === 0 && !hasTemplate) {
     return this.sendMessageFailureResult(step, config, 'no message content');
   }
 
-  const conversation = await this.prisma.conversation.findFirst({
-    where: { contactId: ctx.contactId },
-    include: { lastMessage: true },
-  });
-  if (!conversation) return this.sendMessageFailureResult(step, config, 'no open conversation');
-
   const text = this.interpolate(defaultMessage?.text ?? '', ctx);
-
-  // Resolve channelId
-  let channelId = step.data.channel === 'last_interacted'
-    ? conversation.lastMessage?.channelId ?? null
-    : step.data.channel;
-
-  if (!channelId) {
-    const contactChannel = await this.prisma.contactChannel.findFirst({
-      where: { contactId: ctx.contactId },
-      orderBy: { createdAt: 'desc' },
-    });
-    channelId = contactChannel?.channelId ?? null;
-  }
-
-  if (!channelId) {
-    return this.sendMessageFailureResult(step, config, 'no channel resolved');
+  let target: WorkflowMessageTarget;
+  try {
+    target = await this.resolveWorkflowMessageTarget(step, ctx, config, 'send_message');
+  } catch (err: any) {
+    return this.sendMessageFailureResult(step, config, err?.message ?? String(err));
   }
 
   const outboundPayload: SendMessageDto = {
     workspaceId: ctx.workspaceId,
-    conversationId: conversation.id,
-    channelId,
+    conversationId: target.conversation.id,
+    channelId: target.channelId,
     text: text || undefined,
       // Pass attachments directly — already uploaded to R2, just URLs
     attachments: attachments.map((att: any) => ({
@@ -734,7 +805,7 @@ export class WorkflowEngineService {
       mimeType: att.mimeType,
       size: att.size,
     })),
-    metadata,
+    metadata: renderedMetadata,
   };
 
   const outboundJob = await messageProcessingQueue.add('outbound.send_message', {
@@ -766,12 +837,276 @@ export class WorkflowEngineService {
     throw err;
   }
 
-  return this.sendMessageSuccessResult(step, config, {
+  const output: Record<string, any> = {
     sent: true,
     text,
     attachments: attachments.length,
-  });
+  };
+  if (hasTemplate) output.template = renderedMetadata.template.name;
+  if (this.isTemplateButtonBranchingStep(step) && this.templateButtonConnectorCount(step, config) > 0) {
+    return {
+      output: {
+        ...output,
+        waiting: true,
+        waitFor: 'template_button',
+      },
+      suspend: true,
+      waitFor: 'template_button',
+    };
+  }
+
+  return this.sendMessageSuccessResult(step, config, output);
 }
+
+  private async ensureRunConversation(ctx: WorkflowRunContext, triggerType?: string) {
+    if (ctx.conversationId) return;
+    await this.ensureWorkflowConversation(ctx, {
+      openContact: triggerType !== 'conversation_closed',
+      saveContext: false,
+    });
+  }
+
+  private async ensureWorkflowConversation(
+    ctx: WorkflowRunContext,
+    opts: { openContact?: boolean; saveContext?: boolean } = {},
+  ) {
+    const openContact = opts.openContact ?? true;
+    let conversation = await this.resolveWorkflowConversation(ctx);
+    let shouldSaveContext = false;
+
+    if (!conversation) {
+      conversation = await this.prisma.conversation.create({
+        data: {
+          workspaceId: ctx.workspaceId,
+          contactId: ctx.contactId,
+        },
+        include: { lastMessage: true },
+      });
+    }
+
+    if (ctx.conversationId !== conversation.id) {
+      ctx.conversationId = conversation.id;
+      shouldSaveContext = true;
+    }
+
+    if (openContact && ctx.contact?.status !== 'open') {
+      await this.prisma.contact.updateMany({
+        where: { id: ctx.contactId, workspaceId: ctx.workspaceId },
+        data: { status: 'open' },
+      });
+      ctx.contact = { ...ctx.contact, status: 'open' };
+      shouldSaveContext = true;
+    }
+
+    if (shouldSaveContext && opts.saveContext !== false) {
+      await this.saveContext(ctx);
+    }
+
+    return conversation;
+  }
+
+  private async resolveWorkflowConversation(ctx: WorkflowRunContext) {
+    if (ctx.conversationId) {
+      const scoped = await this.prisma.conversation.findFirst({
+        where: {
+          id: ctx.conversationId,
+          workspaceId: ctx.workspaceId,
+          contactId: ctx.contactId,
+        },
+        include: { lastMessage: true },
+      });
+      if (scoped) return scoped;
+    }
+
+    return this.prisma.conversation.findFirst({
+      where: {
+        workspaceId: ctx.workspaceId,
+        contactId: ctx.contactId,
+      },
+      include: { lastMessage: true },
+      orderBy: { updatedAt: 'desc' },
+    });
+  }
+
+  private async resolveWorkflowMessageTarget(
+    step: any,
+    ctx: WorkflowRunContext,
+    config: any,
+    stepKind: WorkflowMessagingStepKind,
+  ): Promise<WorkflowMessageTarget> {
+    const data = step?.data ?? {};
+    const deliveryStrategy = this.resolveStepDeliveryStrategy(stepKind, data);
+    const triggerType = this.getWorkflowTriggerType(config);
+    const strategyIssue = triggerType
+      ? getWorkflowStrategyIssue(triggerType, deliveryStrategy)
+      : null;
+
+    if (strategyIssue) {
+      throw new Error(strategyIssue);
+    }
+
+    if (deliveryStrategy === 'trigger_channel') {
+      const target = await this.resolveTriggerChannelTarget(ctx);
+      return { ...target, deliveryStrategy };
+    }
+
+    if (!isSpecificWorkflowChannel(data.channel)) {
+      throw new Error('Choose one channel.');
+    }
+
+    const conversation = await this.ensureWorkflowConversation(ctx);
+    return {
+      channelId: data.channel.trim(),
+      conversation,
+      deliveryStrategy,
+    };
+  }
+
+  private resolveStepDeliveryStrategy(
+    stepKind: WorkflowMessagingStepKind,
+    data: Record<string, any>,
+  ) {
+    const fallbackChannel = stepKind === 'ask_question'
+      ? data.channel ?? 'trigger_channel'
+      : data.channel;
+
+    return resolveWorkflowChannelStrategy(data.deliveryStrategy, fallbackChannel);
+  }
+
+  private getWorkflowTriggerType(config: any) {
+    const triggerType = config?.trigger?.type;
+    return typeof triggerType === 'string' && triggerType.trim()
+      ? triggerType
+      : null;
+  }
+
+  private async resolveTriggerChannelTarget(ctx: WorkflowRunContext) {
+    const conversation = await this.resolveWorkflowConversation(ctx);
+    const triggerChannelId = this.nonEmptyString(ctx.trigger?.channelId);
+    const conversationChannelId = this.nonEmptyString(conversation?.lastMessage?.channelId);
+    const channelId = triggerChannelId ?? conversationChannelId;
+
+    if (!conversation || !channelId) {
+      throw new Error('This workflow did not start from a chat channel.');
+    }
+
+    if (ctx.conversationId !== conversation.id) {
+      ctx.conversationId = conversation.id;
+      await this.saveContext(ctx);
+    }
+
+    return { channelId, conversation };
+  }
+
+  private nonEmptyString(value: unknown) {
+    return typeof value === 'string' && value.trim() ? value.trim() : null;
+  }
+
+  private isTemplateButtonBranchingStep(step: any) {
+    return Boolean(step?.type === 'send_message' && step?.data?.templateButtonBranching);
+  }
+
+  private templateButtonConnectorCount(step: any, config: any) {
+    const steps: any[] = config?.steps ?? [];
+    return steps.filter(
+      (candidate) =>
+        candidate.parentId === step.id &&
+        candidate.type === 'branch_connector' &&
+        candidate.name !== 'Failure',
+    ).length;
+  }
+
+  private async handleTemplateButtonReply(
+    step: any,
+    ctx: WorkflowRunContext,
+    config: any,
+  ): Promise<WorkflowStepHandlerResult> {
+    const replyCandidates = this.templateButtonReplyCandidates(ctx.vars ?? {});
+    const connector = this.findTemplateButtonConnector(step, config, replyCandidates);
+
+    this.markProcessedAnswerMessage(ctx, ctx.vars?.templateButtonReplyMessageId);
+    delete ctx.vars.templateButtonReply;
+    delete ctx.vars.templateButtonReplyTitle;
+    delete ctx.vars.templateButtonReplyId;
+    delete ctx.vars.templateButtonReplyMessageId;
+    delete ctx.vars.templateButtonReplyStepId;
+
+    if (!connector) {
+      return {
+        output: {
+          waiting: true,
+          unmatchedReply: replyCandidates[0] ?? '',
+          reason: 'No template button branch matched',
+        },
+        suspend: true,
+        waitFor: 'template_button',
+      };
+    }
+
+    return {
+      output: {
+        button: connector.name,
+        reply: replyCandidates[0] ?? connector.name,
+        valid: true,
+      },
+      branchConnectorId: connector.id,
+    };
+  }
+
+  private templateButtonReplyCandidates(vars: Record<string, any>) {
+    return [
+      vars.templateButtonReplyTitle,
+      vars.templateButtonReply,
+      vars.templateButtonReplyId,
+    ]
+      .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+      .map((value) => value.trim());
+  }
+
+  private findTemplateButtonConnector(step: any, config: any, replyCandidates: string[]) {
+    const normalizedReplies = new Set(replyCandidates.map((value) => this.normalizeButtonReply(value)));
+    const steps: any[] = config?.steps ?? [];
+
+    return steps.find((candidate) => {
+      if (candidate.parentId !== step.id || candidate.type !== 'branch_connector') return false;
+      if (candidate.name === 'Failure') return false;
+      return normalizedReplies.has(this.normalizeButtonReply(candidate.name));
+    }) ?? null;
+  }
+
+  private normalizeButtonReply(value: string) {
+    return value.trim().toLowerCase().replace(/\s+/g, ' ');
+  }
+
+  private renderWorkflowSendMetadata(metadata: any, ctx: WorkflowRunContext) {
+    if (!metadata || typeof metadata !== 'object') return {};
+    const template = metadata.template && typeof metadata.template === 'object'
+      ? {
+          ...metadata.template,
+          variables: this.renderWorkflowTemplateVariables(metadata.template.variables, ctx),
+        }
+      : undefined;
+    const hasCompleteTemplate = Boolean(template?.name && template?.language);
+
+    const next = { ...metadata };
+    if (hasCompleteTemplate) next.template = template;
+    else delete next.template;
+    return next;
+  }
+
+  private renderWorkflowTemplateVariables(value: any, ctx: WorkflowRunContext): any {
+    if (typeof value === 'string') return this.interpolate(value, ctx);
+    if (Array.isArray(value)) return value.map((item) => this.renderWorkflowTemplateVariables(item, ctx));
+    if (value && typeof value === 'object') {
+      return Object.fromEntries(
+        Object.entries(value).map(([key, item]) => [
+          key,
+          this.renderWorkflowTemplateVariables(item, ctx),
+        ]),
+      );
+    }
+    return value ?? {};
+  }
 
   private sendMessageSuccessResult(step: any, config: any, output: Record<string, any>) {
     const connector = this.findSendMessageConnector(step, config, 'Success');
@@ -793,15 +1128,26 @@ export class WorkflowEngineService {
   private findSendMessageConnector(step: any, config: any, name: 'Success' | 'Failure') {
     if (!step.data?.addMessageFailureBranch) return null;
     const connectorIds = Array.isArray(step.data.connectors) ? step.data.connectors : [];
-    const connectorIdForName = name === 'Success' ? connectorIds[0] : connectorIds[1];
+    const connectorIdForName = step.data?.templateButtonBranching
+      ? undefined
+      : name === 'Success'
+        ? connectorIds[0]
+        : connectorIds[1];
     const steps: any[] = config?.steps ?? [];
 
     return steps.find(
       (candidate) =>
         candidate.parentId === step.id &&
         candidate.type === 'branch_connector' &&
-        (candidate.name === name || candidate.id === connectorIdForName),
-    ) ?? null;
+        candidate.name === name,
+    ) ?? (connectorIdForName
+      ? steps.find(
+          (candidate) =>
+            candidate.parentId === step.id &&
+            candidate.type === 'branch_connector' &&
+            candidate.id === connectorIdForName,
+        )
+      : null);
   }
 
 
@@ -818,13 +1164,17 @@ export class WorkflowEngineService {
     try {
       const sendResult = await this.handleSendMessage(
         {
+          id: step.id,
+          type: 'send_message',
           data: {
-            channel: 'last_interacted',
+            channel: step.data.channel ?? 'trigger_channel',
+            deliveryStrategy: step.data.deliveryStrategy ?? (step.data.channel ? undefined : 'trigger_channel'),
             defaultMessage: { text: step.data.questionText },
             metadata: quickReplies.length > 0 ? { quickReplies } : {},
           },
         },
         ctx,
+        config,
       );
 
       if (sendResult.output?.skipped || sendResult.output?.failed) {
@@ -1452,17 +1802,23 @@ export class WorkflowEngineService {
   }
 
   // wait
-  private async handleWait(step: any, ctx: WorkflowRunContext) {
+  private async handleWait(step: any, ctx: WorkflowRunContext, config: any) {
     const { value, unit } = step.data;
     const ms = this.toMs(value, unit);
+    const steps: any[] = config?.steps ?? [];
+    const nextStepId = this.findNextStep(step.id, steps);
 
     await workflowQueue.add(
       'resume-after-wait',
-      { type: 'RESUME', runId: ctx.runId, resumeData: {} } satisfies WorkflowJob,
+      {
+        type: 'RESUME',
+        runId: ctx.runId,
+        resumeData: nextStepId ? { nextStepId } : { completeAfterWait: true },
+      } satisfies WorkflowJob,
       { delay: ms },
     );
 
-    return { output: { waitMs: ms, unit, value }, suspend: true };
+    return { output: { waitMs: ms, unit, value, nextStepId }, suspend: true };
   }
 
   // http_request
@@ -1529,16 +1885,7 @@ export class WorkflowEngineService {
 
   // open_conversation
   private async handleOpenConversation(step: any, ctx: WorkflowRunContext) {
-    await this.prisma.$transaction([
-      this.prisma.contact.updateMany({
-        where: { id: ctx.contactId, workspaceId: ctx.workspaceId },
-        data: { status: 'open' },
-      }),
-      this.prisma.conversation.updateMany({
-        where: { contactId: ctx.contactId, workspaceId: ctx.workspaceId },
-        data: { updatedAt: new Date() },
-      }),
-    ]);
+    await this.ensureWorkflowConversation(ctx, { openContact: true });
     return { output: { opened: true } };
   }
 
@@ -1546,14 +1893,7 @@ export class WorkflowEngineService {
   private async handleCloseConversation(step: any, ctx: WorkflowRunContext) {
     const { addClosingNotes, notes, category } = step.data;
 
-    const conversation = await this.prisma.conversation.findFirst({
-      where: {
-        contactId: ctx.contactId,
-        workspaceId: ctx.workspaceId,
-        contact: { OR: [{ status: { not: 'closed' } }, { status: null }] },
-      },
-    });
-    if (!conversation) return { output: { skipped: true } };
+    const conversation = await this.ensureWorkflowConversation(ctx, { openContact: false });
 
     await this.prisma.$transaction([
       this.prisma.contact.update({
@@ -1601,14 +1941,9 @@ export class WorkflowEngineService {
     const text = this.interpolate(step.data.comment ?? '', ctx);
     if (!text) return { output: { skipped: true, reason: 'empty comment' } };
 
-    const conversation = await this.prisma.conversation.findFirst({
-      where: {
-        contactId: ctx.contactId,
-        workspaceId: ctx.workspaceId,
-        contact: { OR: [{ status: { not: 'closed' } }, { status: null }] },
-      },
+    const conversation = await this.ensureWorkflowConversation(ctx, {
+      openContact: !ctx.conversationId,
     });
-    if (!conversation) return { output: { skipped: true, reason: 'no open conversation' } };
 
     const mentionedUserIds = await this.resolveMentionedUserIds(
       ctx.workspaceId,
@@ -2212,8 +2547,16 @@ export class WorkflowEngineService {
       })
       : null;
 
+    const contactName = [contact.firstName, contact.lastName].filter(Boolean).join(' ').trim()
+      || contact.email
+      || contact.phone
+      || '';
+
     return {
       ...contact,
+      name: contactName,
+      first_name: contact.firstName,
+      last_name: contact.lastName,
       tags: contact.tags.map((t) => t.tagId),
       assigneeId: contact.assigneeId,
       assigneeAvailability: assigneeMembership?.availability ?? null,
@@ -2311,16 +2654,20 @@ export class WorkflowEngineService {
 
   private interpolate(template: string, ctx: WorkflowRunContext): string {
     if (!template) return '';
-    return template.replace(/\{\{([^}]+)\}\}/g, (_, key) => {
-      const parts = key.trim().split('.');
-      let val: any = {
-        contact: ctx.contact,
-        vars: ctx.vars,
-        trigger: ctx.trigger,
-      };
-      for (const p of parts) val = val?.[p];
-      return val != null ? String(val) : '';
-    });
+    return renderVariableTemplate(template, {
+      contact: this.workflowInterpolationContact(ctx.contact),
+      vars: ctx.vars,
+      trigger: ctx.trigger,
+    }) ?? '';
+  }
+
+  private workflowInterpolationContact(contact: Record<string, any>) {
+    const { firstName, lastName, ...rest } = contact ?? {};
+    return {
+      ...rest,
+      first_name: rest.first_name ?? firstName ?? '',
+      last_name: rest.last_name ?? lastName ?? '',
+    };
   }
 
   private async resolveMentionedUserIds(

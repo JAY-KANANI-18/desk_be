@@ -28,15 +28,15 @@ export const MESSENGER_TEMPLATE_CATALOG: MessengerTemplateCatalogItem[] = [
     language: 'default',
     templateType: 'text',
     description: 'Simple service update with contact personalization.',
-    variables: ['contact_name'],
+    variables: ['contact.name'],
     components: [
       {
         type: 'BODY',
-        text: 'Hi {{contact_name}}, thanks for reaching out. We will help you shortly.',
+        text: 'Hi {{contact.name}}, thanks for reaching out. We will help you shortly.',
       },
     ],
     payload: {
-      text: 'Hi {{contact_name}}, thanks for reaching out. We will help you shortly.',
+      text: 'Hi {{contact.name}}, thanks for reaching out. We will help you shortly.',
     },
   },
   {
@@ -47,11 +47,11 @@ export const MESSENGER_TEMPLATE_CATALOG: MessengerTemplateCatalogItem[] = [
     language: 'default',
     templateType: 'button',
     description: 'Ask the contact to choose a support path.',
-    variables: ['contact_name'],
+    variables: ['contact.name'],
     components: [
       {
         type: 'BODY',
-        text: 'Hi {{contact_name}}, what would you like help with?',
+        text: 'Hi {{contact.name}}, what would you like help with?',
       },
       {
         type: 'BUTTONS',
@@ -62,7 +62,7 @@ export const MESSENGER_TEMPLATE_CATALOG: MessengerTemplateCatalogItem[] = [
       },
     ],
     payload: {
-      text: 'Hi {{contact_name}}, what would you like help with?',
+      text: 'Hi {{contact.name}}, what would you like help with?',
       quick_replies: [
         {
           content_type: 'text',
@@ -85,11 +85,11 @@ export const MESSENGER_TEMPLATE_CATALOG: MessengerTemplateCatalogItem[] = [
     language: 'default',
     templateType: 'button',
     description: 'Structured button template with an automation payload and URL.',
-    variables: ['contact_name'],
+    variables: ['contact.name'],
     components: [
       {
         type: 'BODY',
-        text: 'Hi {{contact_name}}, here are the fastest next steps.',
+        text: 'Hi {{contact.name}}, here are the fastest next steps.',
       },
       {
         type: 'BUTTONS',
@@ -104,7 +104,7 @@ export const MESSENGER_TEMPLATE_CATALOG: MessengerTemplateCatalogItem[] = [
         type: 'template',
         payload: {
           template_type: 'button',
-          text: 'Hi {{contact_name}}, here are the fastest next steps.',
+          text: 'Hi {{contact.name}}, here are the fastest next steps.',
           buttons: [
             {
               type: 'postback',
@@ -129,7 +129,7 @@ export const MESSENGER_TEMPLATE_CATALOG: MessengerTemplateCatalogItem[] = [
     language: 'default',
     templateType: 'generic',
     description: 'Generic card layout with title, subtitle, and action buttons.',
-    variables: ['contact_name'],
+    variables: ['contact.name'],
     components: [
       {
         type: 'HEADER',
@@ -138,7 +138,7 @@ export const MESSENGER_TEMPLATE_CATALOG: MessengerTemplateCatalogItem[] = [
       },
       {
         type: 'BODY',
-        text: 'Recommended for {{contact_name}}',
+        text: 'Recommended for {{contact.name}}',
       },
       {
         type: 'BUTTONS',
@@ -155,7 +155,7 @@ export const MESSENGER_TEMPLATE_CATALOG: MessengerTemplateCatalogItem[] = [
           template_type: 'generic',
           elements: [
             {
-              title: 'Recommended for {{contact_name}}',
+              title: 'Recommended for {{contact.name}}',
               subtitle: 'A ready-to-use Messenger card from Meta platform templates.',
               image_url: 'https://placehold.co/600x360?text=Messenger',
               buttons: [
@@ -413,7 +413,7 @@ export class MessengerTemplatesService {
   private renderValue(value: any, variables: Record<string, string>): any {
     if (typeof value === 'string') {
       return value.replace(
-        /{{\s*([a-zA-Z0-9_]+)\s*}}/g,
+        /{{\s*([a-zA-Z0-9_.]+)\s*}}/g,
         (_match, key: string) => variables[key] ?? `{{${key}}}`,
       );
     }

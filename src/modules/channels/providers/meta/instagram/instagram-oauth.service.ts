@@ -1,4 +1,5 @@
 import { BadRequestException, Injectable, Logger } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import axios from 'axios';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { ChannelOAuthEventsService } from 'src/modules/channels/oauth/channel-oauth-events.service';
@@ -9,6 +10,40 @@ const IG_API = 'https://graph.instagram.com';
 const IG_API_VERSION = 'v21.0';
 const IG_BASE = `${IG_API}/${IG_API_VERSION}`;
 
+export const INSTAGRAM_WEBHOOK_FIELDS = [
+   'messages',
+  'messaging_postbacks',
+  'messaging_seen',
+  'messaging_optins',
+  'messaging_referral',
+  'messaging_handover',
+  'message_reactions',
+  'standby',
+  'comments',
+  'live_comments',
+  'mentions',
+];
+
+interface InstagramProfile {
+  id: string;
+  username: string;
+  account_type?: string | null;
+  media_count?: number | null;
+  user_id?: string | null;
+}
+
+type InstagramWebhookSubscribeResponse = Prisma.InputJsonObject & {
+  success?: boolean;
+};
+
+type InstagramWebhookSubscriptionResult = Prisma.InputJsonObject & {
+  status: 'subscribed' | 'failed';
+  subscribedAt?: string;
+  attemptedAt?: string;
+  error?: string;
+  response?: InstagramWebhookSubscribeResponse;
+};
+
 @Injectable()
 export class InstagramOAuthService {
   private readonly logger = new Logger(InstagramOAuthService.name);
@@ -17,7 +52,7 @@ export class InstagramOAuthService {
     private readonly prisma: PrismaService,
     private readonly state: ChannelOAuthStateService,
     private readonly events: ChannelOAuthEventsService,
-  ) {}
+  ) { }
 
   buildAuthUrl(input: {
     workspaceId: string;
@@ -39,16 +74,18 @@ export class InstagramOAuthService {
       client_id: process.env.INSTAGRAM_APP_ID!,
       redirect_uri: callbackUri,
       response_type: 'code',
+      force_reauth: 'true',
       scope: [
         'instagram_business_basic',
         'instagram_business_manage_messages',
         'instagram_business_manage_comments',
+        'instagram_business_content_publish',
+        'instagram_business_manage_insights',
 
 
       ].join(','),
       state: oauthState,
     });
-
     return `https://www.instagram.com/oauth/authorize?${params.toString()}`;
   }
 
@@ -67,9 +104,7 @@ export class InstagramOAuthService {
 
     try {
       oauthState = this.state.parseState(input.state, 'instagram');
-    } catch (error) {
-      console.log({error});
-      
+    } catch {
       return {
         html: buildOAuthCallbackPage({
           provider: 'Instagram',
@@ -123,7 +158,7 @@ export class InstagramOAuthService {
 
       const channel = await this.connectWithCode({
         code: input.code,
-        redirectUri:oauthState.redirectUri ,
+        redirectUri: oauthState.redirectUri,
         workspaceId: oauthState.workspaceId,
       });
 
@@ -159,8 +194,7 @@ export class InstagramOAuthService {
         workspaceId: oauthState.workspaceId,
         error: message,
       });
-      console.log({oauthState});
-      
+
       return {
         html: buildOAuthCallbackPage({
           provider: 'Instagram',
@@ -191,45 +225,66 @@ export class InstagramOAuthService {
       await this.exchangeLongLivedToken(shortLivedToken);
 
     const igUser = await this.fetchProfile(longLivedToken);
-    await this.subscribeToWebhook(igUser.id, longLivedToken);
+    const webhookSubscription = await this.subscribeToWebhook(
+      igUser.id,
+      longLivedToken,
+    );
 
     const identifier = igUser.user_id ?? igUser.id;
     const expiresAt = new Date(Date.now() + expires_in * 1000);
-    const existingChannel = await this.prisma.channel.findFirst({
-      where: {
-        type: 'instagram',
-        identifier,
-      },
+    const existingChannel = await this.prisma.channel.findUnique({
+      where: { identifier },
+      select: { id: true, workspaceId: true, type: true },
     });
 
-    const channelData = {
-      workspaceId: input.workspaceId,
-      type: 'instagram',
-      identifier,
-      name: igUser.username,
-      credentials: {
-        accessToken: longLivedToken,
-        tokenExpiresAt: expiresAt,
-        igUserId: igUser.id,
-      },
-      config: {
-        userName: igUser.username,
-        accountType: igUser.account_type,
-        mediaCount: igUser.media_count,
-        igUserId: igUser.id,
-      },
-      status: 'connected',
+    if (
+      existingChannel &&
+      (existingChannel.workspaceId !== input.workspaceId ||
+        existingChannel.type !== 'instagram')
+    ) {
+      throw new BadRequestException(
+        `${igUser.username} is already connected to another channel.`,
+      );
+    }
+
+    const credentials: Prisma.InputJsonObject = {
+      accessToken: longLivedToken,
+      tokenExpiresAt: expiresAt.toISOString(),
+      igUserId: igUser.id,
+    };
+    const config: Prisma.InputJsonObject = {
+      userName: igUser.username,
+      accountType: igUser.account_type ?? null,
+      mediaCount: igUser.media_count ?? null,
+      igUserId: igUser.id,
+      subscribedFields: INSTAGRAM_WEBHOOK_FIELDS,
+      webhookSubscription,
     };
 
     const channel = existingChannel
       ? await this.prisma.channel.update({
           where: { id: existingChannel.id },
-          data: channelData,
+          data: {
+            credentials,
+            name: igUser.username,
+            status: 'connected',
+            config,
+          },
         })
-      : await this.prisma.channel.create({ data: channelData });
+      : await this.prisma.channel.create({
+          data: {
+            workspaceId: input.workspaceId,
+            type: 'instagram',
+            identifier,
+            name: igUser.username,
+            credentials,
+            status: 'connected',
+            config,
+          },
+        });
 
     this.logger.log(
-      `Instagram channel connected: ${igUser.username} (${identifier})`,
+      `Instagram channel connected: ${igUser.username} (${identifier}) subscribedFields=${INSTAGRAM_WEBHOOK_FIELDS.join(',')}`,
     );
 
     return channel;
@@ -253,8 +308,8 @@ export class InstagramOAuthService {
     return data.access_token as string;
   }
 
-  async fetchProfile(accessToken: string) {
-    const { data } = await axios.get(`${IG_BASE}/me`, {
+  async fetchProfile(accessToken: string): Promise<InstagramProfile> {
+    const { data } = await axios.get<InstagramProfile>(`${IG_BASE}/me`, {
       params: {
         fields: 'id,username,account_type,media_count,user_id',
         access_token: accessToken,
@@ -293,33 +348,56 @@ export class InstagramOAuthService {
     return data as { access_token: string; expires_in: number };
   }
 
-  private async subscribeToWebhook(igUserId: string, accessToken: string) {
+  private async subscribeToWebhook(
+    igUserId: string,
+    accessToken: string,
+  ): Promise<InstagramWebhookSubscriptionResult> {
     try {
-      await axios.post(
+      const { data } = await axios.post<InstagramWebhookSubscribeResponse>(
         `${IG_BASE}/${igUserId}/subscribed_apps`,
         {},
         {
           params: {
             access_token: accessToken,
-            subscribed_fields: [
-              'messages',
-              'messaging_postbacks',
-              'messaging_optins',
-              'messaging_seen',
-              'message_reactions',
-              'messaging_referral',
-              'messaging_handover',
-              'standby',
-              'comments',
-              'mentions',
-            ].join(','),
+            subscribed_fields: INSTAGRAM_WEBHOOK_FIELDS.join(','),
           },
         },
       );
-    } catch (error: any) {
-      this.logger.warn(
-        `Failed to subscribe Instagram webhook: ${this.getErrorMessage(error, 'subscription_failed')}`,
+
+      if (data.success !== true) {
+        const message = `Instagram webhook subscription returned success=${String(data.success)}.`;
+        this.logger.warn(
+          `Failed to subscribe Instagram webhook for ${igUserId} fields=${INSTAGRAM_WEBHOOK_FIELDS.join(',')}: ${message}`,
+        );
+
+        return {
+          status: 'failed',
+          attemptedAt: new Date().toISOString(),
+          error: message,
+          response: data,
+        };
+      }
+
+      this.logger.log(
+        `Instagram user ${igUserId} subscribed fields=${INSTAGRAM_WEBHOOK_FIELDS.join(',')}`,
       );
+
+      return {
+        status: 'subscribed',
+        subscribedAt: new Date().toISOString(),
+        response: data,
+      };
+    } catch (error: any) {
+      const message = this.getErrorMessage(error, 'subscription_failed');
+      this.logger.warn(
+        `Failed to subscribe Instagram webhook for ${igUserId} fields=${INSTAGRAM_WEBHOOK_FIELDS.join(',')}: ${message}`,
+      );
+
+      return {
+        status: 'failed',
+        attemptedAt: new Date().toISOString(),
+        error: message,
+      };
     }
   }
 

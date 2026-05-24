@@ -462,7 +462,7 @@ export class WorkspaceService {
     }
 
     async disconnectIntegration(workspaceId: string, integrationId: string) {
-        return this.integrationsService.disconnectProvider(workspaceId, integrationId);
+        return this.integrationsService.disconnectIntegration(workspaceId, integrationId);
     }
 
     private async disconnectLegacyIntegration(workspaceId: string, integrationId: string) {

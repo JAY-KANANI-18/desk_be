@@ -43,4 +43,46 @@ describe('WhatsAppProvider interactive replies', () => {
       },
     });
   });
+
+  it('keeps template quick-reply button text and payload metadata', async () => {
+    const provider = new WhatsAppProvider();
+
+    const parsed = await provider.parseWebhook({
+      entry: [
+        {
+          changes: [
+            {
+              field: 'messages',
+              value: {
+                metadata: { phone_number_id: 'phone-number-1' },
+                messages: [
+                  {
+                    from: '919999999999',
+                    id: 'wamid.2',
+                    timestamp: '1778141834',
+                    type: 'button',
+                    button: {
+                      text: 'Talk To Support',
+                      payload: 'opaque-template-payload',
+                    },
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(parsed[0]).toMatchObject({
+      messageType: 'button',
+      text: 'Talk To Support',
+      metadata: {
+        buttonReply: {
+          text: 'Talk To Support',
+          payload: 'opaque-template-payload',
+        },
+      },
+    });
+  });
 });

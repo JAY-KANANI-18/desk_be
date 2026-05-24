@@ -78,6 +78,10 @@ type RecipientDisplayTarget = {
   };
 };
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
 const MAX_BROADCAST_BATCH = 500;
 const DUPLICATE_SEND_WINDOW_MS = 30_000;
 type BroadcastChannelCapability = {
@@ -703,6 +707,20 @@ export class BroadcastsService {
     );
   }
 
+  private htmlToPlainText(html?: string): string {
+    if (!html?.trim()) return '';
+    return html
+      .replace(/<br\s*\/?>/gi, '\n')
+      .replace(/<\/(p|div|li|tr|h[1-6])>/gi, '\n')
+      .replace(/<[^>]*>/g, '')
+      .replace(/&nbsp;/gi, ' ')
+      .replace(/&amp;/gi, '&')
+      .replace(/&lt;/gi, '<')
+      .replace(/&gt;/gi, '>')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
+  }
+
   private async resolveTemplateSnapshot(opts: {
     workspaceId: string;
     channelId: string;
@@ -757,12 +775,14 @@ export class BroadcastsService {
     channelId: string;
     filters: Prisma.InputJsonObject;
     text?: string;
+    htmlBody?: string;
     template?: { name: string; language: string; variables?: Record<string, string> };
   }) {
     const payload = {
       channelId: opts.channelId,
       filters: opts.filters,
       text: opts.text?.trim() || null,
+      htmlBody: opts.htmlBody?.trim() || null,
       template: opts.template
         ? {
             name: opts.template.name,
@@ -817,6 +837,7 @@ export class BroadcastsService {
     channelId: string;
     recipients: AudienceContactChannel[];
     text?: string;
+    htmlBody?: string;
     templateSnapshot: Prisma.InputJsonObject | null;
   }) {
     if (!opts.recipients.length) return;
@@ -839,6 +860,7 @@ export class BroadcastsService {
           source: 'broadcast',
           audienceSnapshotAt: snapshotAt,
           contactChannelId: cc.id,
+          ...(opts.htmlBody?.trim() ? { htmlBody: opts.htmlBody } : {}),
         },
       })),
       skipDuplicates: true,
@@ -1472,6 +1494,15 @@ export class BroadcastsService {
     }
 
     if (run.channel.type === 'email') {
+      const recipientMetadata = isRecord(recipient.metadata) ? recipient.metadata : {};
+      const htmlBody =
+        typeof recipientMetadata.htmlBody === 'string'
+          ? recipientMetadata.htmlBody
+          : null;
+      if (htmlBody?.trim()) {
+        metadata.htmlBody = htmlBody;
+      }
+
       const unsubscribe = await this.ensureEmailUnsubscribeToken(run, recipient);
       if (unsubscribe) {
         metadata.emailUnsubscribe = unsubscribe;
@@ -1574,6 +1605,7 @@ export class BroadcastsService {
     channelId: string;
     authorId?: string;
     text?: string;
+    htmlBody?: string;
     template?: { name: string; language: string; variables?: Record<string, string> };
     filters: BroadcastAudienceFilters;
     limit?: number;
@@ -1583,6 +1615,7 @@ export class BroadcastsService {
       workspaceId,
       channelId,
       text,
+      htmlBody,
       authorId,
       name,
       template,
@@ -1603,7 +1636,7 @@ export class BroadcastsService {
           'WhatsApp broadcasts must use an approved template (name + language). Free-form text is not delivered outside the customer care window.',
         );
       }
-    } else if (!text?.trim() && !template?.name) {
+    } else if (!text?.trim() && !htmlBody?.trim() && !template?.name) {
       throw new BadRequestException('Provide message text or a template');
     }
 
@@ -1615,6 +1648,7 @@ export class BroadcastsService {
       channelId,
       filters: audienceFilters,
       text,
+      htmlBody,
       template,
     });
     await this.assertNoDuplicateSend({ workspaceId, channelId, dedupeKey });
@@ -1634,6 +1668,7 @@ export class BroadcastsService {
       }),
     ]);
 
+    const plainMessageText = text?.trim() || this.htmlToPlainText(htmlBody);
     const hasAudience = contactChannels.length > 0;
     const run = await this.prisma.broadcastRun.create({
       data: {
@@ -1648,8 +1683,8 @@ export class BroadcastsService {
         templateLanguage: template?.language ?? null,
         templateVariables: template?.variables ?? Prisma.JsonNull,
         templateSnapshot: templateSnapshot ?? Prisma.JsonNull,
-        messageText: text?.trim() || null,
-        textPreview: (text ?? '').slice(0, 500) || null,
+        messageText: plainMessageText || null,
+        textPreview: plainMessageText.slice(0, 500) || null,
         totalAudience: contactChannels.length,
         queuedCount: 0,
         failedEnqueue: 0,
@@ -1666,7 +1701,8 @@ export class BroadcastsService {
       runId: run.id,
       channelId,
       recipients: contactChannels,
-      text,
+      text: plainMessageText,
+      htmlBody,
       templateSnapshot,
     });
 

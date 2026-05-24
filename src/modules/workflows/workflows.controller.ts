@@ -40,6 +40,31 @@ export class WorkflowsController {
         return this.service.getAiBuilderContext();
     }
 
+    @Get('runs')
+    @WorkspaceRoute(WorkspacePermission.WORKFLOWS_VIEW)
+    listRuns(
+        @Req() req: any,
+        @Query('workflowId') workflowId?: string,
+        @Query('status') status?: string,
+        @Query('search') search?: string,
+        @Query('page') page?: string,
+        @Query('limit') limit?: string,
+    ) {
+        return this.service.listRuns(req.workspaceId, {
+            workflowId,
+            status,
+            search,
+            page: page ? parseInt(page, 10) : undefined,
+            limit: limit ? parseInt(limit, 10) : undefined,
+        });
+    }
+
+    @Get('runs/:runId')
+    @WorkspaceRoute(WorkspacePermission.WORKFLOWS_VIEW)
+    getRun(@Req() req: any, @Param('runId') runId: string) {
+        return this.service.getRun(req.workspaceId, runId);
+    }
+
     @Get(':id')
     @WorkspaceRoute(WorkspacePermission.WORKFLOWS_VIEW)
     get(@Req() req: any, @Param('id') id: string) {

@@ -5,8 +5,10 @@ import {
   Param,
   Put,
   Req,
+  Res,
 } from '@nestjs/common';
-import { WorkspaceRoute } from 'src/common/auth/route-access.decorator';
+import { Response } from 'express';
+import { Public, WorkspaceRoute } from 'src/common/auth/route-access.decorator';
 import { WorkspacePermission } from 'src/common/constants/permissions';
 import { MetaAutomationService } from './meta-automation.service';
 
@@ -67,5 +69,21 @@ export class MetaAutomationController {
     @Param('channelId') channelId: string,
   ) {
     return this.automation.getEngagementActivity(channelId, req.workspaceId);
+  }
+
+  @Get('link/:token')
+  @Public()
+  async redirectTrackedLink(
+    @Param('channelId') channelId: string,
+    @Param('token') token: string,
+    @Res() res: Response,
+  ) {
+    const url = await this.automation.resolveTrackedLink(channelId, token);
+    if (!url) {
+      res.status(404).send('Link expired or unavailable.');
+      return;
+    }
+
+    res.redirect(302, url);
   }
 }

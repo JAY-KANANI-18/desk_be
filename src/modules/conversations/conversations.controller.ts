@@ -3,6 +3,7 @@
 // Complete controller.  All routes the FE inboxApi.ts calls:
 //
 //   GET    /api/conversations                    list + filter + search
+//   GET    /api/conversations/counts             sidebar count summary
 //   GET    /api/conversations/search             full-text message search
 //   GET    /api/conversations/:id                single conversation
 //   GET    /api/conversations/:id/timeline       merged msg + activity (paginated)
@@ -172,6 +173,22 @@ export class ConversationsController {
     const actorUserId = req.user?.id as string;
 
     return this.conversationsService.findAll(workspaceId, {
+      ...query,
+      actorUserId,
+    });
+  }
+
+  /**
+   * GET /api/conversations/counts
+   * Returns sidebar count buckets for the active inbox filters.
+   */
+  @Get('counts')
+  @WorkspaceRoute(WorkspacePermission.MESSAGES_VIEW)
+  getCounts(@Req() req: any, @Query() query: ListConversationsQuery) {
+    const workspaceId = req.workspaceId as string;
+    const actorUserId = req.user?.id as string;
+
+    return this.conversationsService.getCountSummary(workspaceId, {
       ...query,
       actorUserId,
     });

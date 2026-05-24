@@ -692,7 +692,7 @@ export class ChannelService {
                     encryption,
                     forwardingEmail: inboundEmail,
                     forwardingConfirmed: Boolean(dto.forwardingConfirmed),
-                    signatureHtml: dto.signatureHtml ?? '<p>Regards,<br />{{agent_name}}</p>',
+                    signatureHtml: dto.signatureHtml ?? '<p>Regards,<br />{{agent.name}}</p>',
                     signatureEnabled: dto.signatureEnabled !== false,
                 },
             },

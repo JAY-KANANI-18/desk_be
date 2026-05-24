@@ -603,11 +603,11 @@ export class AiAgentsService {
           r."contact_id",
           r."intent",
           r."confidence",
-          ag."name" AS "agent_name",
-          c."firstName" AS "contact_first_name",
-          c."lastName" AS "contact_last_name",
-          c."email" AS "contact_email",
-          c."phone" AS "contact_phone"
+          ag."name" AS "agentName",
+          c."firstName" AS "contactFirstName",
+          c."lastName" AS "contactLastName",
+          c."email" AS "contactEmail",
+          c."phone" AS "contactPhone"
         FROM "ai_actions" a
         JOIN "ai_runs" r ON r."id" = a."run_id"
         JOIN "ai_agents" ag ON ag."id" = r."agent_id"
@@ -630,10 +630,10 @@ export class AiAgentsService {
       contactId: row.contact_id,
       intent: row.intent,
       confidence: row.confidence,
-      agentName: row.agent_name,
-      contactName: [row.contact_first_name, row.contact_last_name].filter(Boolean).join(' ') || 'Unknown contact',
-      contactEmail: row.contact_email,
-      contactPhone: row.contact_phone,
+      agentName: row.agentName,
+      contactName: [row.contactFirstName, row.contactLastName].filter(Boolean).join(' ') || 'Unknown contact',
+      contactEmail: row.contactEmail,
+      contactPhone: row.contactPhone,
     }));
     aiAgentsDebug.log('api.service', 'listApprovals result', {
       workspaceId,

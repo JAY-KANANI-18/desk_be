@@ -1,6 +1,11 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
+import {
+  findUnsupportedVariableKeys,
+  normalizeVariableTemplate,
+  SNIPPET_VARIABLE_KEY_SET,
+} from '../../common/variables/variable-metadata';
 import { CreateSnippetDto, SnippetAttachmentDto, UpdateSnippetDto } from './dto/snippet.dto';
 
 const SNIPPET_SELECT = {
@@ -16,12 +21,6 @@ const SNIPPET_SELECT = {
   createdAt: true,
   updatedAt: true,
 } satisfies Prisma.SnippetSelect;
-
-const SUPPORTED_SNIPPET_VARIABLES = new Set([
-  'contact_name',
-  'agent_name',
-  'last_message',
-]);
 
 type SnippetRow = Prisma.SnippetGetPayload<{ select: typeof SNIPPET_SELECT }>;
 
@@ -278,11 +277,9 @@ export class SnippetsService {
       throw new BadRequestException('Snippet message is required');
     }
 
-    const usedVariables = Array.from(
-      content.matchAll(/{{\s*([a-zA-Z0-9_]+)\s*}}/g),
-    ).map((match) => match[1]);
-    const invalidVariables = usedVariables.filter(
-      (variable) => !SUPPORTED_SNIPPET_VARIABLES.has(variable),
+    const invalidVariables = findUnsupportedVariableKeys(
+      content,
+      SNIPPET_VARIABLE_KEY_SET,
     );
 
     if (invalidVariables.length > 0) {
@@ -291,7 +288,7 @@ export class SnippetsService {
       );
     }
 
-    return content;
+    return normalizeVariableTemplate(content);
   }
 
   private normalizeTopic(value?: string) {

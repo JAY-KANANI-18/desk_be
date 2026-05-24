@@ -48,6 +48,11 @@ import {
   isPhoneIdentifierChannel,
   normalizeContactIdentifierForChannel,
 } from '../../common/utils/contact-identifier.util';
+import {
+  buildCommonVariableContext,
+  renderVariableTemplate,
+  type VariableRenderContext,
+} from '../../common/variables/variable-metadata';
 
 // ─── DTOs ─────────────────────────────────────────────────────────────────────
 
@@ -69,6 +74,17 @@ export interface FindAllOptions {
   lifecycleId?: string;
   /** Resolved from jwt in controller */
   actorUserId?: string;
+}
+
+export interface ConversationCountBucket {
+  total: number;
+  unread: number;
+}
+
+export interface ConversationCountSummary {
+  all: ConversationCountBucket;
+  mine: ConversationCountBucket;
+  unassigned: ConversationCountBucket;
 }
 
 export interface SendMessageDto {
@@ -114,7 +130,7 @@ export interface AddNoteDto {
   mentionedUserIds?: string[];
 }
 
-type MessageVariableContext = Record<string, unknown>;
+type MessageVariableContext = VariableRenderContext;
 
 export interface ChangePriorityDto {
   priority: 'low' | 'normal' | 'high' | 'urgent';
@@ -252,7 +268,6 @@ export class ConversationsService {
       status,
       priority,
       direction,
-      channelType,
       assigneeId,
       teamId,
       unreplied = false,
@@ -264,7 +279,6 @@ export class ConversationsService {
     } = opts;
 
     const take = Math.min(limit, 100);
-    console.log({workspaceId});
 
     // ── Build where clause ────────────────────────────────────────────────────
     const where: Prisma.ConversationWhereInput = { workspaceId };
@@ -336,6 +350,104 @@ export class ConversationsService {
     const nextCursor = hasMore ? data[data.length - 1].id : undefined;
 
     return { data, nextCursor, total };
+  }
+
+  async getCountSummary(
+    workspaceId: string,
+    opts: Omit<FindAllOptions, 'workspaceId'> = {},
+  ): Promise<ConversationCountSummary> {
+    const baseWhere = this.buildConversationCountWhere(workspaceId, opts);
+    const mineWhere = opts.actorUserId
+      ? this.withContactWhere(baseWhere, { assigneeId: opts.actorUserId })
+      : null;
+
+    const [all, mine, unassigned] = await Promise.all([
+      this.conversationCountBucket(baseWhere),
+      mineWhere
+        ? this.conversationCountBucket(mineWhere)
+        : Promise.resolve({ total: 0, unread: 0 }),
+      this.conversationCountBucket(
+        this.withContactWhere(baseWhere, { assigneeId: null }),
+      ),
+    ]);
+
+    return { all, mine, unassigned };
+  }
+
+  private buildConversationCountWhere(
+    workspaceId: string,
+    opts: Omit<FindAllOptions, 'workspaceId'> = {},
+  ): Prisma.ConversationWhereInput {
+    const {
+      status,
+      priority,
+      direction,
+      teamId,
+      unreplied = false,
+      search,
+    } = opts;
+    const where: Prisma.ConversationWhereInput = { workspaceId };
+    const contactWhere: Prisma.ContactWhereInput = {};
+
+    if (status && status !== 'all') {
+      contactWhere.status = status;
+    }
+
+    if (priority && priority !== 'all') {
+      where.priority = priority;
+    }
+
+    if (direction && direction !== 'all') {
+      where.lastMessage = { direction };
+    }
+
+    if (unreplied) {
+      where.lastMessage = { direction: 'incoming' };
+    }
+
+    if (teamId) {
+      contactWhere.teamId = teamId;
+    }
+
+    if (search?.trim()) {
+      contactWhere.OR = this.buildContactSearchClauses(search);
+    }
+
+    if (Object.keys(contactWhere).length > 0) {
+      where.contact = contactWhere;
+    }
+
+    return where;
+  }
+
+  private withContactWhere(
+    where: Prisma.ConversationWhereInput,
+    contactWhere: Prisma.ContactWhereInput,
+  ): Prisma.ConversationWhereInput {
+    const currentContactWhere = (where.contact ?? {}) as Prisma.ContactWhereInput;
+
+    return {
+      ...where,
+      contact: {
+        ...currentContactWhere,
+        ...contactWhere,
+      },
+    };
+  }
+
+  private async conversationCountBucket(
+    where: Prisma.ConversationWhereInput,
+  ): Promise<ConversationCountBucket> {
+    const result = await this.prisma.conversation.aggregate({
+      where,
+      _count: { _all: true },
+      _sum: { unreadCount: true },
+    });
+
+    return {
+      total: result._count._all,
+      unread: result._sum.unreadCount ?? 0,
+    };
   }
 
   private buildContactSearchClauses(search: string): Prisma.ContactWhereInput[] {
@@ -1737,7 +1849,7 @@ export class ConversationsService {
     },
     actorId?: string | null,
   ): Promise<MessageVariableContext> {
-    const [actor, workspace] = await Promise.all([
+    const [actor, workspace, lastMessage] = await Promise.all([
       actorId
         ? this.prisma.user.findUnique({
           where: { id: actorId },
@@ -1748,11 +1860,18 @@ export class ConversationsService {
         where: { id: conversation.workspaceId },
         select: { name: true, timeZone: true },
       }),
+      this.prisma.message.findFirst({
+        where: {
+          workspaceId: conversation.workspaceId,
+          conversationId: conversation.id,
+        },
+        orderBy: { createdAt: 'desc' },
+        select: { text: true, subject: true },
+      }),
     ]);
 
     const contact = conversation.contact;
-    const contactName = this.getContactDisplayName(contact);
-    const agentName = [actor?.firstName, actor?.lastName].filter(Boolean).join(' ').trim();
+    const lastMessageText = lastMessage?.text ?? lastMessage?.subject ?? '';
     const todayDate = new Intl.DateTimeFormat('en-US', {
       timeZone: workspace?.timeZone ?? 'UTC',
       year: 'numeric',
@@ -1760,33 +1879,16 @@ export class ConversationsService {
       day: '2-digit',
     }).format(new Date());
 
-    return {
-      contact: {
-        name: contactName,
-        firstName: contact?.firstName ?? '',
-        first_name: contact?.firstName ?? '',
-        firstname: contact?.firstName ?? '',
-        lastName: contact?.lastName ?? '',
-        last_name: contact?.lastName ?? '',
-        lastname: contact?.lastName ?? '',
-        email: contact?.email ?? '',
-        phone: contact?.phone ?? '',
-        company: contact?.company ?? '',
-      },
-      agent: {
-        name: agentName,
-        email: actor?.email ?? '',
-      },
-      company: {
-        name: workspace?.name ?? '',
-      },
+    return buildCommonVariableContext({
+      contact,
+      agent: actor,
+      company: workspace,
       conversation: {
         id: conversation.id,
+        lastMessage: lastMessageText,
       },
-      today: {
-        date: todayDate,
-      },
-    };
+      today: { date: todayDate },
+    });
   }
 
   private renderMessageVariables(
@@ -1795,13 +1897,7 @@ export class ConversationsService {
   ): string | undefined {
     if (value === null || value === undefined) return undefined;
 
-    return value.replace(
-      /\{\{\s*\$?([a-zA-Z0-9._-]+)\s*\}\}/g,
-      (_match, key: string) => {
-        const resolved = this.getMessageVariableValue(context, key);
-        return resolved === null || resolved === undefined ? '' : String(resolved);
-      },
-    );
+    return renderVariableTemplate(value, context);
   }
 
   private renderMessageMetadata(
@@ -1826,22 +1922,34 @@ export class ConversationsService {
       }
     }
 
+    if (next.template && typeof next.template === 'object') {
+      next.template = { ...next.template };
+      if (next.template.variables && typeof next.template.variables === 'object') {
+        next.template.variables = this.renderMessageTemplateVariables(
+          next.template.variables,
+          context,
+        );
+      }
+    }
+
     return next;
   }
 
-  private getMessageVariableValue(context: MessageVariableContext, key: string): unknown {
-    const normalizedKey = key.trim().replace(/^\$/, '');
-    if (Object.prototype.hasOwnProperty.call(context, normalizedKey)) {
-      return context[normalizedKey];
-    }
-
-    return normalizedKey.split('.').reduce<unknown>((current, part) => {
-      if (current && typeof current === 'object' && Object.prototype.hasOwnProperty.call(current, part)) {
-        return (current as Record<string, unknown>)[part];
+  private renderMessageTemplateVariables(
+    variables: Record<string, unknown>,
+    context: MessageVariableContext,
+  ) {
+    return Object.entries(variables).reduce<Record<string, string>>((acc, [key, value]) => {
+      if (typeof value === 'string') {
+        acc[key] = this.renderMessageVariables(value, context) ?? '';
+      } else if (value === null || value === undefined) {
+        acc[key] = '';
+      } else {
+        acc[key] = String(value);
       }
 
-      return undefined;
-    }, context);
+      return acc;
+    }, {});
   }
 
   private async getLatestTimeline(

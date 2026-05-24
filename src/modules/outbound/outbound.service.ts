@@ -17,6 +17,13 @@ import {
     resolveContactAvatarUrl,
 } from '../../common/contacts/static-contact-avatar';
 import { normalizeContactIdentifierForChannel } from '../../common/utils/contact-identifier.util';
+import {
+    buildCommonVariableContext,
+    COMMON_VARIABLE_KEY_SET,
+    findUnsupportedVariableKeys,
+    renderVariableTemplate,
+    type VariableRenderContext,
+} from '../../common/variables/variable-metadata';
 
 export interface SendAttachmentDto {
     type: string;
@@ -273,6 +280,7 @@ export class OutboundService {
                     contactPhone: contact.phone,
                     contactEmail: contact.email,
                     hasTemplate: !!params.metadata?.template,
+                    messageText: renderedText,
                 });
             }
         } catch (err: any) {
@@ -377,6 +385,7 @@ export class OutboundService {
                     author,
                     templateMeta: params.metadata.template,
                     workspaceId,
+                    templateContext,
                 });
                 const sentMessage = await this.finalise(
                     message.id,
@@ -596,6 +605,11 @@ export class OutboundService {
                     to: templateRecipient,
                     templateMeta,
                     workspaceId: message.workspaceId,
+                    templateContext: this.buildTemplateContext(
+                        message.conversation?.contact ?? {},
+                        message.author,
+                        message.text ?? null,
+                    ),
                 })
                 : await provider.sendMessage(channel, payload);
             const metadata = {
@@ -720,19 +734,15 @@ export class OutboundService {
         to: string;
         templateMeta: any;
         workspaceId: string;
+        templateContext: VariableRenderContext;
     }) {
 
         const { channel, provider, to, workspaceId } = opts;
-        const templateContext = this.buildTemplateContext(
-            opts.conversation?.contact ?? {},
-            opts.author,
-            null,
-        );
         const templateMeta = {
             ...opts.templateMeta,
             variables: this.renderTemplateVariables(
                 opts.templateMeta?.variables,
-                templateContext,
+                opts.templateContext,
                 'template variable',
             ),
         };
@@ -1445,19 +1455,23 @@ export class OutboundService {
 
         if (Array.isArray(value)) {
             return value.reduce<Record<string, string>>((acc, item, index) => {
-                acc[String(index + 1)] = String(item ?? '');
+                acc[String(index + 1)] = this.normaliseTemplateVariableValue(item);
                 return acc;
             }, {});
         }
 
         if (typeof value === 'object') {
             return Object.entries(value).reduce<Record<string, string>>((acc, [key, item]) => {
-                acc[key] = String(item ?? '');
+                acc[key] = this.normaliseTemplateVariableValue(item);
                 return acc;
             }, {});
         }
 
         return {};
+    }
+
+    private normaliseTemplateVariableValue(value: unknown): string {
+        return String(value ?? '').trim();
     }
 
     private normaliseMessengerTemplateMessage(message: any, template: MessengerTemplateCatalogItem): any {
@@ -2074,44 +2088,34 @@ export class OutboundService {
         author: { firstName?: string | null; lastName?: string | null } | null,
         lastMessage: string | null,
     ) {
-        const contactName = [contact.firstName, contact.lastName].filter(Boolean).join(' ').trim()
-            || contact.email
-            || contact.phone
-            || 'there';
-        const agentName = author
-            ? [author.firstName, author.lastName].filter(Boolean).join(' ').trim()
-            : '';
+        const authorName = author
+            ? [author.firstName, author.lastName].filter(Boolean).join(' ').trim() || 'Agent'
+            : 'Agent';
 
-        return {
-            contact_name: contactName,
-            contact_first_name: contact.firstName?.trim() || '',
-            contact_last_name: contact.lastName?.trim() || '',
-            contact_email: contact.email?.trim() || '',
-            contact_phone: contact.phone?.trim() || '',
-            agent_name: agentName || 'Agent',
-            last_message: lastMessage?.trim() || '',
-        };
+        return buildCommonVariableContext({
+            contact,
+            agent: { name: authorName },
+            conversation: { lastMessage },
+        });
     }
 
-    private renderVariables(value: string | null | undefined, context: Record<string, string>, fieldName: string) {
+    private renderVariables(value: string | null | undefined, context: VariableRenderContext, fieldName: string) {
         if (!value) {
             return value ?? undefined;
         }
 
-        const allowedKeys = new Set(Object.keys(context));
-        const usedKeys = Array.from(value.matchAll(/{{\s*([a-zA-Z0-9_]+)\s*}}/g)).map((match) => match[1]);
-        const invalidKeys = usedKeys.filter((key) => !allowedKeys.has(key));
+        const invalidKeys = findUnsupportedVariableKeys(value, COMMON_VARIABLE_KEY_SET);
 
         if (invalidKeys.length > 0) {
             throw new BadRequestException(`Unsupported variables in ${fieldName}: ${Array.from(new Set(invalidKeys)).join(', ')}`);
         }
 
-        return value.replace(/{{\s*([a-zA-Z0-9_]+)\s*}}/g, (_match, key: string) => context[key] ?? '');
+        return renderVariableTemplate(value, context);
     }
 
     private renderTemplateVariables(
         value: any,
-        context: Record<string, string>,
+        context: VariableRenderContext,
         fieldName: string,
     ): Record<string, string> {
         const variables = this.normaliseTemplateVariables(value);
@@ -2125,7 +2129,7 @@ export class OutboundService {
     private renderTemplateValue(value: any, variables: Record<string, string>): any {
         if (typeof value === 'string') {
             return value.replace(
-                /{{\s*([a-zA-Z0-9_]+)\s*}}/g,
+                /{{\s*([a-zA-Z0-9_.]+)\s*}}/g,
                 (_match, key: string) => variables[key] ?? '',
             );
         }
@@ -2158,7 +2162,7 @@ export class OutboundService {
         }
 
         let identifier: string | null = null;
-        if (channel.type === 'whatsapp') {
+        if (channel.type === 'whatsapp' || channel.type === 'sms') {
             identifier = normalizeContactIdentifierForChannel(channel.type, contact.phone);
         } else if (channel.type === 'email') {
             identifier = normalizeContactIdentifierForChannel(channel.type, contact.email);

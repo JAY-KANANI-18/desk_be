@@ -1,17 +1,22 @@
-type TemplateVariables = Record<string, string> | string[] | null | undefined;
+type TemplateVariableValue = string | number | boolean | null | undefined;
+type TemplateVariables = Record<string, TemplateVariableValue> | TemplateVariableValue[] | null | undefined;
+
+function normaliseVariableValue(value: TemplateVariableValue): string {
+    return String(value ?? '').trim();
+}
 
 function normaliseVariables(provided: TemplateVariables): Record<string, string> {
     if (!provided) return {};
 
     if (Array.isArray(provided)) {
         return provided.reduce<Record<string, string>>((acc, value, index) => {
-            acc[String(index + 1)] = String(value ?? '');
+            acc[String(index + 1)] = normaliseVariableValue(value);
             return acc;
         }, {});
     }
 
     return Object.entries(provided).reduce<Record<string, string>>((acc, [key, value]) => {
-        acc[key] = String(value ?? '');
+        acc[key] = normaliseVariableValue(value);
         return acc;
     }, {});
 }

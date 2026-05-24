@@ -14,6 +14,7 @@ type WorkflowDelegateMock = {
 
 type PrismaMock = {
     workflow: WorkflowDelegateMock;
+    channel: { findMany: jest.Mock };
     $transaction: jest.Mock;
 };
 
@@ -30,6 +31,9 @@ function createPrismaMock(): PrismaMock {
             delete: jest.fn(),
             findMany: jest.fn(),
             count: jest.fn(),
+        },
+        channel: {
+            findMany: jest.fn(async () => []),
         },
         $transaction: jest.fn(),
     };
@@ -299,6 +303,173 @@ describe('WorkflowsService', () => {
             await expect(
                 service.publish('workspace-1', 'workflow-1', 'user-1'),
             ).rejects.toBeInstanceOf(BadRequestException);
+            expect(prisma.workflow.update).not.toHaveBeenCalled();
+        });
+
+        it('rejects same-chat delivery for a commerce trigger', async () => {
+            const { prisma, service } = createService();
+            const config = {
+                trigger: { type: 'commerce.abandoned_cart' },
+                steps: [
+                    {
+                        id: 'send-1',
+                        type: 'send_message',
+                        parentId: 'trigger',
+                        data: {
+                            deliveryStrategy: 'trigger_channel',
+                            channel: 'trigger_channel',
+                            defaultMessage: { text: 'Cart reminder' },
+                        },
+                    },
+                ],
+            };
+            prisma.workflow.findFirst.mockResolvedValue({
+                id: 'workflow-1',
+                workspaceId: 'workspace-1',
+                config,
+            });
+
+            await expect(
+                service.publish('workspace-1', 'workflow-1', 'user-1'),
+            ).rejects.toThrow('Choose one channel');
+            expect(prisma.workflow.update).not.toHaveBeenCalled();
+        });
+
+        it('rejects WhatsApp text as a first outbound commerce message', async () => {
+            const { prisma, service } = createService();
+            const config = {
+                trigger: { type: 'commerce.abandoned_cart' },
+                steps: [
+                    {
+                        id: 'send-1',
+                        type: 'send_message',
+                        parentId: 'trigger',
+                        data: {
+                            deliveryStrategy: 'specific_channel',
+                            channel: 'wa-1',
+                            defaultMessage: { text: 'Cart reminder' },
+                        },
+                    },
+                ],
+            };
+            prisma.channel.findMany.mockResolvedValue([
+                { id: 'wa-1', type: 'whatsapp', status: 'connected' },
+            ]);
+            prisma.workflow.findFirst.mockResolvedValue({
+                id: 'workflow-1',
+                workspaceId: 'workspace-1',
+                config,
+            });
+
+            await expect(
+                service.publish('workspace-1', 'workflow-1', 'user-1'),
+            ).rejects.toThrow('approved WhatsApp template');
+            expect(prisma.workflow.update).not.toHaveBeenCalled();
+        });
+
+        it('allows WhatsApp text after a template quick-reply branch on the same channel', async () => {
+            const { prisma, service } = createService();
+            const config = {
+                trigger: { type: 'commerce.abandoned_cart' },
+                steps: [
+                    {
+                        id: 'send-template',
+                        type: 'send_message',
+                        parentId: 'trigger',
+                        data: {
+                            deliveryStrategy: 'specific_channel',
+                            channel: 'wa-1',
+                            defaultMessage: { text: '' },
+                            templateButtonBranching: true,
+                            metadata: { template: { name: 'cart_reply', language: 'en_US' } },
+                        },
+                    },
+                    {
+                        id: 'confirm-connector',
+                        type: 'branch_connector',
+                        parentId: 'send-template',
+                        name: 'Confirm Order',
+                    },
+                    {
+                        id: 'send-follow-up',
+                        type: 'send_message',
+                        parentId: 'confirm-connector',
+                        data: {
+                            deliveryStrategy: 'specific_channel',
+                            channel: 'wa-1',
+                            defaultMessage: { text: 'Thanks for confirming' },
+                        },
+                    },
+                ],
+            };
+            prisma.channel.findMany.mockResolvedValue([
+                { id: 'wa-1', type: 'whatsapp', status: 'connected' },
+            ]);
+            prisma.workflow.findFirst.mockResolvedValue({
+                id: 'workflow-1',
+                workspaceId: 'workspace-1',
+                config,
+            });
+            prisma.workflow.update.mockResolvedValue({ id: 'workflow-1', status: 'published' });
+
+            await expect(
+                service.publish('workspace-1', 'workflow-1', 'user-1'),
+            ).resolves.toEqual({ id: 'workflow-1', status: 'published' });
+        });
+
+        it('rejects WhatsApp text after the quick-reply window is consumed by a long wait', async () => {
+            const { prisma, service } = createService();
+            const config = {
+                trigger: { type: 'commerce.abandoned_cart' },
+                steps: [
+                    {
+                        id: 'send-template',
+                        type: 'send_message',
+                        parentId: 'trigger',
+                        data: {
+                            deliveryStrategy: 'specific_channel',
+                            channel: 'wa-1',
+                            defaultMessage: { text: '' },
+                            templateButtonBranching: true,
+                            metadata: { template: { name: 'cart_reply', language: 'en_US' } },
+                        },
+                    },
+                    {
+                        id: 'confirm-connector',
+                        type: 'branch_connector',
+                        parentId: 'send-template',
+                        name: 'Confirm Order',
+                    },
+                    {
+                        id: 'wait-1',
+                        type: 'wait',
+                        parentId: 'confirm-connector',
+                        data: { value: 3, unit: 'days' },
+                    },
+                    {
+                        id: 'send-follow-up',
+                        type: 'send_message',
+                        parentId: 'wait-1',
+                        data: {
+                            deliveryStrategy: 'specific_channel',
+                            channel: 'wa-1',
+                            defaultMessage: { text: 'Still there?' },
+                        },
+                    },
+                ],
+            };
+            prisma.channel.findMany.mockResolvedValue([
+                { id: 'wa-1', type: 'whatsapp', status: 'connected' },
+            ]);
+            prisma.workflow.findFirst.mockResolvedValue({
+                id: 'workflow-1',
+                workspaceId: 'workspace-1',
+                config,
+            });
+
+            await expect(
+                service.publish('workspace-1', 'workflow-1', 'user-1'),
+            ).rejects.toThrow('approved WhatsApp template');
             expect(prisma.workflow.update).not.toHaveBeenCalled();
         });
     });

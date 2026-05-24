@@ -285,16 +285,28 @@ export const WORKFLOW_AI_BUILDER_CONTEXT = {
       description: 'Sends text or media to the contact on a selected channel.',
       dataFields: [
         {
+          key: 'deliveryStrategy',
+          type: 'enum',
+          required: true,
+          allowedValues: ['trigger_channel', 'specific_channel'],
+          description: 'Use "trigger_channel" only for chat-based triggers. Use "specific_channel" for commerce, contact, and manual triggers.',
+        },
+        {
           key: 'channel',
           type: 'string',
           required: true,
-          description: 'Use "last_interacted" or a channel id supplied by the workspace.',
+          description: 'Use "trigger_channel" with deliveryStrategy trigger_channel, or a workspace channel id with deliveryStrategy specific_channel.',
         },
         {
           key: 'defaultMessage',
           type: 'object',
           required: true,
           description: 'Message content: { type: "text" | "media", text?: string, mediaUrl?: string }.',
+        },
+        {
+          key: 'metadata.template',
+          type: 'object',
+          description: 'Approved template metadata for WhatsApp or Messenger initiated/template sends: { name, language, variables?, components? }.',
         },
         { key: 'attachments', type: 'object[]', description: 'Uploaded media/file descriptors.' },
         {
@@ -307,8 +319,9 @@ export const WORKFLOW_AI_BUILDER_CONTEXT = {
       executionNotes: [
         'If failure branching is off and sending fails, the step can fail the run.',
         'Variables use double braces, for example {{contact.first_name}}.',
+        'Commerce triggers do not open WhatsApp/Messenger/Instagram reply windows. For first-touch WhatsApp order/cart messages, use an approved template; for Instagram/Messenger use this step only when the contact already has an open messaging window.',
       ],
-      userGuidance: ['Suggest concise messages and tell the user which channel will be used.'],
+      userGuidance: ['Suggest concise messages, name the channel, and call out template/window requirements for commerce-triggered sends.'],
     },
     {
       type: 'ask_question',
@@ -324,6 +337,13 @@ export const WORKFLOW_AI_BUILDER_CONTEXT = {
           description: 'Validation type for the answer.',
         },
         { key: 'multipleChoiceOptions', type: 'object[]', description: 'Options for multiple choice questions.' },
+        {
+          key: 'deliveryStrategy',
+          type: 'enum',
+          allowedValues: ['trigger_channel', 'specific_channel'],
+          description: 'Use "trigger_channel" only for chat-based triggers. Use "specific_channel" with Email/SMS, or with a chat channel only after an open reply window.',
+        },
+        { key: 'channel', type: 'string', description: 'Use "trigger_channel" or a workspace channel id.' },
         { key: 'saveAsContactField', type: 'boolean', description: 'Save answer to a contact field.' },
         { key: 'contactFieldId', type: 'string', description: 'Supported contact field id.' },
         { key: 'saveAsVariable', type: 'boolean', description: 'Save answer as a workflow variable.' },

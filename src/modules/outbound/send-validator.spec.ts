@@ -25,6 +25,29 @@ describe('ProviderErrorNormaliser', () => {
     });
   });
 
+  it('keeps WhatsApp error_data details so invalid template parameters are debuggable', () => {
+    const error = {
+      message: 'Request failed with status code 400',
+      response: {
+        status: 400,
+        data: {
+          error: {
+            code: 100,
+            message: '(#100) Invalid parameter',
+            error_data: {
+              details: 'For component BODY, parameter at index 0 has invalid text format.',
+            },
+          },
+        },
+      },
+    };
+
+    expect(ProviderErrorNormaliser.toSendError(error, 'whatsapp')).toMatchObject({
+      code: 'PROVIDER_ERROR',
+      detail: 'For component BODY, parameter at index 0 has invalid text format. | (#100) Invalid parameter',
+    });
+  });
+
   it('keeps structured BadRequestException messages user-facing', () => {
     const error = new BadRequestException({
       code: 'CONTACT_NO_IDENTIFIER',

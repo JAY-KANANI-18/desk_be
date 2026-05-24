@@ -40,8 +40,8 @@ export class MetaProvider implements ChannelProvider {
       const channelIdentifier = entry?.id; // Page ID for Messenger, Instagram Business Account ID for Instagram
       for (const event of entry?.messaging ?? []) {
 
-          // MESSAGE
-          if (event.message) {
+          // Customer interactions that create an inbound message record.
+          if (event.message || event.postback || event.reaction) {
             const parsed = this.parseEvent(event,channelIdentifier);
             if (parsed) results.push(parsed);
             continue; 
@@ -113,6 +113,7 @@ export class MetaProvider implements ChannelProvider {
       return {
         externalId: `${senderId}_${event.timestamp}_postback`,
         contactIdentifier: senderId,
+        recipientIdentifier: recipientId,
         direction: 'incoming',
         messageType: 'interactive',
         text: event.postback.title ?? event.postback.payload,

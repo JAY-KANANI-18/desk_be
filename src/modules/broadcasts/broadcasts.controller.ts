@@ -75,6 +75,7 @@ export class BroadcastsController {
       name: string;
       channelId: string;
       text?: string;
+      htmlBody?: string;
       template?: { name: string; language: string; variables?: Record<string, string> };
       tagIds?: string[];
       lifecycleId?: string;
@@ -90,6 +91,7 @@ export class BroadcastsController {
       name: dto.name,
       channelId: dto.channelId,
       text: dto.text,
+      htmlBody: dto.htmlBody,
       template: dto.template,
       filters: {
         tagIds: dto.tagIds || [],

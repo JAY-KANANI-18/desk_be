@@ -186,6 +186,17 @@ export class WhatsAppProvider implements ChannelProvider {
                 };
             }
 
+            case 'button': {
+                const reply = msg.button;
+                return {
+                    ...base,
+                    messageType: 'button',
+                    text: reply?.text ?? reply?.payload,
+                    attachments: [],
+                    metadata: { buttonReply: reply },
+                };
+            }
+
             case 'order':
                 return { ...base, messageType: 'order', attachments: [], metadata: { order: msg.order } };
 

@@ -46,6 +46,8 @@ export interface IntegrationSummary {
   accountStatus?: string;
   currency?: string;
   campaignCount?: number;
+  shopDomain?: string;
+  shopName?: string;
 }
 
 export interface IntegrationCatalogItem {
@@ -64,9 +66,12 @@ export interface IntegrationCatalogItem {
   status: string;
   integrationId: string | null;
   routingChannelId: string | null;
+  externalAccountId: string | null;
+  externalAccountName: string | null;
   webhookPath: string | null;
   summary: IntegrationSummary | null;
   health: Prisma.JsonValue | null;
+  connectedAt: Date | null;
   lastSyncedAt: Date | null;
   lastWebhookAt: Date | null;
   actions: {
@@ -81,6 +86,7 @@ export interface IntegrationCatalogItem {
 
 export interface IntegrationCatalogResponse {
   integrations: IntegrationCatalogItem[];
+  connections: IntegrationCatalogItem[];
 }
 
 export interface IntegrationLogListParams {
@@ -88,8 +94,45 @@ export interface IntegrationLogListParams {
   cursor?: string;
 }
 
+export interface IntegrationEventSummary {
+  resourceType: 'order' | 'cart' | 'customer';
+  identifier?: string | null;
+  customerLabel?: string | null;
+  totalAmount?: number | null;
+  currency?: string | null;
+  itemCount?: number | null;
+  itemPreview?: string | null;
+  status?: string | null;
+}
+
 export interface IntegrationResourceListParams {
   type?: string;
+}
+
+export type IntegrationCommerceResourceType =
+  | 'customers'
+  | 'orders'
+  | 'products'
+  | 'carts'
+  | 'checkouts';
+
+export interface IntegrationCommerceListParams {
+  page?: number;
+  limit?: number;
+}
+
+export interface IntegrationListPagination {
+  total: number;
+  page: number;
+  limit: number;
+  totalPages: number;
+  hasNextPage: boolean;
+  hasPrevPage: boolean;
+}
+
+export interface IntegrationCommerceListResponse<T> {
+  items: T[];
+  pagination: IntegrationListPagination;
 }
 
 export interface EnqueueIntegrationJobParams {
@@ -138,64 +181,94 @@ export class IntegrationsService {
       select: { id: true, status: true, config: true },
     });
 
+    const catalogByProvider = new Map(INTEGRATION_PROVIDER_CATALOG.map((entry) => [entry.id, entry]));
+    const activeIntegrations = integrations.filter(
+      (integration) => integration.status !== 'disconnected',
+    );
     const byProvider = new Map<string, (typeof integrations)[number]>();
-    for (const integration of integrations) {
+    for (const integration of activeIntegrations) {
       if (!byProvider.has(integration.provider)) {
         byProvider.set(integration.provider, integration);
       }
     }
 
-    return {
-      integrations: INTEGRATION_PROVIDER_CATALOG.map((entry) => {
-        const integration = byProvider.get(entry.id);
-        const adapter = this.adapterRegistry.maybeGet(entry.id);
-        const legacyConnected = entry.id === 'meta_ads' && !!legacyMetaAds;
-        const connected = integration?.status === 'connected' || legacyConnected;
-        const summary = integration
-          ? adapter?.summarize?.(integration) ?? this.integrationSummary(integration)
-          : legacyMetaAds
-            ? adapter?.summarizeLegacy?.(legacyMetaAds) ?? this.legacyMetaAdsSummary(legacyMetaAds.config)
-            : null;
-        const integrationId = integration?.id ?? null;
-        const webhookPath = connected
-          ? adapter?.webhookPath?.(integration ?? null, legacyMetaAds ?? null) ?? null
+    const buildItem = (
+      entry: (typeof INTEGRATION_PROVIDER_CATALOG)[number],
+      integration?: (typeof integrations)[number] | null,
+      legacy?: typeof legacyMetaAds | null,
+    ): IntegrationCatalogItem => {
+      const adapter = this.adapterRegistry.maybeGet(entry.id);
+      const legacyConnected = entry.id === 'meta_ads' && !!legacy;
+      const hasConnection = !!integration || legacyConnected;
+      const connected = integration?.status === 'connected' || legacyConnected;
+      const summary = integration
+        ? adapter?.summarize?.(integration) ?? this.integrationSummary(integration)
+        : legacy
+          ? adapter?.summarizeLegacy?.(legacy) ?? this.legacyMetaAdsSummary(legacy.config)
           : null;
-        const providerActions =
-          connected && integration && adapter?.providerActions
-            ? adapter.providerActions(integration)
-            : [];
+      const integrationId = integration?.id ?? null;
+      const webhookPath = hasConnection
+        ? adapter?.webhookPath?.(integration ?? null, legacy ?? null) ?? null
+        : null;
+      const providerActions =
+        hasConnection && integration && adapter?.providerActions
+          ? adapter.providerActions(integration)
+          : [];
 
-        return {
-          id: entry.id,
-          name: entry.name,
-          desc: entry.desc,
-          icon: entry.icon,
-          category: entry.category,
-          providerCategory: entry.providerCategory,
-          availability: entry.availability,
-          connectMode: entry.connectMode,
-          authType: entry.authType,
-          capabilities: entry.capabilities,
-          plannedDomains: entry.plannedDomains,
-          connected,
-          status: integration?.status ?? (legacyConnected ? 'connected' : entry.availability),
-          integrationId,
-          routingChannelId: legacyMetaAds?.id ?? null,
-          webhookPath,
-          summary,
-          health: integration?.health ?? null,
-          lastSyncedAt: integration?.lastSyncedAt ?? null,
-          lastWebhookAt: integration?.lastWebhookAt ?? null,
-          actions: {
-            connect: entry.connectMode,
-            disconnect: connected,
-            refresh: connected && entry.id === 'meta_ads',
-            sync: connected && !!adapter?.buildSyncJob && !!integration,
-            providerActions,
-            configure: connected,
-          },
-        };
-      }),
+      return {
+        id: entry.id,
+        name: entry.name,
+        desc: entry.desc,
+        icon: entry.icon,
+        category: entry.category,
+        providerCategory: entry.providerCategory,
+        availability: entry.availability,
+        connectMode: entry.connectMode,
+        authType: entry.authType,
+        capabilities: entry.capabilities,
+        plannedDomains: entry.plannedDomains,
+        connected,
+        status: integration?.status ?? (legacyConnected ? 'connected' : entry.availability),
+        integrationId,
+        routingChannelId: legacy?.id ?? null,
+        externalAccountId: integration?.externalAccountId ?? null,
+        externalAccountName: integration?.externalAccountName ?? null,
+        webhookPath,
+        summary,
+        health: integration?.health ?? null,
+        connectedAt: integration?.connectedAt ?? null,
+        lastSyncedAt: integration?.lastSyncedAt ?? null,
+        lastWebhookAt: integration?.lastWebhookAt ?? null,
+        actions: {
+          connect: entry.connectMode,
+          disconnect: hasConnection,
+          refresh: hasConnection && entry.id === 'meta_ads',
+          sync: hasConnection && !!adapter?.buildSyncJob && !!integration,
+          providerActions,
+          configure: hasConnection,
+        },
+      };
+    };
+
+    const connections = activeIntegrations
+      .map((integration) => {
+        const entry = catalogByProvider.get(integration.provider as IntegrationProviderKey);
+        return entry ? buildItem(entry, integration, null) : null;
+      })
+      .filter((item): item is IntegrationCatalogItem => item !== null);
+
+    if (legacyMetaAds && !activeIntegrations.some((integration) => integration.provider === 'meta_ads')) {
+      const metaEntry = catalogByProvider.get('meta_ads');
+      if (metaEntry) {
+        connections.push(buildItem(metaEntry, null, legacyMetaAds));
+      }
+    }
+
+    return {
+      integrations: INTEGRATION_PROVIDER_CATALOG.map((entry) =>
+        buildItem(entry, byProvider.get(entry.id), entry.id === 'meta_ads' ? legacyMetaAds : null),
+      ),
+      connections,
     };
   }
 
@@ -448,6 +521,35 @@ export class IntegrationsService {
     return { disconnected: true };
   }
 
+  async disconnectIntegration(workspaceId: string, integrationIdOrProvider: string) {
+    const knownProvider = INTEGRATION_PROVIDER_CATALOG.some(
+      (entry) => entry.id === integrationIdOrProvider,
+    );
+    if (knownProvider) {
+      return this.disconnectProvider(workspaceId, integrationIdOrProvider);
+    }
+
+    const integration = await this.prisma.integration.findFirst({
+      where: { id: integrationIdOrProvider, workspaceId },
+      select: { id: true },
+    });
+    if (!integration) {
+      throw new NotFoundException('Integration not found');
+    }
+
+    await this.prisma.integration.update({
+      where: { id: integration.id },
+      data: {
+        status: 'disconnected',
+        disconnectedAt: new Date(),
+        credentialsEncrypted: null,
+        health: { state: 'disconnected', checkedAt: new Date().toISOString() },
+      },
+    });
+
+    return { disconnected: true };
+  }
+
   async ingestMetaAdsWebhook(integrationOrLegacyChannelId: string | undefined, payload: unknown) {
     return this.ingestProviderWebhook('meta_ads', {
       integrationId: integrationOrLegacyChannelId,
@@ -499,11 +601,199 @@ export class IntegrationsService {
     });
     const hasMore = rows.length > limit;
     const items = hasMore ? rows.slice(0, limit) : rows;
+    const summaries = await this.integrationEventSummaries(workspaceId, integrationId, items);
 
     return {
-      items,
+      items: items.map((item) => ({
+        ...item,
+        summary: summaries.get(item.id) ?? null,
+      })),
       nextCursor: hasMore ? items.at(-1)?.id ?? null : null,
     };
+  }
+
+  private async integrationEventSummaries(
+    workspaceId: string,
+    integrationId: string,
+    items: Array<{ id: string; eventType: string; externalEventId?: string | null }>,
+  ) {
+    const summaries = new Map<string, IntegrationEventSummary>();
+    const orderEvents = items.filter(
+      (item) => item.externalEventId && item.eventType.startsWith('commerce.order_'),
+    );
+    const cartEvents = items.filter(
+      (item) => item.externalEventId && item.eventType.startsWith('commerce.cart_'),
+    );
+    const customerEvents = items.filter(
+      (item) => item.externalEventId && item.eventType.startsWith('commerce.customer_'),
+    );
+
+    if (orderEvents.length > 0) {
+      const externalIds = orderEvents.map((item) => item.externalEventId as string);
+      const orders = await this.prisma.commerceOrder.findMany({
+        where: {
+          workspaceId,
+          integrationId,
+          externalOrderId: { in: externalIds },
+        },
+        select: {
+          externalOrderId: true,
+          orderNumber: true,
+          status: true,
+          financialStatus: true,
+          fulfillmentStatus: true,
+          currency: true,
+          totalAmount: true,
+          email: true,
+          phone: true,
+          commerceCustomer: {
+            select: {
+              firstName: true,
+              lastName: true,
+              email: true,
+              phone: true,
+            },
+          },
+          lineItems: {
+            take: 3,
+            orderBy: { createdAt: 'asc' },
+            select: {
+              title: true,
+              quantity: true,
+            },
+          },
+        },
+      });
+      const byExternalId = new Map(orders.map((order) => [order.externalOrderId, order]));
+      for (const event of orderEvents) {
+        const order = byExternalId.get(event.externalEventId as string);
+        summaries.set(event.id, {
+          resourceType: 'order',
+          identifier: order?.orderNumber ?? event.externalEventId,
+          customerLabel:
+            this.commerceCustomerLabel(order?.commerceCustomer) ??
+            order?.email ??
+            order?.phone ??
+            null,
+          totalAmount: order?.totalAmount ?? null,
+          currency: order?.currency ?? null,
+          itemPreview: this.commerceItemPreview(order?.lineItems),
+          status: order?.financialStatus ?? order?.fulfillmentStatus ?? order?.status ?? null,
+        });
+      }
+    }
+
+    if (cartEvents.length > 0) {
+      const externalIds = cartEvents.map((item) => item.externalEventId as string);
+      const carts = await this.prisma.commerceCart.findMany({
+        where: {
+          workspaceId,
+          integrationId,
+          externalCartId: { in: externalIds },
+        },
+        select: {
+          externalCartId: true,
+          externalCheckoutId: true,
+          status: true,
+          currency: true,
+          totalAmount: true,
+          itemCount: true,
+          email: true,
+          phone: true,
+          commerceCustomer: {
+            select: {
+              firstName: true,
+              lastName: true,
+              email: true,
+              phone: true,
+            },
+          },
+          lineItems: {
+            take: 3,
+            orderBy: { createdAt: 'asc' },
+            select: {
+              title: true,
+              quantity: true,
+            },
+          },
+        },
+      });
+      const byExternalId = new Map(carts.map((cart) => [cart.externalCartId, cart]));
+      for (const event of cartEvents) {
+        const cart = byExternalId.get(event.externalEventId as string);
+        summaries.set(event.id, {
+          resourceType: 'cart',
+          identifier: cart?.externalCheckoutId ?? cart?.externalCartId ?? event.externalEventId,
+          customerLabel:
+            this.commerceCustomerLabel(cart?.commerceCustomer) ??
+            cart?.email ??
+            cart?.phone ??
+            null,
+          totalAmount: cart?.totalAmount ?? null,
+          currency: cart?.currency ?? null,
+          itemCount: cart?.itemCount ?? null,
+          itemPreview: this.commerceItemPreview(cart?.lineItems),
+          status: cart?.status ?? null,
+        });
+      }
+    }
+
+    if (customerEvents.length > 0) {
+      const externalIds = customerEvents.map((item) => item.externalEventId as string);
+      const customers = await this.prisma.commerceCustomer.findMany({
+        where: {
+          workspaceId,
+          integrationId,
+          externalCustomerId: { in: externalIds },
+        },
+        select: {
+          externalCustomerId: true,
+          firstName: true,
+          lastName: true,
+          email: true,
+          phone: true,
+          status: true,
+          totalOrders: true,
+          totalSpentAmount: true,
+          currency: true,
+        },
+      });
+      const byExternalId = new Map(customers.map((customer) => [customer.externalCustomerId, customer]));
+      for (const event of customerEvents) {
+        const customer = byExternalId.get(event.externalEventId as string);
+        summaries.set(event.id, {
+          resourceType: 'customer',
+          identifier: this.commerceCustomerLabel(customer) ?? event.externalEventId,
+          customerLabel: this.commerceCustomerLabel(customer),
+          totalAmount: customer?.totalSpentAmount ?? null,
+          currency: customer?.currency ?? null,
+          itemCount: customer?.totalOrders ?? null,
+          status: customer?.status ?? null,
+        });
+      }
+    }
+
+    return summaries;
+  }
+
+  private commerceCustomerLabel(
+    customer?: {
+      firstName?: string | null;
+      lastName?: string | null;
+      email?: string | null;
+      phone?: string | null;
+    } | null,
+  ) {
+    if (!customer) return null;
+    const name = [customer.firstName, customer.lastName].filter(Boolean).join(' ').trim();
+    return name || customer.email || customer.phone || null;
+  }
+
+  private commerceItemPreview(items?: Array<{ title: string; quantity: number }> | null) {
+    if (!items || items.length === 0) return null;
+    return items
+      .map((item) => `${item.title}${item.quantity > 1 ? ` x${item.quantity}` : ''}`)
+      .join(', ');
   }
 
   async listIntegrationJobs(
@@ -540,6 +830,275 @@ export class IntegrationsService {
     return {
       items,
       nextCursor: hasMore ? items.at(-1)?.id ?? null : null,
+    };
+  }
+
+  async listIntegrationCommerceRecords(
+    workspaceId: string,
+    integrationId: string,
+    resourceType: string,
+    params: IntegrationCommerceListParams = {},
+  ): Promise<IntegrationCommerceListResponse<unknown>> {
+    const integration = await this.prisma.integration.findFirst({
+      where: { id: integrationId, workspaceId },
+      select: { id: true, status: true },
+    });
+    if (!integration) {
+      throw new NotFoundException('Integration not found');
+    }
+    if (integration.status === 'disconnected') {
+      throw new BadRequestException('Integration is disconnected');
+    }
+
+    const resource = this.normalizeCommerceResourceType(resourceType);
+    const page = this.pageParam(params.page);
+    const limit = this.listLimit(params.limit);
+
+    switch (resource) {
+      case 'customers':
+        return this.listCommerceCustomers(workspaceId, integrationId, page, limit);
+      case 'orders':
+        return this.listCommerceOrders(workspaceId, integrationId, page, limit);
+      case 'products':
+        return this.listCommerceProducts(workspaceId, integrationId, page, limit);
+      case 'carts':
+        return this.listCommerceCarts(workspaceId, integrationId, page, limit, false);
+      case 'checkouts':
+        return this.listCommerceCarts(workspaceId, integrationId, page, limit, true);
+    }
+  }
+
+  private async listCommerceCustomers(
+    workspaceId: string,
+    integrationId: string,
+    page: number,
+    limit: number,
+  ) {
+    const where: Prisma.CommerceCustomerWhereInput = { workspaceId, integrationId };
+    const [items, total] = await Promise.all([
+      this.prisma.commerceCustomer.findMany({
+        where,
+        orderBy: [{ lastSeenAt: 'desc' }, { updatedAt: 'desc' }],
+        skip: (page - 1) * limit,
+        take: limit,
+        select: {
+          id: true,
+          provider: true,
+          externalCustomerId: true,
+          email: true,
+          phone: true,
+          firstName: true,
+          lastName: true,
+          company: true,
+          status: true,
+          marketingOptIn: true,
+          totalOrders: true,
+          totalSpentAmount: true,
+          currency: true,
+          firstSeenAt: true,
+          lastSeenAt: true,
+          createdAt: true,
+          updatedAt: true,
+        },
+      }),
+      this.prisma.commerceCustomer.count({ where }),
+    ]);
+
+    return {
+      items,
+      pagination: this.listPagination(total, page, limit),
+    };
+  }
+
+  private async listCommerceOrders(
+    workspaceId: string,
+    integrationId: string,
+    page: number,
+    limit: number,
+  ) {
+    const where: Prisma.CommerceOrderWhereInput = { workspaceId, integrationId };
+    const [items, total] = await Promise.all([
+      this.prisma.commerceOrder.findMany({
+        where,
+        orderBy: [{ placedAt: 'desc' }, { createdAt: 'desc' }],
+        skip: (page - 1) * limit,
+        take: limit,
+        select: {
+          id: true,
+          provider: true,
+          externalOrderId: true,
+          orderNumber: true,
+          status: true,
+          financialStatus: true,
+          fulfillmentStatus: true,
+          currency: true,
+          subtotalAmount: true,
+          discountAmount: true,
+          taxAmount: true,
+          shippingAmount: true,
+          totalAmount: true,
+          email: true,
+          phone: true,
+          placedAt: true,
+          paidAt: true,
+          fulfilledAt: true,
+          cancelledAt: true,
+          createdAt: true,
+          updatedAt: true,
+          commerceCustomer: {
+            select: {
+              firstName: true,
+              lastName: true,
+              email: true,
+              phone: true,
+            },
+          },
+          lineItems: {
+            take: 3,
+            orderBy: { createdAt: 'asc' },
+            select: {
+              id: true,
+              title: true,
+              sku: true,
+              quantity: true,
+              totalAmount: true,
+            },
+          },
+          _count: {
+            select: { lineItems: true },
+          },
+        },
+      }),
+      this.prisma.commerceOrder.count({ where }),
+    ]);
+
+    return {
+      items,
+      pagination: this.listPagination(total, page, limit),
+    };
+  }
+
+  private async listCommerceProducts(
+    workspaceId: string,
+    integrationId: string,
+    page: number,
+    limit: number,
+  ) {
+    const where: Prisma.CommerceProductWhereInput = { workspaceId, integrationId };
+    const [items, total] = await Promise.all([
+      this.prisma.commerceProduct.findMany({
+        where,
+        orderBy: [{ updatedAt: 'desc' }, { title: 'asc' }],
+        skip: (page - 1) * limit,
+        take: limit,
+        select: {
+          id: true,
+          provider: true,
+          externalKey: true,
+          externalProductId: true,
+          externalVariantId: true,
+          title: true,
+          sku: true,
+          handle: true,
+          productType: true,
+          vendor: true,
+          status: true,
+          imageUrl: true,
+          priceAmount: true,
+          currency: true,
+          inventoryQuantity: true,
+          createdAt: true,
+          updatedAt: true,
+        },
+      }),
+      this.prisma.commerceProduct.count({ where }),
+    ]);
+
+    return {
+      items,
+      pagination: this.listPagination(total, page, limit),
+    };
+  }
+
+  private async listCommerceCarts(
+    workspaceId: string,
+    integrationId: string,
+    page: number,
+    limit: number,
+    checkoutsOnly: boolean,
+  ) {
+    const where: Prisma.CommerceCartWhereInput = {
+      workspaceId,
+      integrationId,
+      ...(checkoutsOnly
+        ? {
+            OR: [
+              { externalCheckoutId: { not: null } },
+              { checkoutUrl: { not: null } },
+            ],
+          }
+        : {}),
+    };
+    const [items, total] = await Promise.all([
+      this.prisma.commerceCart.findMany({
+        where,
+        orderBy: [
+          { abandonedAt: 'desc' },
+          { providerUpdatedAt: 'desc' },
+          { updatedAt: 'desc' },
+        ],
+        skip: (page - 1) * limit,
+        take: limit,
+        select: {
+          id: true,
+          provider: true,
+          externalCartId: true,
+          externalCheckoutId: true,
+          status: true,
+          currency: true,
+          subtotalAmount: true,
+          totalAmount: true,
+          itemCount: true,
+          checkoutUrl: true,
+          email: true,
+          phone: true,
+          providerCreatedAt: true,
+          providerUpdatedAt: true,
+          abandonedAt: true,
+          recoveredAt: true,
+          expiresAt: true,
+          createdAt: true,
+          updatedAt: true,
+          commerceCustomer: {
+            select: {
+              firstName: true,
+              lastName: true,
+              email: true,
+              phone: true,
+            },
+          },
+          lineItems: {
+            take: 3,
+            orderBy: { createdAt: 'asc' },
+            select: {
+              id: true,
+              title: true,
+              sku: true,
+              quantity: true,
+              totalAmount: true,
+            },
+          },
+          _count: {
+            select: { lineItems: true },
+          },
+        },
+      }),
+      this.prisma.commerceCart.count({ where }),
+    ]);
+
+    return {
+      items,
+      pagination: this.listPagination(total, page, limit),
     };
   }
 
@@ -1441,6 +2000,40 @@ export class IntegrationsService {
   private logLimit(value?: number) {
     if (!value || !Number.isFinite(value)) return 25;
     return Math.max(1, Math.min(100, Math.trunc(value)));
+  }
+
+  private listLimit(value?: number) {
+    if (!value || !Number.isFinite(value)) return 10;
+    return Math.max(1, Math.min(100, Math.trunc(value)));
+  }
+
+  private pageParam(value?: number) {
+    if (!value || !Number.isFinite(value)) return 1;
+    return Math.max(1, Math.trunc(value));
+  }
+
+  private listPagination(total: number, page: number, limit: number): IntegrationListPagination {
+    return {
+      total,
+      page,
+      limit,
+      totalPages: Math.ceil(total / limit),
+      hasNextPage: page * limit < total,
+      hasPrevPage: page > 1,
+    };
+  }
+
+  private normalizeCommerceResourceType(value: string): IntegrationCommerceResourceType {
+    if (
+      value === 'customers' ||
+      value === 'orders' ||
+      value === 'products' ||
+      value === 'carts' ||
+      value === 'checkouts'
+    ) {
+      return value;
+    }
+    throw new BadRequestException('Unsupported commerce resource type');
   }
 
   private queueDelayFromDate(value: Date) {
