@@ -5,17 +5,20 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { InviteUserDto } from './dto/invite-user.dto';
 import { AuthService } from '../auth/auth.service';
 import { seedDefaultLifecycleStages } from '../lifecycle/default-lifecycle-stages';
+import { Ga4AnalyticsService } from '../analytics/ga4-analytics.service';
+import { RequestMeta } from '../auth/auth.types';
 
 @Injectable()
 export class OrganizationService {
     constructor(private prisma: PrismaService,
         private authService: AuthService,
+        private ga4Analytics: Ga4AnalyticsService,
 
 
 
     ) { }
 
-    async setup(dto: SetupOrganizationDto, user: User, sessionId?: string | null) {
+    async setup(dto: SetupOrganizationDto, user: User, sessionId?: string | null, meta?: RequestMeta | null) {
         const onboardingData = dto.onboardingData
             ? (dto.onboardingData as unknown as Prisma.InputJsonValue)
             : undefined;
@@ -66,6 +69,20 @@ export class OrganizationService {
             await this.authService.selectWorkspace(user.id, sessionId, {
                 organizationId: organization.id,
                 workspaceId: primaryWorkspace.id,
+            });
+        }
+
+        if (primaryWorkspace) {
+            this.ga4Analytics.trackEventAndForget({
+                name: 'workspace_created',
+                userId: user.id,
+                clientId: meta?.gaClientId,
+                params: {
+                    workspace_id: primaryWorkspace.id,
+                    organization_id: organization.id,
+                    source: 'organization_setup',
+                    onboarding_completed: Boolean(onboardingData),
+                },
             });
         }
 

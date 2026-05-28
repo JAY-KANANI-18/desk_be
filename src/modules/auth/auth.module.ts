@@ -8,8 +8,10 @@ import { AuthRateLimitService } from './auth-rate-limit.service';
 import { AuthSessionCacheService } from './auth-session-cache.service';
 import { AuthCryptoService } from './auth-crypto.service';
 import { AuthTotpService } from './auth-totp.service';
+import { AnalyticsModule } from '../analytics/analytics.module';
 
 @Module({
+  imports: [AnalyticsModule],
   controllers: [AuthController],
   providers: [
     AuthService,
@@ -24,4 +26,3 @@ import { AuthTotpService } from './auth-totp.service';
   exports: [AuthService, AuthTokenService],
 })
 export class AuthModule {}
-

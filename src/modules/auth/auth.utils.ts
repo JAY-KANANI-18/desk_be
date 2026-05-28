@@ -89,6 +89,12 @@ export function buildRequestMeta(request: Request): RequestMeta {
   const deviceFingerprint = typeof request.headers['x-device-fingerprint'] === 'string'
     ? request.headers['x-device-fingerprint']
     : [userAgent ?? 'unknown', request.headers['accept-language'] ?? 'unknown'].join('|');
+  const rawGaClientId = typeof request.headers['x-ga-client-id'] === 'string'
+    ? request.headers['x-ga-client-id'].trim()
+    : null;
+  const gaClientId = rawGaClientId && /^[A-Za-z0-9._:-]{1,128}$/.test(rawGaClientId)
+    ? rawGaClientId
+    : null;
 
   return {
     ipAddress,
@@ -97,6 +103,7 @@ export function buildRequestMeta(request: Request): RequestMeta {
     deviceId,
     deviceName,
     deviceFingerprint,
+    gaClientId,
   };
 }
 
@@ -119,4 +126,3 @@ export function redactEmail(email: string) {
   }
   return `${name.slice(0, 2)}***@${domain}`;
 }
-

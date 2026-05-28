@@ -1,22 +1,20 @@
 import {
-  Body,
+  BadRequestException,
   Controller,
-  Get,
   Headers,
+  HttpCode,
   Post,
   RawBodyRequest,
   Req,
-  Res,
-  UseGuards,
 } from '@nestjs/common';
-import { Request, Response } from 'express';
+import { Request } from 'express';
 import { BillingService } from './billing.service';
-import { CreateCheckoutDto } from './dto/create-checkout.dto';
 import { StripeService } from './providers/stripe.service';
 import { RazorpayService } from './providers/razorpay.service';
+import { Public } from '../../common/auth/route-access.decorator';
 
+@Public()
 @Controller('api/billing')
-
 export class BillingWebhookController {
   constructor(
     private readonly billingService: BillingService,
@@ -26,9 +24,9 @@ export class BillingWebhookController {
 
  
   @Post('webhook/stripe')
+  @HttpCode(200)
   async stripeWebhook(
     @Req() req: RawBodyRequest<Request>,
-    @Res() res: Response,
     @Headers('stripe-signature') signature: string,
   ) {
     const event = this.stripeService.verifyWebhookSignature(
@@ -37,26 +35,24 @@ export class BillingWebhookController {
     );
 
     await this.billingService.handleStripeWebhook(event);
-    return res.status(200).send({ received: true });
+    return { received: true };
   }
 
   @Post('webhook/razorpay')
+  @HttpCode(200)
   async razorpayWebhook(
     @Req() req: RawBodyRequest<Request>,
-    @Res() res: Response,
     @Headers('x-razorpay-signature') signature: string,
   ) {
     const rawBody = (req.rawBody as Buffer).toString('utf8');
 
     const valid = this.razorpayService.verifyWebhookSignature(rawBody, signature);
-    console.log({valid});
-    
 
     if (!valid) {
-      return res.status(400).send({ message: 'Invalid webhook signature' });
+      throw new BadRequestException('Invalid webhook signature');
     }
 
     await this.billingService.handleRazorpayWebhook(req.body);
-    return res.status(200).send({ received: true });
+    return { received: true };
   }
 }

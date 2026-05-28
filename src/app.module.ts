@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { SentryModule } from '@sentry/nestjs/setup';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { OrganizationModule } from './modules/organization/organization.module';
@@ -43,6 +44,7 @@ import { RouteGuard } from './common/auth/route.guard';
 
 @Module({
   imports: [
+    SentryModule.forRoot(),
     DiscoveryModule,
     ScheduleModule.forRoot(),
     PrismaModule,

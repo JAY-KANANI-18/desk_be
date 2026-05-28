@@ -1,17 +1,31 @@
 import {
     ExceptionFilter,
     Catch,
+    Logger,
     ArgumentsHost,
     HttpException,
 } from '@nestjs/common';
+import { SentryExceptionCaptured } from '@sentry/nestjs';
+import type { Response } from 'express';
 
 @Catch()
 export class HttpExceptionFilter implements ExceptionFilter {
-    catch(exception: any, host: ArgumentsHost) {
-        
-        console.dir({ exception:exception },{ depth: null });
+    private readonly logger = new Logger(HttpExceptionFilter.name);
+
+    @SentryExceptionCaptured()
+    catch(exception: unknown, host: ArgumentsHost): void {
         const ctx = host.switchToHttp();
-        const response = ctx.getResponse();
+                        console.dir({ exception:exception },{ depth: null });
+
+        const response = ctx.getResponse<Response>();
+
+        if (response.headersSent) {
+            this.logger.error(
+                'Unhandled exception after response was sent',
+                exception instanceof Error ? exception.stack : String(exception),
+            );
+            return;
+        }
 
         const status =
             exception instanceof HttpException ? exception.getStatus() : 500;
@@ -31,7 +45,7 @@ export class HttpExceptionFilter implements ExceptionFilter {
         const code =
             typeof exceptionBody.code === 'string' && exceptionBody.code.trim()
                 ? exceptionBody.code
-                : exception.name || 'SERVER_ERROR';
+                : exception instanceof Error && exception.name ? exception.name : 'SERVER_ERROR';
 
         response.status(status).json({
             success: false,

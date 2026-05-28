@@ -50,6 +50,7 @@ import { SignUpDto } from './dto/sign-up.dto';
 import { VerifyOtpDto } from './dto/verify-otp.dto';
 import { DisableTwoFactorDto } from './dto/two-factor.dto';
 import { renderEmailTemplate } from '../../common/email/email-templates';
+import { Ga4AnalyticsService } from '../analytics/ga4-analytics.service';
 
 type SessionQueryResult = Awaited<ReturnType<AuthService['getSessionRecord']>>;
 
@@ -69,6 +70,7 @@ export class AuthService {
     private readonly sessionCache: AuthSessionCacheService,
     private readonly cryptoService: AuthCryptoService,
     private readonly totpService: AuthTotpService,
+    private readonly ga4Analytics: Ga4AnalyticsService,
   ) {}
 
   async signUp(dto: SignUpDto, meta: RequestMeta) {
@@ -137,6 +139,15 @@ export class AuthService {
       ipAddress: meta.ipAddress,
       userAgent: meta.userAgent,
       metadata: { email },
+    });
+
+    this.ga4Analytics.trackEventAndForget({
+      name: 'sign_up',
+      userId: user.id,
+      clientId: meta.gaClientId,
+      params: {
+        method: 'password',
+      },
     });
 
     return {

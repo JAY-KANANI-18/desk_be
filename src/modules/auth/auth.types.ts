@@ -36,6 +36,7 @@ export interface RequestMeta {
   deviceId: string | null;
   deviceName: string | null;
   deviceFingerprint: string | null;
+  gaClientId: string | null;
 }
 
 export interface SessionEnvelope {

@@ -50,6 +50,10 @@ class ConnectWhatsAppCoexistDto {
     @IsOptional()
     @IsString()
     businessId?: string;
+
+    @IsOptional()
+    @IsString()
+    embeddedSignupEvent?: string;
 }
 
 // Manual connect (for users who set up WABA manually via Meta Business Suite)
@@ -171,50 +175,74 @@ export class WhatsAppController implements OnModuleInit {
         }
 
         const body = req.body;
-    console.dir({ body }, { depth: null });
-        const phoneNumberId: string =
-            body?.entry?.[0]?.changes?.[0]?.value?.metadata?.phone_number_id;
-
-        if (!phoneNumberId) return { status: 'ignored' };
-
-        const channel = await this.prisma.channel.findFirst({
-            where: { type: 'whatsapp', identifier: phoneNumberId },
-        });
-        if (!channel) {
-            this.logger.warn(`No whatsapp channel found for phoneNumberId: ${phoneNumberId}`);
-            return { status: 'channel_not_found' };
-        }
-
         const provider = this.registry.getProviderByType('whatsapp');
-        const parsedList: any[] = await provider.parseWebhook(body);
+        let handledChanges = 0;
 
-        for (const parsed of parsedList) {
-            if (parsed.direction === 'outgoing') {
-                await this.processingQueue.enqueueWhatsappStatusUpdate({
-                    channelId: channel.id,
-                    channelType: 'whatsapp',
-                    externalId: parsed.externalId,
-                    status: parsed.metadata?.status,
+        for (const entry of body?.entry ?? []) {
+            for (const change of entry?.changes ?? []) {
+                if (this.isWhatsAppAccountChange(change?.field)) {
+                    await this.recordAccountWebhookChange(entry, change);
+                    handledChanges += 1;
+                    continue;
+                }
+
+                if (change?.field !== 'messages') {
+                    continue;
+                }
+
+                const phoneNumberId: string | undefined =
+                    change?.value?.metadata?.phone_number_id;
+
+                if (!phoneNumberId) {
+                    handledChanges += 1;
+                    continue;
+                }
+
+                const channel = await this.prisma.channel.findUnique({
+                    where: { identifier: phoneNumberId },
                 });
-            } else {
-                await this.processingQueue.enqueueInboundProcess({
-                    channelId: channel.id,
-                    workspaceId: channel.workspaceId,
-                    channelType: 'whatsapp',
-                    contactIdentifier: parsed.contactIdentifier,
-                    channelMsgId: parsed.externalId,
-                    direction: parsed.direction,
-                    messageType: parsed.messageType,
-                    text: parsed.text,
-                    attachments: parsed.attachments,
-                    replyToChannelMsgId: parsed.replyToChannelMsgId,
-                    metadata: parsed.metadata,
-                    raw: parsed.raw,
+                if (!channel || channel.type !== 'whatsapp') {
+                    this.logger.warn(`No whatsapp channel found for phoneNumberId: ${phoneNumberId}`);
+                    handledChanges += 1;
+                    continue;
+                }
+
+                const parsedList: any[] = await provider.parseWebhook({
+                    object: body?.object,
+                    entry: [{ ...entry, changes: [change] }],
                 });
+
+                for (const parsed of parsedList) {
+                    if (parsed.direction === 'outgoing') {
+                        await this.processingQueue.enqueueWhatsappStatusUpdate({
+                            channelId: channel.id,
+                            channelType: 'whatsapp',
+                            externalId: parsed.externalId,
+                            status: parsed.metadata?.status,
+                        });
+                    } else {
+                        await this.processingQueue.enqueueInboundProcess({
+                            channelId: channel.id,
+                            workspaceId: channel.workspaceId,
+                            channelType: 'whatsapp',
+                            contactIdentifier: parsed.contactIdentifier,
+                            channelMsgId: parsed.externalId,
+                            direction: parsed.direction,
+                            messageType: parsed.messageType,
+                            text: parsed.text,
+                            attachments: parsed.attachments,
+                            replyToChannelMsgId: parsed.replyToChannelMsgId,
+                            metadata: parsed.metadata,
+                            raw: parsed.raw,
+                        });
+                    }
+                }
+
+                handledChanges += 1;
             }
         }
 
-        return { status: 'ok' };
+        return handledChanges ? { status: 'ok' } : { status: 'ignored' };
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -253,6 +281,28 @@ export class WhatsAppController implements OnModuleInit {
         };
     }
 
+    @Get('auth/embedded-signup/state')
+      @WorkspaceRoute(WorkspacePermission.CHANNELS_MANAGE)
+    getEmbeddedSignupState(@Req() req: any) {
+        return {
+            state: this.oauthService.buildEmbeddedSignupState({
+                workspaceId: req.workspaceId,
+                userId: req.user.id,
+            }),
+        };
+    }
+
+    @Get('auth/hosted-es/url')
+      @WorkspaceRoute(WorkspacePermission.CHANNELS_MANAGE)
+    getHostedEmbeddedSignupUrl(@Req() req: any) {
+        return {
+            url: this.oauthService.buildHostedEmbeddedSignupUrl({
+                workspaceId: req.workspaceId,
+                userId: req.user.id,
+            }),
+        };
+    }
+
     // ─────────────────────────────────────────────────────────────────────────
     // 4. OAUTH — Callback: code → token → WABA → phone numbers → save channels
     // POST /webhooks/whatsapp/auth/callback
@@ -283,6 +333,40 @@ export class WhatsAppController implements OnModuleInit {
          res.type('html').send(result.html);
     }
 
+    @Get('auth/hosted-es/callback')
+      @Public()
+    async handleHostedEmbeddedSignupCallback(
+        @Query('code') code: string,
+        @Query('error') error: string,
+        @Query('error_description') errorDescription: string,
+        @Query('state') state: string,
+        @Query('waba_id') wabaId: string,
+        @Query('wabaId') wabaIdCamel: string,
+        @Query('phone_number_id') phoneNumberId: string,
+        @Query('phoneNumberId') phoneNumberIdCamel: string,
+        @Query('business_id') businessId: string,
+        @Query('businessId') businessIdCamel: string,
+        @Req() req: any,
+        @Res() res: Response,
+    ) {
+        const result = await this.oauthService.handleHostedEmbeddedSignupCallback({
+            code,
+            error,
+            errorDescription,
+            state,
+            wabaId: wabaId ?? wabaIdCamel,
+            phoneNumberId: phoneNumberId ?? phoneNumberIdCamel,
+            businessId: businessId ?? businessIdCamel,
+            requestOrigin: this.getRequestOrigin(req),
+        });
+
+        Object.entries(OAUTH_CALLBACK_RESPONSE_HEADERS).forEach(([header, value]) => {
+            res.setHeader(header, value);
+        });
+
+         res.type('html').send(result.html);
+    }
+
     @Post('auth/callback')
       @WorkspaceRoute(WorkspacePermission.CHANNELS_MANAGE)
 
@@ -299,86 +383,31 @@ export class WhatsAppController implements OnModuleInit {
         });
 
         return { success: true, channels };
+    }
 
-        // Step 1: Exchange code for user token
-        const userToken = await this.exchangeCodeForToken(code, redirectUri);
-        this.logger.debug(`Obtained user token: ${userToken}`);
-
-        // Step 2: Get WhatsApp Business Accounts linked to this user
-        const wabas = await this.getWABAs(userToken);
-        this.logger.debug(`Found ${wabas.length} WABA(s) for user`);
-        if (!wabas.length) {
-            throw new BadRequestException('No WhatsApp Business Accounts found.');
+    @Post('auth/embedded-signup')
+      @WorkspaceRoute(WorkspacePermission.CHANNELS_MANAGE)
+    async handleEmbeddedSignupCallback(
+        @Body() dto: ConnectWhatsAppCoexistDto,
+        @Req() req: any,
+    ) {
+        const { code, state, wabaId, phoneNumberId, businessId, embeddedSignupEvent } = dto;
+        if (!code || !state || !wabaId || !phoneNumberId) {
+            throw new BadRequestException('code, state, wabaId and phoneNumberId are required');
         }
 
-        const connectedChannels: any[] = [];
+        const channels = await this.oauthService.handleEmbeddedSignupFrontendCallback({
+            code,
+            state,
+            wabaId,
+            phoneNumberId,
+            businessId,
+            embeddedSignupEvent,
+            userId: req.user.id,
+            workspaceId: req.workspaceId,
+        });
 
-        for (const waba of wabas) {
-            try {
-                // Step 3: Get phone numbers under this WABA
-                const phoneNumbers = await this.getPhoneNumbers(waba.id, userToken);
-                this.logger.debug(`WABA ${waba.id} has ${JSON.stringify(phoneNumbers)} phone number(s)`);
-                for (const phone of phoneNumbers) {
-                    // Step 4: Subscribe WABA to webhook
-                    await this.subscribeWABAToWebhook(waba.id, userToken);
-
-                    // Step 5: Upsert channel per phone number
-                    const channel = await this.prisma.channel.upsert({
-                        where: {
-        workspaceId: req.workspaceId,
-                            type: 'whatsapp',
-                            identifier: phone.id, // phone_number_id
-                        },
-                        update: {
-                            name: phone.display_phone_number ?? phone.verified_name,
-                            status: 'connected',
-                            credentials: {
-                                accessToken: userToken,
-                                tokenLastValidatedAt: new Date(),
-
-                            },
-                            config: {
-                                wabaId: waba.id,
-                                wabaName: waba.name,
-                                phoneNumber: phone.display_phone_number,
-                                phoneNumberId:phone.id,
-                                verifiedName: phone.verified_name,
-                                qualityRating: phone.quality_rating,
-                                codeVerificationStatus: phone.code_verification_status,
-                            },
-                        },
-                        create: {
-        workspaceId: req.workspaceId,
-                            type: 'whatsapp',
-                            identifier: phone.id,
-                            name: phone.display_phone_number ?? phone.verified_name,
-                            credentials: {
-                                accessToken: userToken,
-                                tokenLastValidatedAt: new Date(),
-                            },
-                            status: 'connected',
-                            config: {
-                                wabaId: waba.id,
-                                wabaName: waba.name,
-                                phoneNumber: phone.display_phone_number,
-                                phoneNumberId:phone.id,
-
-                                verifiedName: phone.verified_name,
-                                qualityRating: phone.quality_rating,
-                                codeVerificationStatus: phone.code_verification_status,
-                            },
-                        },
-                    });
-
-                    connectedChannels.push(channel);
-                    this.logger.log(`WhatsApp channel connected: ${phone.display_phone_number} (${phone.id})`);
-                }
-            } catch (e) {
-                this.logger.error(`Failed to connect WABA ${waba.id}`, e);
-            }
-        }
-
-        return { success: true, channels: connectedChannels };
+        return { success: true, channels };
     }
 
     @Post('auth/coexist')
@@ -387,7 +416,7 @@ export class WhatsAppController implements OnModuleInit {
         @Body() dto: ConnectWhatsAppCoexistDto,
         @Req() req: any,
     ) {
-        const { code, state, wabaId, phoneNumberId, businessId } = dto;
+        const { code, state, wabaId, phoneNumberId, businessId, embeddedSignupEvent } = dto;
         if (!code || !state || !wabaId || !phoneNumberId) {
             throw new BadRequestException('code, state, wabaId and phoneNumberId are required');
         }
@@ -398,6 +427,7 @@ export class WhatsAppController implements OnModuleInit {
             wabaId,
             phoneNumberId,
             businessId,
+            embeddedSignupEvent,
             userId: req.user.id,
             workspaceId: req.workspaceId,
         });
@@ -413,8 +443,9 @@ export class WhatsAppController implements OnModuleInit {
     @Post('connect/manual')
       @WorkspaceRoute(WorkspacePermission.CHANNELS_MANAGE)
 
-    async manualConnect(@Body() dto: ManualConnectDto) {
-        const { workspaceId, accessToken, phoneNumberId, wabaId, displayName } = dto;
+    async manualConnect(@Body() dto: ManualConnectDto, @Req() req: any) {
+        const { accessToken, phoneNumberId, wabaId, displayName } = dto;
+        const workspaceId = req.workspaceId;
 
         // Validate the token works
         try {
@@ -428,22 +459,39 @@ export class WhatsAppController implements OnModuleInit {
         // Subscribe to webhook
         await this.subscribeWABAToWebhook(wabaId, accessToken);
 
-        const channel = await this.prisma.channel.upsert({
-            where: {
-                workspaceId, type: 'whatsapp', identifier: phoneNumberId,
-            },
-            update: { credentials: { accessToken, tokenLastValidatedAt: new Date() }, status: 'connected' },
-            create: {
+        const existingChannel = await this.prisma.channel.findUnique({
+            where: { identifier: phoneNumberId },
+        });
+
+        if (existingChannel && existingChannel.workspaceId !== workspaceId) {
+            throw new BadRequestException(
+                'This WhatsApp number is already connected to another workspace.',
+            );
+        }
+
+        const channelData = {
+            credentials: { accessToken, tokenLastValidatedAt: new Date().toISOString() },
+            status: 'connected',
+            config: { wabaId, manualConnect: true, authSource: 'manual' },
+        };
+
+        const channel = existingChannel
+            ? await this.prisma.channel.update({
+                where: { id: existingChannel.id },
+                data: channelData,
+            })
+            : await this.prisma.channel.create({
+                data: {
                 workspaceId,
                 type: 'whatsapp',
                 identifier: phoneNumberId,
                 name: displayName ?? phoneNumberId,
                 credentials: {
                     accessToken,
-                    tokenLastValidatedAt: new Date(),
+                    tokenLastValidatedAt: new Date().toISOString(),
                 },
                 status: 'connected',
-                config: { wabaId, manualConnect: true },
+                config: { wabaId, manualConnect: true, authSource: 'manual' },
             },
         });
 
@@ -669,6 +717,100 @@ export class WhatsAppController implements OnModuleInit {
     //   - If refresh fails → mark token_expired + alert workspace
     // ─────────────────────────────────────────────────────────────────────────
 
+    private isWhatsAppAccountChange(field?: string) {
+        return [
+            'account_update',
+            'account_review_update',
+            'business_capability_update',
+            'message_template_status_update',
+            'phone_number_name_update',
+            'phone_number_quality_update',
+            'security',
+        ].includes(field ?? '');
+    }
+
+    private async recordAccountWebhookChange(entry: any, change: any) {
+        const value = change?.value ?? {};
+        const wabaId = this.extractWabaId(entry, value);
+        const phoneNumberId = this.extractAccountPhoneNumberId(value);
+        const channels = await this.findChannelsForAccountWebhook(wabaId, phoneNumberId);
+
+        if (!channels.length) {
+            this.logger.warn(
+                `WhatsApp account webhook has no matching channel: field=${change?.field ?? 'unknown'} wabaId=${wabaId ?? 'unknown'} phoneNumberId=${phoneNumberId ?? 'unknown'}`,
+            );
+            return;
+        }
+
+        for (const channel of channels) {
+            const config = this.toRecord(channel.config);
+            const currentWebhook = this.toRecord(config.metaWebhook);
+
+            await this.prisma.channel.update({
+                where: { id: channel.id },
+                data: {
+                    config: {
+                        ...config,
+                        wabaId: config.wabaId ?? wabaId ?? null,
+                        phoneNumberId: config.phoneNumberId ?? phoneNumberId ?? channel.identifier,
+                        metaWebhook: {
+                            ...currentWebhook,
+                            lastField: change?.field ?? null,
+                            lastEvent: this.getString(value?.event) ?? this.getString(value?.event_type) ?? null,
+                            lastWabaId: wabaId ?? null,
+                            lastPhoneNumberId: phoneNumberId ?? null,
+                            lastReceivedAt: new Date().toISOString(),
+                        },
+                    },
+                },
+            });
+        }
+    }
+
+    private async findChannelsForAccountWebhook(wabaId?: string, phoneNumberId?: string) {
+        if (phoneNumberId) {
+            const channel = await this.prisma.channel.findUnique({
+                where: { identifier: phoneNumberId },
+            });
+            return channel && channel.type === 'whatsapp' ? [channel] : [];
+        }
+
+        if (!wabaId) {
+            return [];
+        }
+
+        return this.prisma.channel.findMany({
+            where: {
+                type: 'whatsapp',
+                config: {
+                    path: ['wabaId'],
+                    equals: wabaId,
+                },
+            },
+        });
+    }
+
+    private extractWabaId(entry: any, value: any) {
+        return (
+            this.getString(value?.waba_id) ??
+            this.getString(value?.wabaId) ??
+            this.getString(value?.waba_info?.waba_id) ??
+            this.getString(value?.waba_info?.id) ??
+            this.getString(value?.whatsapp_business_account_id) ??
+            this.getString(entry?.id)
+        );
+    }
+
+    private extractAccountPhoneNumberId(value: any) {
+        return (
+            this.getString(value?.phone_number_id) ??
+            this.getString(value?.phoneNumberId) ??
+            this.getString(value?.phone_number?.id) ??
+            this.getString(value?.phone_number?.phone_number_id) ??
+            this.getString(value?.display_phone_number_id)
+        );
+    }
+
     private async checkAndHealToken(channel: any): Promise<{ valid: boolean; reason?: string; refreshed?: boolean }> {
         // Skip if recently checked (within 3 days)
         if (channel.tokenLastValidatedAt) {
@@ -707,7 +849,7 @@ export class WhatsAppController implements OnModuleInit {
                             grant_type: 'fb_exchange_token',
                             client_id: process.env.WHATSAPP_APP_ID!,
                             client_secret: process.env.WHATSAPP_APP_SECRET!,
-                            fb_exchange_token: channel.accessToken,
+                            fb_exchange_token: channel.credentials.accessToken,
                         },
                     });
 
@@ -719,8 +861,9 @@ export class WhatsAppController implements OnModuleInit {
                         where: { id: channel.id },
                         data: {
                             credentials: {
-                                accessToken: refreshData.access_token, tokenExpiresAt: newExpiresAt,
-                                tokenLastValidatedAt: new Date()
+                                accessToken: refreshData.access_token,
+                                tokenExpiresAt: newExpiresAt?.toISOString() ?? null,
+                                tokenLastValidatedAt: new Date().toISOString()
                             },
                             status: 'connected',
 
@@ -737,7 +880,7 @@ export class WhatsAppController implements OnModuleInit {
                             status: 'token_warning',
                             credentials: {
                                 ...((channel.credentials) as any),
-                                tokenLastValidatedAt: new Date(),
+                                tokenLastValidatedAt: new Date().toISOString(),
                             },
                         },
                     });
@@ -750,7 +893,7 @@ export class WhatsAppController implements OnModuleInit {
                 // Token healthy — just update validated timestamp
                 await this.prisma.channel.update({
                     where: { id: channel.id },
-                    data: { status: 'connected', credentials: { ...((channel.credentials) as any), tokenLastValidatedAt: new Date() } },
+                    data: { status: 'connected', credentials: { ...((channel.credentials) as any), tokenLastValidatedAt: new Date().toISOString() } },
                 });
             }
 
@@ -764,7 +907,7 @@ export class WhatsAppController implements OnModuleInit {
     private async markTokenExpired(channel: any, reason?: string) {
         await this.prisma.channel.update({
             where: { id: channel.id },
-            data: { status: 'token_expired', credentials: { ...((channel.credentials) as any), tokenLastValidatedAt: new Date() } },
+            data: { status: 'token_expired', credentials: { ...((channel.credentials) as any), tokenLastValidatedAt: new Date().toISOString() } },
         });
 
         this.logger.error(`WhatsApp token EXPIRED for channel ${channel.id} (${channel.name}). Reason: ${reason}`);
@@ -868,6 +1011,16 @@ export class WhatsAppController implements OnModuleInit {
             { params: { access_token: token } },
         );
         this.logger.log(`WABA ${wabaId} subscribed to webhook`);
+    }
+
+    private toRecord(value: unknown): Record<string, any> {
+        return value && typeof value === 'object' && !Array.isArray(value)
+            ? (value as Record<string, any>)
+            : {};
+    }
+
+    private getString(value: unknown) {
+        return typeof value === 'string' && value.trim() ? value : undefined;
     }
 
     private getRequestOrigin(req: any) {

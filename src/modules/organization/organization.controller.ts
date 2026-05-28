@@ -5,6 +5,7 @@ import { get } from 'http';
 import { OrgPermission } from 'src/common/constants/permissions';
 import { JwtOnly, OrgRoute } from 'src/common/auth/route-access.decorator';
 import { Controller, Post, Body, Req, Get, Put, Delete, Query } from '@nestjs/common';
+import { buildRequestMeta } from '../auth/auth.utils';
 
 import { IsEmail, IsString, IsArray } from 'class-validator';
 
@@ -20,7 +21,12 @@ export class OrganizationController {
     @Post('setup')
     @JwtOnly()
     async setup(@Body() dto: SetupOrganizationDto, @Req() req: any) {
-        const organization = await this.organizationService.setup(dto, req.user, req.user?.sessionId ?? null);
+        const organization = await this.organizationService.setup(
+            dto,
+            req.user,
+            req.user?.sessionId ?? null,
+            buildRequestMeta(req),
+        );
 
         return { data: organization };
 

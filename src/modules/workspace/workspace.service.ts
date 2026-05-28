@@ -8,12 +8,14 @@ import { OrgPermission, OrgRole } from 'src/common/constants/permissions';
 import { AuthService } from '../auth/auth.service';
 import { seedDefaultLifecycleStages } from '../lifecycle/default-lifecycle-stages';
 import { IntegrationsService } from '../integrations/integrations.service';
+import { Ga4AnalyticsService } from '../analytics/ga4-analytics.service';
 
 @Injectable()
 export class WorkspaceService {
     constructor(private prisma: PrismaService,
         private authService: AuthService,
         private integrationsService: IntegrationsService,
+        private ga4Analytics: Ga4AnalyticsService,
 
     ) { }
 
@@ -52,6 +54,15 @@ export class WorkspaceService {
             await seedDefaultLifecycleStages(tx, createdWorkspace.id);
 
             return createdWorkspace;
+        });
+
+        this.ga4Analytics.trackEventAndForget({
+            name: 'workspace_created',
+            userId: user.id,
+            params: {
+                workspace_id: workspace.id,
+                organization_id: dto.organizationId,
+            },
         });
 
         return workspace;
